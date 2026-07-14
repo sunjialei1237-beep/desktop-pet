@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod db;
 mod events;
+mod llm;
 
 use commands::AppState;
 use tauri::Emitter;
