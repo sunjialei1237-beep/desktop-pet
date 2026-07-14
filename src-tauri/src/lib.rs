@@ -1,13 +1,13 @@
-mod commands;
-mod config;
-mod db;
-mod events;
-mod llm;
-mod emotion;
-mod embedding;
-mod mind;
-mod pending;
-mod lifecycle;
+pub mod commands;
+pub mod config;
+pub mod db;
+pub mod events;
+pub mod llm;
+pub mod emotion;
+pub mod embedding;
+pub mod mind;
+pub mod pending;
+pub mod lifecycle;
 
 use commands::AppState;
 use std::sync::Mutex;
