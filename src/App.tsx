@@ -47,6 +47,14 @@ export default function App() {
       setBubbleVisible(false);
     }).then((un) => unlisteners.push(un));
 
+    listen<EmotionData>("emotion-update", (event) => {
+      setMoodLabel(event.payload.mood_label);
+    }).then((un) => unlisteners.push(un));
+
+    listen<{ title: string; event_id: string }>("proactive-prompt", (event) => {
+      showBubble(event.payload.title + " zenmeyang la?", 15000);
+    }).then((un) => unlisteners.push(un));
+
     const emotionTimer = setInterval(async () => {
       try {
         const emo = await invoke<EmotionData>("get_emotion_state");
@@ -111,8 +119,14 @@ export default function App() {
     } catch (e) {
       setIsThinking(false);
       const errMsg = String(e);
-      if (errMsg.includes("not configured") || errMsg.includes("API key")) {
-        showBubble("(LLM wei peizhi)", 5000);
+      if (errMsg.includes("not configured") || errMsg.includes("NotConfigured")) {
+        showBubble("(hai mei you peizhi hao lian jie...)", 5000);
+      } else if (errMsg.includes("Timeout") || errMsg.includes("timeout")) {
+        showBubble("wo...ganggang you dian zou shen...", 5000);
+      } else if (errMsg.includes("Network") || errMsg.includes("network")) {
+        showBubble("xin hao bu tai hao ne...", 5000);
+      } else if (errMsg.includes("RateLimit") || errMsg.includes("429")) {
+        showBubble("shuo le hao duo hua, rang wo chuan kou qi ba~", 5000);
       } else {
         showBubble("...", 3000);
       }

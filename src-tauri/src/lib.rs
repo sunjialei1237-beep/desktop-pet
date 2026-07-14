@@ -7,10 +7,11 @@ mod emotion;
 mod embedding;
 mod mind;
 mod pending;
+mod lifecycle;
 
 use commands::AppState;
 use std::sync::Mutex;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -72,6 +73,31 @@ pub fn run() {
             working_memory,
         })
         .manage(db_state)
+        .setup(|app| {
+            log::info!("Tauri app initialized");
+
+            let handle = app.handle().clone();
+
+            // First run checks: seed persona traits if needed.
+            if let Some(db_state) = app.try_state::<db::DbState>() {
+                match lifecycle::run_firstrun_checks(&db_state) {
+                    Ok(true) => log::info!("First run initialization completed"),
+                    Ok(false) => log::info!("Not first run, skipping initialization"),
+                    Err(e) => log::error!("First run check failed: {}", e),
+                }
+            }
+
+            // Start the life loop (background timers).
+            lifecycle::start_life_loop(handle.clone());
+
+            // Welcome bubble after a short delay.
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let _ = handle.emit("bubble-show", "ni hao ya! wo shi ni de zhuo chong.");
+            });
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::send_message,
             commands::get_emotion_state,
@@ -84,15 +110,6 @@ pub fn run() {
             commands::get_llm_config,
             commands::update_llm_config,
         ])
-        .setup(|app| {
-            log::info!("Tauri app initialized");
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                let _ = handle.emit("bubble-show", "ni hao ya! wo shi ni de zhuo chong.");
-            });
-            Ok(())
-        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
