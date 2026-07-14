@@ -8,6 +8,7 @@ mod embedding;
 mod mind;
 
 use commands::AppState;
+use std::sync::Mutex;
 use tauri::Emitter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -45,10 +46,30 @@ pub fn run() {
         config.app.log_level
     );
 
+    // Initialize LLM client if configured.
+    let llm = crate::llm::client::LlmClient::new(
+        &config.llm.base_url,
+        &config.llm.api_key,
+        &config.llm.main_model,
+        &config.llm.reflection_model,
+    )
+    .ok();
+    if llm.is_some() {
+        log::info!("LLM client initialized (model: {})", config.llm.main_model);
+    } else {
+        log::warn!("LLM not configured — conversation will fail until API key is set");
+    }
+
+    let working_memory = Mutex::new(crate::mind::working::WorkingMemory::new());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { config })
+        .manage(AppState {
+            config,
+            llm,
+            working_memory,
+        })
         .manage(db_state)
         .invoke_handler(tauri::generate_handler![
             commands::send_message,

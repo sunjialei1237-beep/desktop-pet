@@ -1,12 +1,17 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use tauri::State;
 
 use crate::config::AppConfig;
 use crate::db::DbState;
+use crate::llm::client::{ChatMessage, LlmClient};
+use crate::mind::working::WorkingMemory;
 
 /// Shared application state.
 pub struct AppState {
     pub config: AppConfig,
+    pub llm: Option<LlmClient>,
+    pub working_memory: Mutex<WorkingMemory>,
 }
 
 // -- Response types --
@@ -48,10 +53,68 @@ pub struct DebugData {
 #[tauri::command]
 pub async fn send_message(
     text: String,
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
 ) -> Result<String, String> {
     log::info!("Received message: {}", text);
-    Ok(format!("I heard you: {}", text))
+
+    // Snapshot working memory context.
+    let wm_context = {
+        let wm = state
+            .working_memory
+            .lock()
+            .map_err(|e| format!("WM lock error: {}", e))?;
+        wm.get_context()
+    };
+
+    let turn = (wm_context.len() / 2) as i32;
+    let conversation_id = format!("conv_{}", chrono::Utc::now().timestamp());
+
+    let llm = state
+        .llm
+        .as_ref()
+        .ok_or("LLM not configured. Please set your API key in settings.")?;
+
+    let result = crate::mind::converse::converse(
+        &text,
+        &conversation_id,
+        turn,
+        &wm_context,
+        llm,
+        &db,
+        None,
+    )
+    .await?;
+
+    // Push user + assistant messages to working memory.
+    {
+        let mut wm = state
+            .working_memory
+            .lock()
+            .map_err(|e| format!("WM lock error: {}", e))?;
+        wm.push(ChatMessage {
+            role: "user".to_string(),
+            content: text,
+        });
+        if !result.response.is_empty() {
+            wm.push(ChatMessage {
+                role: "assistant".to_string(),
+                content: result.response.clone(),
+            });
+        }
+    }
+
+    if result.response.is_empty() {
+        log::info!("Pet chose silence");
+    }
+    if !result.grounding_violations.is_empty() {
+        log::warn!(
+            "Grounding violations: {:?}",
+            result.grounding_violations
+        );
+    }
+
+    Ok(result.response)
 }
 
 /// Returns the current emotion state from the database.

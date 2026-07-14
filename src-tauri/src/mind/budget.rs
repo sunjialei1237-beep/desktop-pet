@@ -15,20 +15,7 @@ use crate::emotion::state::EmotionState;
 use crate::llm::client::ChatMessage;
 use crate::mind::retrieval::RetrievalResult;
 
-/// Lightweight intent from the Planner (P7). Forward-defined here for P6.
-/// P7's planner.rs will produce this struct; when that module is built, it
-/// can use this same definition or we move it to a shared location.
-#[derive(Debug, Clone, Default)]
-pub struct Intent {
-    /// Goal category: "reduce_anxiety" | "accompany" | "encourage" | "amuse" | "listen"
-    pub goal: String,
-    /// Memory anchor: what memory to reference (e.g. "exam tomorrow")
-    pub memory_anchor: String,
-    /// Tone: "relaxed but caring" | "quiet" | "excited" | "gentle"
-    pub tone: String,
-    /// Whether the pet should proactively bring something up.
-    pub proactive: bool,
-}
+use crate::mind::planner::Intent;
 
 /// Maximum total input tokens (target budget).
 const MAX_TOKENS: usize = 4096;
@@ -90,7 +77,7 @@ pub fn allocate_and_compress(
     let system_prompt = crate::mind::grounding::build_system_prompt(retrieval, emotion, intent);
 
     // Compress memories if they exceed budget.
-    let system_prompt = compress_system_prompt(system_prompt, retrieval);
+    let system_prompt = compress_system_prompt(system_prompt, retrieval, emotion, intent);
 
     messages.push(ChatMessage {
         role: "system".to_string(),
@@ -106,7 +93,12 @@ pub fn allocate_and_compress(
 
 /// Compresses the system prompt by trimming memories if they exceed the
 /// combined budget for facts + episodes + persona + emotion + intent + scaffold.
-fn compress_system_prompt(prompt: String, retrieval: &RetrievalResult) -> String {
+fn compress_system_prompt(
+    prompt: String,
+    retrieval: &RetrievalResult,
+    emotion: &EmotionState,
+    intent: &Intent,
+) -> String {
     let budget = budget::FACTS + budget::EPISODES + budget::PERSONA
         + budget::EMOTION + budget::INTENT + budget::SYSTEM_SCAFFOLD;
 
@@ -172,11 +164,7 @@ fn compress_system_prompt(prompt: String, retrieval: &RetrievalResult) -> String
         persona_traits: retrieval.persona_traits.clone(),
     };
 
-    crate::mind::grounding::build_system_prompt(
-        &truncated_retrieval,
-        &EmotionState::default(), // already in prompt scaffold; emotion is constant
-        &Intent::default(),       // already in prompt scaffold
-    )
+    crate::mind::grounding::build_system_prompt(&truncated_retrieval, emotion, intent)
 }
 
 /// Truncates working memory from the front (oldest messages first)
@@ -397,6 +385,7 @@ mod tests {
             memory_anchor: "user has interview".to_string(),
             tone: "warm".to_string(),
             proactive: true,
+            action: "normal".to_string(),
         };
         let messages = allocate_and_compress(
             &empty_retrieval(),

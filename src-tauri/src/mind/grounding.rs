@@ -6,8 +6,11 @@
 use crate::db::persona as db_persona;
 use crate::db::relationship as db_relationship;
 use crate::emotion::state::EmotionState;
-use crate::mind::budget::Intent;
 use crate::mind::retrieval::RetrievalResult;
+use crate::mind::planner::Intent;
+
+/// Static personality template loaded at compile time.
+const SYSTEM_TEMPLATE: &str = include_str!("../../resources/prompts/system.txt");
 
 /// Builds the full system prompt that constrains the LLM to grounded memory.
 ///
@@ -23,6 +26,9 @@ pub fn build_system_prompt(
     intent: &Intent,
 ) -> String {
     let mut sections = Vec::new();
+
+    // 0. Base personality template (static rules).
+    sections.push(SYSTEM_TEMPLATE.to_string());
 
     // 1. Persona + relationship
     sections.push(format_persona(&retrieval.persona_traits, &retrieval.relationship));
@@ -372,6 +378,7 @@ mod tests {
             memory_anchor: "user has exam tomorrow".to_string(),
             tone: "gentle".to_string(),
             proactive: true,
+            action: "normal".to_string(),
         };
         let prompt = build_system_prompt(&empty_retrieval(), &EmotionState::default(), &intent);
         assert!(prompt.contains("goal: comfort"));

@@ -7,13 +7,16 @@ pub mod budget;
 pub mod grounding;
 pub mod retrieval;
 pub mod trigger;
+pub mod planner;
+pub mod converse;
 
 pub use correction::{handle_correction, CorrectionResult};
 pub use extractor::{extract, EmotionDelta, EpisodeInput, ExtractionResult, FactInput, PendingInput};
 pub use gate::{classify, GateRoute};
 pub use store::store as store_extraction;
 pub use working::WorkingMemory;
-pub use budget::{allocate_and_compress, estimate_tokens, Intent};
+pub use budget::{allocate_and_compress, estimate_tokens};
+pub use planner::{plan, Intent};
 pub use grounding::{build_system_prompt, check_groundedness};
 pub use retrieval::{retrieve, RetrievalResult, ScoreBreakdown, ScoredEpisode};
 pub use trigger::{should_retrieve, TriggerDecision};
