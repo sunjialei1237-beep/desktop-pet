@@ -81,6 +81,8 @@ pub fn run() {
             commands::check_proactive,
             commands::get_llm_status,
             commands::resolve_pending_event,
+            commands::get_llm_config,
+            commands::update_llm_config,
         ])
         .setup(|app| {
             log::info!("Tauri app initialized");

@@ -81,6 +81,20 @@ pub fn resolve_db_path(config: &AppConfig) -> PathBuf {
 /// Loads the configuration from config.toml.
 /// If the file does not exist, copies it from the bundled example template
 /// and returns the default values.
+/// Saves configuration to config.toml.
+pub fn save_config(config: &AppConfig) -> Result<(), String> {
+    let config_file = config_path();
+    let content = toml::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(&config_file, content)
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+    log::info!("Config saved to {:?}", config_file);
+    Ok(())
+}
+
+/// Loads the configuration from config.toml.
+/// If the file does not exist, copies it from the bundled example template
+/// and returns the default values.
 pub fn load_config() -> Result<AppConfig, String> {
     let config_dir = app_data_dir();
     let config_file = config_path();

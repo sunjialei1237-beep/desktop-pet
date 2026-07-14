@@ -195,7 +195,48 @@ pub async fn check_proactive(
     Ok(action)
 }
 
-/// Returns whether the LLM is configured.
+#[derive(Debug, Serialize)]
+pub struct LlmConfigResponse {
+    pub base_url: String,
+    pub api_key_set: bool,
+    pub main_model: String,
+    pub reflection_model: String,
+}
+
+#[tauri::command]
+pub async fn get_llm_config(state: State<'_, AppState>) -> Result<LlmConfigResponse, String> {
+    Ok(LlmConfigResponse {
+        base_url: state.config.llm.base_url.clone(),
+        api_key_set: !state.config.llm.api_key.is_empty(),
+        main_model: state.config.llm.main_model.clone(),
+        reflection_model: state.config.llm.reflection_model.clone(),
+    })
+}
+
+#[tauri::command]
+pub async fn update_llm_config(
+    state: State<'_, AppState>,
+    base_url: String,
+    api_key: String,
+    main_model: String,
+    reflection_model: String,
+) -> Result<(), String> {
+    let mut config = state.config.clone();
+    config.llm.base_url = base_url;
+    if !api_key.is_empty() {
+        config.llm.api_key = api_key;
+    }
+    config.llm.main_model = main_model.clone();
+    config.llm.reflection_model = if reflection_model.is_empty() {
+        main_model
+    } else {
+        reflection_model
+    };
+    crate::config::save_config(&config)?;
+    log::info!("LLM config saved (restart to take effect)");
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_llm_status(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.llm.is_some())
