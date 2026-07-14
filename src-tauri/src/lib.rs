@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod db;
 mod events;
 
 use commands::AppState;
@@ -7,11 +8,9 @@ use tauri::Emitter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize logging
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .try_init();
 
-    // Load configuration (auto-creates from template if missing)
     let config = match config::load_config() {
         Ok(c) => {
             log::info!("Configuration loaded from {:?}", config::config_path());
@@ -20,6 +19,19 @@ pub fn run() {
         Err(e) => {
             log::error!("Failed to load config: {}. Using defaults.", e);
             config::AppConfig::default()
+        }
+    };
+
+    let db_path = config::resolve_db_path(&config);
+    let db_state = match db::DbState::open(&db_path) {
+        Ok(db) => {
+            log::info!("Database opened at {:?}", db_path);
+            db
+        }
+        Err(e) => {
+            log::error!("Failed to open database: {}. Falling back to in-memory.", e);
+            db::DbState::open(std::path::Path::new(":memory:"))
+                .expect("Failed to open in-memory database")
         }
     };
 
@@ -33,6 +45,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState { config })
+        .manage(db_state)
         .invoke_handler(tauri::generate_handler![
             commands::send_message,
             commands::get_emotion_state,
@@ -42,7 +55,6 @@ pub fn run() {
         ])
         .setup(|app| {
             log::info!("Tauri app initialized");
-            // Greeting: delayed bubble on a background thread
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(2));

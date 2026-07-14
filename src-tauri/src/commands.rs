@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::config::AppConfig;
+use crate::db::DbState;
 
 /// Shared application state.
 pub struct AppState {
@@ -11,7 +12,7 @@ pub struct AppState {
 // -- Response types --
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct EmotionState {
+pub struct EmotionResponse {
     pub mood: f64,
     pub mood_label: String,
     pub physical_energy: f64,
@@ -20,15 +21,15 @@ pub struct EmotionState {
     pub loneliness: f64,
 }
 
-impl Default for EmotionState {
-    fn default() -> Self {
-        EmotionState {
-            mood: 0.5,
-            mood_label: "ping jing".to_string(),
-            physical_energy: 0.7,
-            social_battery: 0.8,
-            stress: 0.2,
-            loneliness: 0.0,
+impl From<crate::db::emotion::EmotionState> for EmotionResponse {
+    fn from(e: crate::db::emotion::EmotionState) -> Self {
+        EmotionResponse {
+            mood: e.mood,
+            mood_label: e.mood_label,
+            physical_energy: e.physical_energy,
+            social_battery: e.social_battery,
+            stress: e.stress,
+            loneliness: e.loneliness,
         }
     }
 }
@@ -44,31 +45,27 @@ pub struct DebugData {
 // -- Tauri commands --
 
 /// Handles a user message. For now returns a placeholder reply.
-/// Will be wired to the full conversation pipeline in later phases.
 #[tauri::command]
 pub async fn send_message(
     text: String,
     _state: State<'_, AppState>,
 ) -> Result<String, String> {
     log::info!("Received message: {}", text);
-    // P0 stub: simple echo-like reply.
-    // Real implementation arrives in P5 (ingestion) -> P7 (planner).
     Ok(format!("I heard you: {}", text))
 }
 
-/// Returns the current emotion state. Stub for now.
+/// Returns the current emotion state from the database.
 #[tauri::command]
-pub async fn get_emotion_state(
-    _state: State<'_, AppState>,
-) -> Result<EmotionState, String> {
-    Ok(EmotionState::default())
+pub async fn get_emotion_state(db: State<'_, DbState>) -> Result<EmotionResponse, String> {
+    db.with_conn(|conn| {
+        let emo = crate::db::emotion::get(conn)?;
+        Ok(EmotionResponse::from(emo))
+    })
 }
 
 /// Returns debug data for the debug panel.
 #[tauri::command]
-pub async fn get_debug_data(
-    state: State<'_, AppState>,
-) -> Result<DebugData, String> {
+pub async fn get_debug_data(state: State<'_, AppState>) -> Result<DebugData, String> {
     Ok(DebugData {
         llm_configured: !state.config.llm.api_key.is_empty(),
         embedding_configured: !state.config.embedding.model_dir.is_empty(),
@@ -79,14 +76,14 @@ pub async fn get_debug_data(
     })
 }
 
-/// Pet head interaction. Stub for now, will trigger animation + emotion change.
+/// Pet head interaction.
 #[tauri::command]
 pub async fn pet_head(_state: State<'_, AppState>) -> Result<(), String> {
     log::info!("Pet head triggered");
     Ok(())
 }
 
-/// Poke interaction. Stub for now.
+/// Poke interaction.
 #[tauri::command]
 pub async fn poke(_state: State<'_, AppState>) -> Result<(), String> {
     log::info!("Poke triggered");
