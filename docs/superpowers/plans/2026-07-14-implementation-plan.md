@@ -3,6 +3,97 @@
 > 基于: docs/superpowers/specs/2026-07-14-desktop-pet-design.md v2 (855 行, 16 节)
 > 目标: 把设计文档拆解为可执行的工程任务。每步有明确的文件路径、数据结构、接口签名、验证标准。
 > 原则: 严格按照 Mind/Body/Soul 框架, 不发明新模块, 不模糊处理细节。
+> 修订: v1.1 — 采纳 GPT 架构审计 (BrainState / Scheduler / Suspend / 版本控制 / Evaluation / Kill List)
+
+---
+
+## MVP Kill List (最高优先级)
+
+> 在以下三个体验闭环稳定之前, **禁止扩展任何新模块**。
+> 不是"暂缓", 是"禁止"。完成闭环 + 验证, 才解锁下一阶段。
+
+| # | 闭环 | 涉及阶段 | 解锁条件 |
+|---|------|----------|----------|
+| 1 | 用户说一件事 + 她记住 | P0-P5 | Golden Conversation 通过 |
+| 2 | 第二天她主动提起 | P7-P8 | 3 天模拟测试通过 |
+| 3 | 用户觉得"她真的记得我" | P6-P7 | 闭环 1+2 稳定 |
+
+解锁规则: 闭环 1+2 通过 P17 Golden Conversation 测试后, 才开始 Soul (P13) 和 Life Loop 集成 (P15)。Body 层 (P9-P12) 可与 Mind 并行开发, 不受此限。
+
+---
+
+## 架构原则 (v1.1 新增)
+
+### A1: BrainState 统一快照
+
+所有 Mind 层模块不再各自传参。统一通过 BrainState 快照读写。
++```rust
+pub struct BrainState {
+    pub emotion: EmotionState,
+    pub relationship: Relationship,
+    pub persona: PersonaSnapshot,
+    pub needs: NeedsState,
+    pub attention: AttentionState,
+    pub perception: PerceptionState,
+    pub working_memory: WorkingMemory,
+    pub retrieved: Option<RetrievalResult>,
+    pub pending_due: Vec<PendingEvent>,
+    pub circadian: CircadianState,
+}
+// Planner 签名: fn plan(brain: &BrainState, user_text: &str) -> Intent
+// 不再需要 10 个参数
++```
+
+### A2: 统一 Scheduler
+
+所有定时任务注册到统一调度器, 不各自起 tokio interval。
++```rust
+pub struct Scheduler {
+    ticks_1s: Vec<Box<dyn Tick>>,      // Body: 动画/物理/注意力
+    ticks_30s: Vec<Box<dyn Tick>>,     // Mind: 内稳态/Needs/Pending
+    ticks_daily: Vec<Box<dyn Tick>>,   // Soul: Reflection/Consolidation/Cleanup
+    ticks_conversation: Vec<Box<dyn Tick>>, // 对话事件: 轮次/检查点
+}
+pub trait Tick { async fn tick(&self, brain: &mut BrainState, db: &DbState) }
++```
+
+### A3: 对话管道用直接调用, Life Loop 用事件广播
+
+不采用全盘 Event Bus (顺序管道用事件会增加延迟、降低可调试性)。
+对话管道: Gate -> Extractor -> Store -> Trigger -> Retrieval -> Planner -> Budget -> LLM, 直接调用链。
+Life Loop 信号: 感知更新 / 情绪变化 / Pending 到期, 用观察者模式广播给多个消费者。
+
+### A4: Change Log (轻量 Event Sourcing)
+
+不做全套 Event Sourcing (事件存储 / replay), 保留 SQLite 作为 source of truth。
+同时写 append-only Change Log, 供 Debug Panel 回放 Timeline。
++```sql
+CREATE TABLE IF NOT EXISTS change_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT NOT NULL,
+    module      TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    target      TEXT,
+    field       TEXT,
+    old_value   TEXT,
+    new_value   TEXT,
+    reason      TEXT
+);
++```
+
+### A5: Suspend / Resume
+
+24/7 桌面应用必须处理: 电脑睡眠、休眠、强制关机。
+- 检测: 系统时间跳跃 > 5 分钟 = 从睡眠恢复
+- Resume 时: 重新计算 last_homeostasis_at 距今时间 (可能跨了几小时)
+- Reflection 被中断: 标记为 incomplete, 下次重跑 (幂等)
+- SQLite: WAL 模式 + 定期 checkpoint, 确保崩溃不丢数据
+
+### A6: 版本控制
+
+- 所有 Memory 表加 `schema_version INTEGER DEFAULT 1`
+- Prompt 文件头部带 `<!-- v1 -->` 版本标记
+- 迁移时按 version 分支处理
 
 ---
 
@@ -2236,3 +2327,139 @@ P13 Reflection → P14 感知 → P15 Life Loop → P16 Debug Panel
 - **里程碑 1** (第二周末): 对话系统能记住事实。用户说"我喜欢奶茶", 下次对话自然提及。
 - **里程碑 2** (第三周末): 桌宠出现在屏幕上, 能交互, 有动画。
 - **里程碑 3** (第四周末): MVP 成功标准 — "我准备找实习" → 一周后主动追问。
+
+---
+
+## P17: Golden Conversation 评估系统
+
+**目标**: 100 段固定对话做回归测试, 每次升级全部 replay, 检测人格漂移和记忆回归。这是 AI 产品最重要的质量保障环节。
+
+**前置依赖**: P5-P7 (核心对话管道)
+
+**产出文件**:
+- `src-tauri/tests/golden_conversations/` — 测试用例集
+- `src-tauri/tests/evaluation.rs` — 自动化评估框架
+- `src-tauri/tests/golden_conversations/README.md` — 编写规范
+
+### 为什么需要
+
+AI 产品最大的风险不是"做不出来", 而是**改一个 prompt 参数, 她就变了个性格, 你却没测出来**。
+
+传统单元测试只验证"函数输入输出正确", 但 AI 产品需要验证"整体体验是否退化"。
+
+### 步骤
+
+#### 17.1 Golden Conversation 格式
+
+```json
+{
+  "id": "gc_001",
+  "name": "记忆事实并自然提及",
+  "turns": [
+    {"role": "user", "content": "我最喜欢喝奶茶了"},
+    {"role": "user", "content": "今天天气不错"},
+    {"role": "user", "content": "你记得我喜欢喝什么吗?"}
+  ],
+  "expectations": [
+    {
+      "turn_index": 2,
+      "type": "contains",
+      "keywords": ["奶茶"],
+      "description": "第三个回合应该提到奶茶"
+    },
+    {
+      "turn_index": 2,
+      "type": "tone",
+      "expected": "happy_or_playful",
+      "description": "语气应该是开心或调皮, 不应该机械"
+    }
+  ]
+}
+```
+
+#### 17.2 测试维度
+
+| 维度 | 检查内容 | 示例 |
+|------|----------|------|
+| 记忆准确性 | 记住的事实能正确回忆 | "我喜欢奶茶" → 后续提到奶茶 |
+| 记忆不幻觉 | 没说过的不能编 | 用户没提过咖啡 → 不能说"你喜欢咖啡" |
+| 人格一致性 | 核心性格不漂移 | 温柔调皮 → 回复不该变得冷淡或过于正式 |
+| 语气匹配 | 情绪影响语气 | 用户难过 → 她的回复偏温柔安静 |
+| 长度控制 | 回复不超长 | 通常 2-3 句, 不超过 100 字 |
+| Pending 追踪 | 未来计划被追踪 | "明天面试" → 次日主动提及 |
+| 纠正响应 | 用户纠正后不重犯 | "不是咖啡是奶茶" → 后续不再说咖啡 |
+
+#### 17.3 评估流程
+
+```rust
+// 自动化: 用 mock LLM 或低成本模型跑全部 Golden Conversations
+// 1. 重置数据库到干净状态
+// 2. 逐条发送 turns, 记录回复
+// 3. 对照 expectations 验证
+// 4. 输出报告: 通过率 / 失败列表 / 人格漂移检测
+
+pub struct EvaluationReport {
+    pub total: usize,
+    pub passed: usize,
+    pub failed: Vec<TestFailure>,
+    pub personality_drift_score: f64,  // 0.0=无漂移, 1.0=完全漂移
+}
+
+// CI 集成: 每次 PR 自动跑 Golden Conversations
+// 人格漂移 > 0.3 → 阻止合并
+```
+
+#### 17.4 回归测试场景
+
+| 场景 ID | 场景 | 验证目标 |
+|---------|------|----------|
+| gc_001 | 记住偏好并提及 | 闭环 1 |
+| gc_002 | Pending Event 追踪 | 闭环 2 |
+| gc_003 | 情绪一致性 (难过→温柔) | 人格 |
+| gc_004 | 纠正记忆后不重犯 | 纠正循环 |
+| gc_005 | 时间有效性 (喜欢咖啡→戒咖啡) | Temporal Facts |
+| gc_006 | 不幻觉未提及事实 | Grounding |
+| gc_007 | 长度控制 | 格式 |
+| gc_008 | 连续对话上下文连贯 | Working Memory |
+| gc_009 | ... | ... |
+| gc_100 | ... | ... |
+
+### 验证标准
+
+1. 至少 30 段 Golden Conversations (MVP 阶段, 逐步增加到 100)
+2. 全部 replay 通过率 > 90%
+3. 人格漂移检测: 核心性格回复的余弦相似度 > 0.7 (同一问题不同时间问)
+4. CI 可自动运行
+5. 修改 prompt 后, 报告显示哪些场景受影响
+
+---
+
+## 产品愿景: Shared World (二期方向)
+
+> 桌面不只是背景, 是她的世界。她在里面生活、探索、建立领地。
+> 这是从"住在聊天框"到"住在电脑里"的质变。
+
+### 概念
+
+桌面上的每个元素, 对她来说都是一个"地点":
+
+| 桌面元素 | 她的认知 | 互动 |
+|---------|----------|------|
+| 她的小窝 (角落) | 家, 安全感 | 回巢、休息 |
+| 任务栏 | 地面, 行走路径 | 栖息、行走 |
+| Recycle Bin | "好可怕" | 绕开、偷看 |
+| Chrome | "他又在看网页" | 爬到标题栏偷看 |
+| VSCode | "他在工作!" | 安静陪伴、端茶 |
+| 桌面图标 | 家具 | 在图标间穿梭、坐在图标上 |
+
+### 实现路径 (渐进)
+
+- **MVP**: 空间记忆 (P12) — 有窝, 自动回巢, 已实现
+- **二期**: 窗口感知 (P14) 扩展为世界认知 — 她知道当前前台应用是什么, 有态度反应
+- **三期**: 完整 Shared World — 桌面元素映射为地点, 她在其中自由活动, 形成空间记忆 Episode
+
+### 设计意义
+
+Shared World 把桌宠的"世界"从聊天框扩展到整个桌面。当她害怕回收站、喜欢陪你在 VSCode 工作、在图标间穿梭时, 用户会真正觉得"她住在我的电脑里"。
+
+这不是新模块, 而是空间记忆 (P12) + 窗口感知 (P14) 的自然延伸。
