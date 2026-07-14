@@ -130,7 +130,7 @@ pub async fn get_emotion_state(db: State<'_, DbState>) -> Result<EmotionResponse
 #[tauri::command]
 pub async fn get_debug_data(state: State<'_, AppState>) -> Result<DebugData, String> {
     Ok(DebugData {
-        llm_configured: !state.config.llm.api_key.is_empty(),
+        llm_configured: state.llm.is_some(),
         embedding_configured: !state.config.embedding.model_dir.is_empty(),
         db_path: crate::config::resolve_db_path(&state.config)
             .to_string_lossy()
@@ -151,4 +151,61 @@ pub async fn pet_head(_state: State<'_, AppState>) -> Result<(), String> {
 pub async fn poke(_state: State<'_, AppState>) -> Result<(), String> {
     log::info!("Poke triggered");
     Ok(())
+}
+
+/// Checks for due pending events and returns a proactive action if appropriate.
+#[tauri::command]
+pub async fn check_proactive(
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<Option<crate::pending::ProactiveAction>, String> {
+    let events = crate::pending::check_due(&db)?;
+
+    let db_emotion = db.with_conn(|conn| crate::db::emotion::get(conn))?;
+    let emotion = crate::emotion::state::EmotionState {
+        mood: db_emotion.mood,
+        physical_energy: db_emotion.physical_energy,
+        social_battery: db_emotion.social_battery,
+        stress: db_emotion.stress,
+        loneliness: db_emotion.loneliness,
+        rest_need: db_emotion.rest_need,
+    };
+
+    let closeness = db
+        .with_conn(|conn| crate::db::relationship::get(conn))
+        .ok()
+        .map(|r| r.closeness)
+        .unwrap_or(0.0);
+
+    let perception = crate::pending::PerceptionState {
+        is_deep_focus: false,
+        closeness,
+    };
+
+    let last_bubble = chrono::Utc::now() - chrono::Duration::minutes(31);
+    let action = crate::pending::trigger_proactive(&events, &emotion, &perception, &last_bubble);
+
+    if let Some(a) = &action {
+        if let Some(eid) = &a.event_id {
+            let _ = crate::pending::mark_triggered(&db, eid);
+            let _ = crate::pending::increment_followup(&db, eid);
+        }
+    }
+
+    Ok(action)
+}
+
+/// Returns whether the LLM is configured.
+#[tauri::command]
+pub async fn get_llm_status(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.llm.is_some())
+}
+
+/// Resolves a pending event (user confirmed it).
+#[tauri::command]
+pub async fn resolve_pending_event(
+    db: State<'_, DbState>,
+    event_id: String,
+) -> Result<(), String> {
+    crate::pending::resolve(&db, &event_id)
 }
