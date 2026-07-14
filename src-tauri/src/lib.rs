@@ -5,6 +5,7 @@ mod events;
 mod llm;
 mod emotion;
 mod embedding;
+mod mind;
 
 use commands::AppState;
 use tauri::Emitter;
