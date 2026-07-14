@@ -36,7 +36,14 @@ pub async fn converse(
     let now = chrono::Utc::now().to_rfc3339();
 
     // Step 1: Ingest (Gate -> Extract -> Store).
-    let outcome = crate::mind::ingest(text, conversation_id, turn, "", llm, db, embedding).await?;
+    // Build known_facts summary so the extractor can avoid duplicates.
+    let known_facts = db.with_conn(|conn| {
+        let facts = crate::db::facts::get_by_category(conn, "preference")?;
+        let summary: Vec<String> = facts.iter().take(20).map(|f| format!("{}: {}", f.key, f.value)).collect();
+        Ok(summary.join("; "))
+    })?;
+
+    let outcome = crate::mind::ingest(text, conversation_id, turn, &known_facts, llm, db, embedding).await?;
 
     // Step 2: Load emotion state from DB and convert to business type.
     let db_emotion = db.with_conn(|conn| crate::db::emotion::get(conn))?;
@@ -53,8 +60,7 @@ pub async fn converse(
     let pending_due = db.with_conn(|conn| crate::db::pending::get_due(conn, &now))?;
 
     // Step 4: Memory trigger.
-    let wm = crate::mind::working::WorkingMemory::new();
-    let trigger_decision = crate::mind::trigger::should_retrieve(text, &emotion, &wm);
+    let trigger_decision = crate::mind::trigger::should_retrieve(text, &emotion, wm_context);
 
     // Step 5: Retrieve memories.
     let retrieval = if trigger_decision.should_retrieve {

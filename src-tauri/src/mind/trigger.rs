@@ -1,6 +1,5 @@
 use crate::emotion::state::EmotionState;
 use crate::llm::client::ChatMessage;
-use crate::mind::working::WorkingMemory;
 
 /// Whether retrieval should be attempted for this message.
 #[derive(Debug)]
@@ -14,7 +13,7 @@ pub struct TriggerDecision {
 pub fn should_retrieve(
     text: &str,
     _emotion: &EmotionState,
-    working_memory: &WorkingMemory,
+    working_memory: &[ChatMessage],
 ) -> TriggerDecision {
     let lower = text.to_lowercase();
 
@@ -44,8 +43,7 @@ pub fn should_retrieve(
 
     // Rule 3: Check if recent working memory already has similar context
     // (avoid redundant retrieval of the same memories)
-    let ctx = working_memory.get_context();
-    let recent_user_msgs: Vec<&ChatMessage> = ctx
+    let recent_user_msgs: Vec<&ChatMessage> = working_memory
         .iter()
         .filter(|m| m.role == "user")
         .rev()
@@ -75,6 +73,7 @@ pub fn should_retrieve(
 mod tests {
     use super::*;
     use crate::emotion::state::EmotionState;
+    use crate::mind::working::WorkingMemory;
 
     fn emotion() -> EmotionState {
         EmotionState::default()
@@ -83,21 +82,21 @@ mod tests {
     #[test]
     fn test_explicit_memory_reference() {
         let wm = WorkingMemory::new();
-        let decision = should_retrieve("do you remember what I said last time?", &emotion(), &wm);
+        let decision = should_retrieve("do you remember what I said last time?", &emotion(), &wm.get_context());
         assert!(decision.should_retrieve);
     }
 
     #[test]
     fn test_short_greeting() {
         let wm = WorkingMemory::new();
-        let decision = should_retrieve("haha", &emotion(), &wm);
+        let decision = should_retrieve("haha", &emotion(), &wm.get_context());
         assert!(!decision.should_retrieve);
     }
 
     #[test]
     fn test_substantive_message() {
         let wm = WorkingMemory::new();
-        let decision = should_retrieve("I went to eat hotpot with my friends today", &emotion(), &wm);
+        let decision = should_retrieve("I went to eat hotpot with my friends today", &emotion(), &wm.get_context());
         assert!(decision.should_retrieve);
     }
 
@@ -108,7 +107,7 @@ mod tests {
             wm.push(ChatMessage { role: "user".to_string(), content: "ok".to_string() });
             wm.push(ChatMessage { role: "assistant".to_string(), content: "hmm".to_string() });
         }
-        let decision = should_retrieve("what about tomorrow", &emotion(), &wm);
+        let decision = should_retrieve("what about tomorrow", &emotion(), &wm.get_context());
         assert!(!decision.should_retrieve);
         assert!(decision.reason.contains("consecutive"));
     }
@@ -116,7 +115,7 @@ mod tests {
     #[test]
     fn test_very_short() {
         let wm = WorkingMemory::new();
-        let decision = should_retrieve("...", &emotion(), &wm);
+        let decision = should_retrieve("...", &emotion(), &wm.get_context());
         assert!(!decision.should_retrieve);
     }
 }
