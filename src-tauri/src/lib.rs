@@ -6,6 +6,7 @@ mod llm;
 mod emotion;
 mod embedding;
 mod mind;
+mod pending;
 
 use commands::AppState;
 use std::sync::Mutex;
