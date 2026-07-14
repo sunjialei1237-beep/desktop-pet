@@ -1,0 +1,210 @@
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// Top-level application configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub llm: LlmConfig,
+    pub embedding: EmbeddingConfig,
+    pub app: AppConfigData,
+}
+
+/// LLM API configuration (OpenAI-compatible).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmConfig {
+    pub base_url: String,
+    pub api_key: String,
+    pub main_model: String,
+    pub reflection_model: String,
+}
+
+/// Local embedding model configuration (BGE-M3 via ONNX Runtime).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    pub model_dir: String,
+    pub model_name: String,
+}
+
+/// General application settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfigData {
+    pub db_path: String,
+    pub debug: bool,
+    pub log_level: String,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        AppConfig {
+            llm: LlmConfig {
+                base_url: "https://api.deepseek.com/v1".to_string(),
+                api_key: String::new(),
+                main_model: "deepseek-chat".to_string(),
+                reflection_model: "deepseek-chat".to_string(),
+            },
+            embedding: EmbeddingConfig {
+                model_dir: String::new(),
+                model_name: "bge-m3".to_string(),
+            },
+            app: AppConfigData {
+                db_path: String::new(),
+                debug: true,
+                log_level: "info".to_string(),
+            },
+        }
+    }
+}
+
+/// Returns the app data directory for this application.
+/// On Windows: %APPDATA%/DesktopPet
+pub fn app_data_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("DesktopPet")
+}
+
+/// Returns the path to the user's config.toml.
+pub fn config_path() -> PathBuf {
+    app_data_dir().join("config.toml")
+}
+
+/// Resolves the database path. Empty string in config means default location.
+pub fn resolve_db_path(config: &AppConfig) -> PathBuf {
+    if config.app.db_path.is_empty() {
+        app_data_dir().join("desktop_pet.db")
+    } else {
+        PathBuf::from(&config.app.db_path)
+    }
+}
+
+/// Loads the configuration from config.toml.
+/// If the file does not exist, copies it from the bundled example template
+/// and returns the default values.
+pub fn load_config() -> Result<AppConfig, String> {
+    let config_dir = app_data_dir();
+    let config_file = config_path();
+
+    if !config_file.exists() {
+        log::info!("Config not found, creating from template: {:?}", config_file);
+        fs::create_dir_all(&config_dir)
+            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+        write_default_config(&config_file)?;
+    }
+
+    let content = fs::read_to_string(&config_file)
+        .map_err(|e| format!("Failed to read config: {}", e))?;
+
+    let mut config: AppConfig = toml::from_str(&content)
+        .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+    // Merge with defaults for any missing fields
+    apply_defaults(&mut config);
+
+    Ok(config)
+}
+
+fn apply_defaults(config: &mut AppConfig) {
+    let defaults = AppConfig::default();
+    if config.llm.base_url.is_empty() {
+        config.llm.base_url = defaults.llm.base_url;
+    }
+    if config.llm.main_model.is_empty() {
+        config.llm.main_model = defaults.llm.main_model;
+    }
+    if config.llm.reflection_model.is_empty() {
+        config.llm.reflection_model = defaults.llm.reflection_model;
+    }
+    if config.embedding.model_name.is_empty() {
+        config.embedding.model_name = defaults.embedding.model_name;
+    }
+    if config.app.log_level.is_empty() {
+        config.app.log_level = defaults.app.log_level;
+    }
+}
+
+fn write_default_config(path: &Path) -> Result<(), String> {
+    let template = include_str!("../resources/config.example.toml");
+    fs::write(path, template)
+        .map_err(|e| format!("Failed to write default config: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = AppConfig::default();
+        assert_eq!(config.llm.main_model, "deepseek-chat");
+        assert_eq!(config.embedding.model_name, "bge-m3");
+        assert!(config.app.debug);
+    }
+
+    #[test]
+    fn test_parse_config() {
+        let toml_str = r#"
+[llm]
+base_url = "https://api.openai.com/v1"
+api_key = "sk-test"
+main_model = "gpt-4o-mini"
+reflection_model = "gpt-4o-mini"
+
+[embedding]
+model_dir = "D:\\models"
+model_name = "bge-m3"
+
+[app]
+db_path = ""
+debug = false
+log_level = "debug"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.llm.base_url, "https://api.openai.com/v1");
+        assert_eq!(config.llm.api_key, "sk-test");
+        assert_eq!(config.llm.main_model, "gpt-4o-mini");
+        assert!(!config.app.debug);
+        assert_eq!(config.embedding.model_dir, "D:\\models");
+    }
+
+    #[test]
+    fn test_apply_defaults() {
+        let toml_str = r#"
+[llm]
+base_url = ""
+api_key = ""
+main_model = ""
+reflection_model = ""
+
+[embedding]
+model_dir = ""
+model_name = ""
+
+[app]
+db_path = ""
+debug = true
+log_level = ""
+"#;
+        let mut config: AppConfig = toml::from_str(toml_str).unwrap();
+        apply_defaults(&mut config);
+        assert_eq!(config.llm.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(config.llm.main_model, "deepseek-chat");
+        assert_eq!(config.embedding.model_name, "bge-m3");
+        assert_eq!(config.app.log_level, "info");
+    }
+
+    #[test]
+    fn test_resolve_db_path_default() {
+        let config = AppConfig::default();
+        let path = resolve_db_path(&config);
+        assert!(path.to_string_lossy().contains("desktop_pet.db"));
+    }
+
+    #[test]
+    fn test_resolve_db_path_custom() {
+        let mut config = AppConfig::default();
+        config.app.db_path = "D:\\custom\\pet.db".to_string();
+        let path = resolve_db_path(&config);
+        assert_eq!(path, PathBuf::from("D:\\custom\\pet.db"));
+    }
+}

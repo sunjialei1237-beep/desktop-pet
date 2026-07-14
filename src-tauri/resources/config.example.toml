@@ -1,0 +1,26 @@
+# DesktopPet Configuration
+# Fill in your own LLM API key below.
+# All models are user-supplied; no keys are bundled.
+
+[llm]
+# OpenAI-compatible base URL.
+# DeepSeek: https://api.deepseek.com/v1
+# OpenAI:   https://api.openai.com/v1
+# Ollama:   http://localhost:11434/v1
+base_url = "https://api.deepseek.com/v1"
+api_key = ""
+main_model = "deepseek-chat"
+reflection_model = "deepseek-chat"
+
+[embedding]
+# Directory for BGE-M3 ONNX weights (~2.2GB).
+# Leave empty to be prompted on first run.
+# Recommended: a non-system drive, e.g. "D:\models\bge-m3"
+model_dir = ""
+model_name = "bge-m3"
+
+[app]
+# SQLite database path. Empty = default location in app data dir.
+db_path = ""
+debug = true
+log_level = "info"
