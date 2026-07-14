@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod events;
 mod llm;
+mod emotion;
 
 use commands::AppState;
 use tauri::Emitter;

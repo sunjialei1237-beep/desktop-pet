@@ -1,0 +1,10 @@
+{
+  "mood_ranges": {
+    "0.0-0.3": { "label": "nan guo", "eye_open": 0.4, "mouth_form": -0.5, "motion_speed": 0.6 },
+    "0.3-0.45": { "label": "ping jing", "eye_open": 0.6, "mouth_form": 0.0, "motion_speed": 1.0 },
+    "0.45-0.7": { "label": "tiao pi", "eye_open": 0.8, "mouth_form": 0.3, "motion_speed": 1.1 },
+    "0.7-1.0": { "label": "kai xin", "eye_open": 0.9, "mouth_form": 0.8, "motion_speed": 1.2 }
+  },
+  "stress_influence": { "brow_furrow": 1.0 },
+  "energy_influence": { "motion_speed_multiplier": 1.0 }
+}
