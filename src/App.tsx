@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { PetCharacter } from "./PetCharacter";
 import { SettingsPanel } from "./SettingsPanel";
+import { DebugPanel } from "./DebugPanel";
 
 interface EmotionData {
   mood: number;
@@ -27,6 +28,7 @@ export default function App() {
   const [isThinking, setIsThinking] = useState(false);
   const [moodLabel, setMoodLabel] = useState("ping jing");
   const [showSettings, setShowSettings] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
   const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showBubble = useCallback((text: string, duration = 8000) => {
@@ -97,6 +99,14 @@ export default function App() {
       if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current);
     };
   }, [showBubble]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "F12") { e.preventDefault(); setShowDebug((v) => !v); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const handleSend = useCallback(async () => {
     const text = inputText.trim();
@@ -185,6 +195,7 @@ export default function App() {
       </button>
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {showDebug && <DebugPanel />}
     </div>
   );
 }

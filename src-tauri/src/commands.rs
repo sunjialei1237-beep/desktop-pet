@@ -250,3 +250,126 @@ pub async fn resolve_pending_event(
 ) -> Result<(), String> {
     crate::pending::resolve(&db, &event_id)
 }
+
+/// Full debug snapshot for the debug panel.
+#[derive(Debug, Serialize)]
+pub struct DebugSnapshot {
+    pub emotion: EmotionResponse,
+    pub closeness: f64,
+    pub trust: f64,
+    pub days_known: i64,
+    pub total_conversations: i64,
+    pub episode_count: i64,
+    pub fact_count: i64,
+    pub pending_count: i64,
+    pub recent_episodes: Vec<DebugEpisode>,
+    pub recent_facts: Vec<DebugFact>,
+    pub pending_events: Vec<DebugPending>,
+    pub llm_configured: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DebugEpisode {
+    pub id: String,
+    pub summary: String,
+    pub strength: f64,
+    pub recall_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DebugFact {
+    pub category: String,
+    pub key: String,
+    pub value: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DebugPending {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub remind_date: Option<String>,
+}
+
+/// Returns a full debug snapshot for the debug panel.
+#[tauri::command]
+pub async fn get_debug_snapshot(
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<DebugSnapshot, String> {
+    db.with_conn(|conn| {
+        let emo = crate::db::emotion::get(conn)?;
+        let rel = crate::db::relationship::get(conn).ok();
+
+        let episode_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM episodes", [], |row| row.get(0))
+            .unwrap_or(0);
+        let fact_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM facts WHERE valid_to IS NULL", [], |row| row.get(0))
+            .unwrap_or(0);
+        let pending_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pending_events WHERE status = 'pending'", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        // Recent episodes (top 10 by strength).
+        let mut stmt = conn
+            .prepare("SELECT id, summary, memory_strength, recall_count FROM episodes ORDER BY memory_strength DESC LIMIT 10")
+            .map_err(|e| format!("Prepare error: {}", e))?;
+        let recent_episodes: Vec<DebugEpisode> = stmt
+            .query_map([], |row| Ok(DebugEpisode {
+                id: row.get(0)?,
+                summary: row.get(1)?,
+                strength: row.get(2)?,
+                recall_count: row.get(3)?,
+            }))
+            .map_err(|e| format!("Query error: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Active facts.
+        let mut stmt = conn
+            .prepare("SELECT category, key, value, confidence FROM facts WHERE valid_to IS NULL ORDER BY confidence DESC LIMIT 20")
+            .map_err(|e| format!("Prepare error: {}", e))?;
+        let recent_facts: Vec<DebugFact> = stmt
+            .query_map([], |row| Ok(DebugFact {
+                category: row.get(0)?,
+                key: row.get(1)?,
+                value: row.get(2)?,
+                confidence: row.get(3)?,
+            }))
+            .map_err(|e| format!("Query error: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Pending events.
+        let mut stmt = conn
+            .prepare("SELECT id, title, status, remind_date FROM pending_events ORDER BY created_at DESC LIMIT 10")
+            .map_err(|e| format!("Prepare error: {}", e))?;
+        let pending_events: Vec<DebugPending> = stmt
+            .query_map([], |row| Ok(DebugPending {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                status: row.get(2)?,
+                remind_date: row.get(3)?,
+            }))
+            .map_err(|e| format!("Query error: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(DebugSnapshot {
+            emotion: EmotionResponse::from(emo),
+            closeness: rel.as_ref().map(|r| r.closeness).unwrap_or(0.0),
+            trust: rel.as_ref().map(|r| r.trust).unwrap_or(0.0),
+            days_known: rel.as_ref().map(|r| r.days_known).unwrap_or(0),
+            total_conversations: rel.as_ref().map(|r| r.total_conversations).unwrap_or(0),
+            episode_count,
+            fact_count,
+            pending_count,
+            recent_episodes,
+            recent_facts,
+            pending_events,
+            llm_configured: state.llm.is_some(),
+        })
+    })
+}

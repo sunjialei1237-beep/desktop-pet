@@ -109,6 +109,7 @@ pub fn run() {
             commands::resolve_pending_event,
             commands::get_llm_config,
             commands::update_llm_config,
+            commands::get_debug_snapshot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
