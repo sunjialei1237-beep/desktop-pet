@@ -85,7 +85,32 @@
 
 ### 3.3 LLM
 
-云端 LLM API。Reflection 用小模型 (GPT-4o-mini), 降低成本。
+本项目定位开源, 所有模型由用户自配, 不内置任何 API key。
+
+**LLM（对话主模型 + Reflection）**
+
+采用 OpenAI 兼容协议, 用户在配置文件填入自己的 base_url / api_key / model_name。一份配置同时服务两层:
+
+- 主对话模型: 推荐 DeepSeek-V3（中文强、最便宜）或 GPT-4o-mini（API 稳定）; 也支持本地 Ollama（/v1 兼容）。
+- Reflection 小模型: 复用同一协议, 指向更便宜/更快的模型（如 GPT-4o-mini / DeepSeek）。
+
+OpenAI 兼容的好处: DeepSeek、OpenAI、Moonshot、本地 Ollama、vLLM 全部走同一套 `/v1/chat/completions`, 换供应商只改一行配置, 不动代码。
+
+**Embedding（本地 BGE-M3）**
+
+- 模型: BAAI/bge-m3（多语言、中文表现优秀, 1024 维 dense 向量）。
+- 运行方式: ONNX Runtime（Rust `ort` crate, 经 FastEmbed-rs 加载 ONNX 权重）, 嵌入 Tauri 进程, 无 Python 依赖, 无独立服务器。
+- 向量存储: sqlite-vec, 余弦相似度检索。
+- MVP 只用 dense 检索; BGE-M3 的 sparse / multi-vector（ColBERT）能力接口预留, 后续按需开启。
+
+**避开 C 盘（模型权重存储）**
+
+BGE-M3 权重约 2.2GB, 默认不下载到 `%USERPROFILE%\.cache`（C 盘）。首次启动引导用户选择存储目录, 默认指向应用所在盘的非系统分区（如 `D:\DesktopPet\models`）。ONNX Runtime 的 cache 目录在配置中指定, 之后所有权重/缓存统一走该目录。
+
+**成本结构（用户视角）**
+
+- 一次性: BGE-M3 权重下载（~2.2GB, 零后续费用）。
+- 持续: LLM API 调用, 由用户所选供应商计费。日常使用（对话 + 每日 Reflection）月成本通常在 ¥5-15 量级, 远低于订阅制陪伴产品。
 
 ### 3.4 无面板设计原则
 
@@ -808,13 +833,13 @@ Emotion 是 Mind 和 Body 之间的桥梁: Mind 写入状态, Body 读取状态�
 - [x] 无面板设计原则 (第3.4节)
 - [x] Mind/Body/Soul 架构 (第4节)
 - [x] 表达层: 微行为 + 有生命的气泡 (第6节)
+- [x] Embedding 选型 (第3.3节): 本地 BGE-M3, ONNX Runtime 嵌入进程, 权重避开 C 盘
+- [x] LLM 选型与成本 (第3.3节): 开源自配, OpenAI 兼容协议, 推荐 DeepSeek-V3 / GPT-4o-mini
 
 待补充:
 
 1. **Live2D 模型制作流程**: AI 生图 -> 图层拆分 -> 绑定 -> 导出
 2. **多模态记忆输入**: 系统感知如何产生 Episode
-3. **中文 Embedding 选型**: text-embedding-3-large vs BGE-M3 vs GTE
-4. **LLM API 选型与成本估算**: 主对话模型 vs Reflection 小模型
 
 ---
 
@@ -826,4 +851,4 @@ Emotion 是 Mind 和 Body 之间的桥梁: Mind 写入状态, Body 读取状态�
 
 **Codex 贡献**: Temporal Facts (时间有效性)、Pending Events Engine (合并 Goal+Expectation)、Relationship Pace (对数曲线+可下降)、多模态记忆输入概念、Memory Gate 路由器细化、Mind-Body 解耦运行、动画中断优先级、输入UX 盲区发现、Memory Serendipity (替换自己的 Surprise Budget)、行为学习放二期的判断
 
-**用户**: 产品定位 (陪伴)、角色方向 (拟人化小动物)、性格定义 (温柔调皮)、技术栈方向 (Windows+云端)、无面板理念的坚持
+**用户**: 产品定位 (陪伴)、角色方向 (拟人化小动物)、性格定义 (温柔调皮)、技术栈方向 (Windows + 云端 LLM 自配 + 本地 Embedding)、开源自配理念、无面板理念的坚持
