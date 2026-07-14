@@ -82,7 +82,7 @@ pub async fn ingest(
                     id: pe_id,
                     title: pe.title.clone(),
                     event_date: pe.event_date.clone(),
-                    remind_date: None,
+                    remind_date: crate::mind::store::compute_remind_date(&pe.event_date, &now),
                     source_episode: None,
                     status: "pending".to_string(),
                     importance: 0.5,

@@ -87,11 +87,12 @@ pub fn store(
     // 4. Pending event
     if let Some(pe) = &result.pending_event {
         let pe_id = format!("pe_{}", Uuid::new_v4().simple());
+        let remind_date = compute_remind_date(&pe.event_date, &now);
         let event = db_pending::PendingEvent {
             id: pe_id,
             title: pe.title.clone(),
             event_date: pe.event_date.clone(),
-            remind_date: None,
+            remind_date,
             source_episode: stored_episode_id.clone(),
             status: "pending".to_string(),
             importance: 0.5,
@@ -129,6 +130,21 @@ fn store_fact(
     };
 
     db_facts::dedup_insert(conn, &new_fact)
+}
+
+/// Computes the remind_date for a pending event from event_date.
+/// If event_date is parseable as ISO date, sets remind to 08:00 that day.
+/// Otherwise falls back to 1 day from now.
+pub fn compute_remind_date(event_date: &str, now: &str) -> Option<String> {
+    let date_part = &event_date[..event_date.len().min(10)];
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+        return Some(format!("{}T08:00:00+00:00", d.format("%Y-%m-%d")));
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(now) {
+        let remind = dt.with_timezone(&Utc) + chrono::Duration::days(1);
+        return Some(remind.to_rfc3339());
+    }
+    None
 }
 
 /// Applies emotion delta to the singleton emotion_state row.
@@ -259,17 +275,61 @@ mod tests {
         // Verify the pending event was stored. get_due filters on remind_date
         // (which is NULL for this test), so we query directly.
         db.with_conn(|conn| {
-            let count: i64 = conn
+        let count: Option<String> = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM pending_events WHERE title = 'job interview'",
+                    "SELECT remind_date FROM pending_events WHERE title = 'job interview'",
                     [],
-                    |row| row.get(0),
+                    |row| row.get::<_, Option<String>>(0),
                 )
                 .map_err(|e| format!("Query error: {}", e))?;
-            assert_eq!(count, 1);
+            assert_eq!(count.as_deref(), Some("2026-07-20T08:00:00+00:00"));
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn test_compute_remind_date_iso() {
+        let r = compute_remind_date("2026-07-20", "2026-07-14T10:00:00+00:00");
+        assert_eq!(r.as_deref(), Some("2026-07-20T08:00:00+00:00"));
+    }
+
+    #[test]
+    fn test_compute_remind_date_iso_datetime() {
+        let r = compute_remind_date("2026-07-20T14:00:00", "2026-07-14T10:00:00+00:00");
+        assert_eq!(r.as_deref(), Some("2026-07-20T08:00:00+00:00"));
+    }
+
+    #[test]
+    fn test_compute_remind_date_fallback() {
+        let r = compute_remind_date("tomorrow", "2026-07-14T10:00:00+00:00");
+        assert!(r.is_some());
+        // Should be 1 day later
+        let parsed = chrono::DateTime::parse_from_rfc3339(r.as_deref().unwrap()).unwrap();
+        assert_eq!(parsed.format("%Y-%m-%d").to_string(), "2026-07-15");
+    }
+
+    #[test]
+    fn test_store_pending_event_due_check() {
+        let db = test_db();
+        let result = ExtractionResult {
+            episode: None,
+            facts: vec![],
+            emotion_delta: None,
+            pending_event: Some(PendingInput {
+                title: "exam".to_string(),
+                event_date: "2020-01-01".to_string(), // past date, always due
+            }),
+        };
+
+        store(&result, "conv_1", 0, &db, None).unwrap();
+
+        // Verify it's due (remind_date is in the past)
+        let due = db.with_conn(|conn| {
+            crate::db::pending::get_due(conn, "2099-01-01T00:00:00+00:00")
+        }).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].title, "exam");
     }
 
     #[test]
