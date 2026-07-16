@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Live2DCanvas } from "./Live2DCanvas";
 import { SettingsPanel } from "./SettingsPanel";
 import { DebugPanel } from "./DebugPanel";
@@ -284,11 +285,11 @@ export default function App() {
   // P12: Drag handling
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return; // left click only
-    if (!petPos) return;
     e.preventDefault();
-    physicsRef.current?.startDrag();
-    setIsBeingDragged(true);
-  }, [petPos]);
+    // Drag the Tauri window (not the wrapper within the window).
+    // The canvas fills the window, so we move the whole window instead.
+    getCurrentWindow().startDragging();
+  }, []);
 
   useEffect(() => {
     if (!isBeingDragged) return;
@@ -431,7 +432,6 @@ export default function App() {
         className={`pet-char-wrapper ${isWalking ? "walking" : ""} ${isBeingDragged ? "dragging" : ""}`}
         onDoubleClick={() => setInputVisible(true)}
         onMouseDown={handleDragStart}
-        style={petPos ? { left: petPos.x, top: petPos.y } : undefined}
     >
      <Live2DCanvas
        moodLabel={moodLabel}

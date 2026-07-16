@@ -485,6 +485,10 @@ html, body, #root {
 /* === P12: Physics + Spatial + Circadian === */
 .pet-char-wrapper {
   position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   transition: none;
   user-select: none;
   -webkit-user-select: none;
