@@ -886,6 +886,7 @@ dependencies = [
  "tokenizers",
  "toml 0.8.2",
  "uuid",
+ "windows",
  "zip",
 ]
 

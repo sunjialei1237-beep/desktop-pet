@@ -173,6 +173,37 @@ pub async fn get_pending_thoughts(
     Ok(thoughts.into_iter().map(|t| t.content).collect())
 }
 
+/// Returns the current perception snapshot (time, presence, window category).
+#[tauri::command]
+pub async fn get_perception(db: State<'_, DbState>) -> Result<crate::perception::PerceptionSnapshot, String> {
+    let last_interaction = db.with_conn(|conn| {
+        let rel = crate::db::relationship::get(conn)?;
+        Ok(rel.last_interaction_at)
+    })?;
+
+    let since_last = match last_interaction {
+        Some(ts) => crate::perception::time::seconds_since(&ts),
+        None => 0,
+    };
+
+    let presence = crate::perception::presence::current_presence();
+    let proc = crate::perception::window::foreground_process();
+    let category = match &proc {
+        Some(p) => crate::perception::window::classify_process(p),
+        None => crate::perception::AppCategory::Other,
+    };
+
+    Ok(crate::perception::PerceptionSnapshot {
+        time_of_day: crate::perception::time::current_time_of_day(),
+        since_last_interaction_secs: since_last,
+        presence,
+        active_app: proc,
+        app_category: category,
+        continuous_work_secs: 0,
+        is_deep_focus: false,
+    })
+}
+
 /// Returns the current emotion state from the database.
 #[tauri::command]
 pub async fn get_emotion_state(db: State<'_, DbState>) -> Result<EmotionResponse, String> {
