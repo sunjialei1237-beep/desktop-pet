@@ -187,3 +187,36 @@ mod tests {
         .unwrap();
     }
 }
+/// Gets all active (non-expired) facts.
+pub fn get_all_active(conn: &Connection, limit: i64) -> Result<Vec<Fact>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, category, key, value, confidence, valid_from, valid_to,
+                    source_episode, mention_count, created_at, updated_at
+             FROM facts WHERE valid_to IS NULL
+             ORDER BY mention_count DESC, confidence DESC
+             LIMIT ?1",
+        )
+        .map_err(|e| format!("Failed to prepare fact query: {}", e))?;
+
+    let rows = stmt
+        .query_map(params![limit], |row| {
+            Ok(Fact {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                key: row.get(2)?,
+                value: row.get(3)?,
+                confidence: row.get(4)?,
+                valid_from: row.get(5)?,
+                valid_to: row.get(6)?,
+                source_episode: row.get(7)?,
+                mention_count: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query facts: {}", e))?;
+
+    rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
+}
+

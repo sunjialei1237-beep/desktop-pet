@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// Starts the life loop on background threads.
 /// Medium (30s): emotion homeostasis + pending event check + emotion push
-/// Slow (1h): memory decay + relationship decay
+/// Slow (1h): memory decay + relationship drift + lifecycle cleanup
 pub fn start_life_loop(app: AppHandle) {
     // Medium loop: every 30 seconds.
     {
@@ -28,7 +28,7 @@ pub fn start_life_loop(app: AppHandle) {
     }
 }
 
-/// Gets the DbState from the managed state. Returns None if not available.
+/// Gets the DbState from the managed state.
 fn get_db(app: &AppHandle) -> Option<tauri::State<'_, DbState>> {
     app.try_state::<DbState>()
 }
@@ -83,7 +83,7 @@ fn medium_tick(app: &AppHandle) {
     }
 }
 
-/// Slow tick: memory decay, relationship drift.
+/// Slow tick: memory decay, relationship drift, lifecycle cleanup.
 fn slow_tick(app: &AppHandle) {
     let db = match get_db(app) {
         Some(s) => s,
@@ -113,5 +113,12 @@ fn slow_tick(app: &AppHandle) {
             }
         }
         Err(e) => log::warn!("Relationship check failed: {}", e),
+    }
+
+    // 3. Lifecycle cleanup: remove old low-importance episodes.
+    match crate::soul::consolidation::lifecycle_cleanup(&db) {
+        Ok(count) if count > 0 => log::info!("Life loop: cleaned up {} old episodes", count),
+        Ok(_) => {}
+        Err(e) => log::warn!("Lifecycle cleanup failed: {}", e),
     }
 }

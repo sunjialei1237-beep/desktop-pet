@@ -8,6 +8,7 @@ pub mod embedding;
 pub mod mind;
 pub mod pending;
 pub mod lifecycle;
+pub mod soul;
 
 use commands::AppState;
 use std::sync::Mutex;
@@ -99,9 +100,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::send_message,
-            commands::get_emotion_state,
-            commands::get_debug_data,
+           commands::send_message,
+           commands::get_emotion_state,
+            commands::trigger_reflection_if_due,
+            commands::get_pending_thoughts,
+           commands::get_debug_data,
             commands::pet_head,
             commands::poke,
             commands::check_proactive,

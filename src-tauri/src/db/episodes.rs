@@ -242,3 +242,75 @@ mod tests {
         .unwrap();
     }
 }
+/// Returns recent episodes within the given number of hours, newest first.
+pub fn get_recent(conn: &Connection, hours_back: i64) -> Result<Vec<Episode>, String> {
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(hours_back);
+    let cutoff_str = cutoff.to_rfc3339();
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, time, summary, emotion, importance, is_landmark,
+                    subject, participants, topics, source_type,
+                    source_conversation_id, source_turn,
+                    memory_strength, recall_count, last_recalled_at,
+                    consolidated, created_at
+             FROM episodes WHERE created_at >= ?1 AND consolidated = 0
+             ORDER BY created_at DESC LIMIT 50",
+        )
+        .map_err(|e| format!("Failed to prepare recent query: {}", e))?;
+
+    let rows = stmt
+        .query_map(params![cutoff_str], |row| {
+            Ok(Episode {
+                id: row.get(0)?,
+                time: row.get(1)?,
+                summary: row.get(2)?,
+                emotion: row.get(3)?,
+                importance: row.get(4)?,
+                is_landmark: row.get::<_, i32>(5)? != 0,
+                subject: row.get(6)?,
+                participants: row.get(7)?,
+                topics: row.get(8)?,
+                source_type: row.get(9)?,
+                source_conversation_id: row.get(10)?,
+                source_turn: row.get(11)?,
+                memory_strength: row.get(12)?,
+                recall_count: row.get(13)?,
+                last_recalled_at: row.get(14)?,
+                consolidated: row.get::<_, i32>(15)? != 0,
+                created_at: row.get(16)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query recent episodes: {}", e))?;
+
+    rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
+}
+
+
+/// Marks an episode as consolidated (no longer individually retrieved).
+pub fn mark_consolidated(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE episodes SET consolidated = 1 WHERE id = ?1",
+        params![id],
+    )
+    .map_err(|e| format!("Failed to mark consolidated: {}", e))?;
+    Ok(())
+}
+
+/// Deletes episodes below importance threshold that have not been recalled
+/// in `days` days. Landmark episodes are never deleted.
+pub fn cleanup_old(conn: &Connection, min_importance: f64, days: i64) -> Result<u64, String> {
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+    let cutoff_str = cutoff.to_rfc3339();
+    let affected = conn
+        .execute(
+            "DELETE FROM episodes
+             WHERE importance < ?1
+             AND is_landmark = 0
+             AND last_recalled_at IS NOT NULL
+             AND last_recalled_at < ?2",
+            params![min_importance, cutoff_str],
+        )
+        .map_err(|e| format!("Failed to cleanup episodes: {}", e))?;
+    Ok(affected as u64)
+}
