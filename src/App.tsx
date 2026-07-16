@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { PetCharacter } from "./PetCharacter";
+import { Live2DCanvas } from "./Live2DCanvas";
 import { SettingsPanel } from "./SettingsPanel";
 import { DebugPanel } from "./DebugPanel";
 import { ContextMenu } from "./ContextMenu";
 import { AnimationFSM, BehaviorState } from "./animation/fsm";
 import { pickNextBehavior } from "./animation/microBehavior";
-import { AttentionState, computeAttention, computeHeadAngle, type PetRect } from "./animation/attention";
+import { AttentionState, computeAttention, type PetRect } from "./animation/attention";
 import { Physics, type PetPosition } from "./animation/physics";
 import { SpatialMemory } from "./animation/spatial";
 import { getCircadianState, deepNightMessages, TimeOfDay } from "./animation/circadian";
@@ -47,9 +47,8 @@ export default function App() {
   const [moodLabel, setMoodLabel] = useState("平静");
   const [showSettings, setShowSettings] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
-  const [attention, setAttention] = useState(AttentionState.Ignored);
-  const [headAngle, setHeadAngle] = useState({ angleX: 0, angleY: 0 });
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+ const [attention, setAttention] = useState(AttentionState.Ignored);
+ const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [awayMode, setAwayMode] = useState(false);
   const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [behavior, setBehavior] = useState<BehaviorState>(BehaviorState.Idle);
@@ -112,7 +111,6 @@ export default function App() {
         height: rect.height,
       };
       setAttention(computeAttention(e.clientX, e.clientY, petRect));
-      setHeadAngle(computeHeadAngle(e.clientX, e.clientY, petRect));
     };
     window.addEventListener("mousemove", onMouseMove);
     return () => window.removeEventListener("mousemove", onMouseMove);
@@ -426,18 +424,14 @@ export default function App() {
         onDoubleClick={() => setInputVisible(true)}
         onMouseDown={handleDragStart}
         style={petPos ? { left: petPos.x, top: petPos.y } : undefined}
-      >
-        <PetCharacter
-          moodLabel={moodLabel}
-          isThinking={isThinking}
-          behavior={behavior}
-          attention={attention}
-          headAngleX={headAngle.angleX}
-          headAngleY={headAngle.angleY}
-          onHeadClick={handleHeadClick}
-          onBodyClick={handleBodyClick}
-        />
-      </div>
+    >
+     <Live2DCanvas
+       moodLabel={moodLabel}
+       isThinking={isThinking}
+       onHeadClick={handleHeadClick}
+       onBodyClick={handleBodyClick}
+     />
+    </div>
 
       <button
         className="settings-btn"

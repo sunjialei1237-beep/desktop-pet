@@ -70,9 +70,6 @@ pub fn retrieve(
     };
 
     // Get candidate episodes from DB.
-  let candidates: Vec<(db_episodes::Episode, Option<Vec<f32>>)> = db.with_conn(|conn| {
-      get_candidate_episodes(conn, 50)
-  })?;
     let candidates = db.with_conn(|conn| {
         // When a query embedding is available, search the vector store by
         // cosine similarity and load those specific episodes. This replaces
