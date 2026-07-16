@@ -481,3 +481,34 @@ html, body, #root {
   color: rgba(255, 255, 255, 0.35);
   font-size: 13px;
 }
+
+/* === P12: Physics + Spatial + Circadian === */
+.pet-char-wrapper {
+  position: fixed;
+  transition: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+}
+
+.pet-char-wrapper.dragging {
+  cursor: grabbing;
+}
+
+.pet-char-wrapper.dragging .pet-svg {
+  animation: struggle 0.3s ease-in-out infinite;
+}
+
+@keyframes struggle {
+  0%, 100% { transform: rotate(-3deg) scale(0.97); }
+  50% { transform: rotate(3deg) scale(0.97); }
+}
+
+.pet-char-wrapper.walking .pet-svg {
+  animation: walk-bob 0.6s ease-in-out infinite;
+}
+
+@keyframes walk-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}

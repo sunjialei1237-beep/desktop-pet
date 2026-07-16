@@ -8,6 +8,9 @@ import { ContextMenu } from "./ContextMenu";
 import { AnimationFSM, BehaviorState } from "./animation/fsm";
 import { pickNextBehavior } from "./animation/microBehavior";
 import { AttentionState, computeAttention, computeHeadAngle, type PetRect } from "./animation/attention";
+import { Physics, type PetPosition } from "./animation/physics";
+import { SpatialMemory } from "./animation/spatial";
+import { getCircadianState, deepNightMessages, TimeOfDay } from "./animation/circadian";
 
 interface EmotionData {
   mood: number;
@@ -58,6 +61,19 @@ export default function App() {
   const closenessRef = useRef(0);
   const moodRef = useRef(0.5);
   const energyRef = useRef(0.7);
+  const physicsRef = useRef<Physics | null>(null);
+  const spatialRef = useRef<SpatialMemory | null>(null);
+  const [petPos, setPetPos] = useState<PetPosition | null>(null);
+  const [isWalking, setIsWalking] = useState(false);
+  const [isBeingDragged, setIsBeingDragged] = useState(false);
+  const circadianRef = useRef(getCircadianState());
+
+  if (!physicsRef.current) {
+    physicsRef.current = new Physics();
+  }
+  if (!spatialRef.current) {
+    spatialRef.current = new SpatialMemory();
+  }
 
   if (!fsmRef.current) {
     fsmRef.current = new AnimationFSM();
@@ -183,13 +199,107 @@ export default function App() {
     };
   }, [showBubble, awayMode]);
 
+ useEffect(() => {
+   const onKey = (e: KeyboardEvent) => {
+     if (e.key === "F12") { e.preventDefault(); setShowDebug((v) => !v); }
+   };
+   window.addEventListener("keydown", onKey);
+   return () => window.removeEventListener("keydown", onKey);
+ }, []);
+
+  // P12: Initialize nest position on first mount
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "F12") { e.preventDefault(); setShowDebug((v) => !v); }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const bounds = { width: window.innerWidth, height: window.innerHeight };
+    const pos = spatialRef.current!.init(bounds);
+    setPetPos(pos);
   }, []);
+
+  // P12: Physics + spatial + circadian loop (Body layer, independent of LLM)
+  useEffect(() => {
+    let raf = 0;
+    let lastTime = performance.now();
+
+    const loop = (now: number) => {
+      const dt = Math.min(0.05, (now - lastTime) / 1000); // cap at 50ms
+      lastTime = now;
+
+      const physics = physicsRef.current!;
+      const spatial = spatialRef.current!;
+      const bounds = { width: window.innerWidth, height: window.innerHeight };
+
+      if (petPos && !isBeingDragged && !awayMode) {
+        // Physics update (gravity when falling)
+        const result = physics.update(petPos, dt, bounds);
+        if (result.pos.y !== petPos.y || result.bounced || result.landed) {
+          setPetPos(result.pos);
+          if (result.landed) {
+            // Landed: spatial takes over
+          }
+        }
+
+        // Spatial update (walk back to nest when grounded)
+        if (physics.isGrounded) {
+          const interacting = isThinking || attention === AttentionState.Focused || inputVisible;
+          const spatialResult = spatial.tick(result.pos, dt, interacting, true);
+          if (spatialResult.isWalking) {
+            setPetPos(spatialResult.newPos);
+            setIsWalking(true);
+          } else {
+            setIsWalking(false);
+          }
+        }
+      }
+
+      // Circadian update (every 30s is enough, but cheap to check each frame)
+      circadianRef.current = getCircadianState();
+
+      raf = requestAnimationFrame(loop);
+    };
+
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [petPos, isBeingDragged, awayMode, isThinking, attention, inputVisible]);
+
+  // P12: DeepNight proactive nudge (every 10 min check, fires once per period)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (awayMode) return;
+      const circ = getCircadianState();
+      if (circ.period === TimeOfDay.DeepNight && Math.random() < 0.4) {
+        const msgs = deepNightMessages();
+        showBubble(msgs[Math.floor(Math.random() * msgs.length)], 8000, "bubble-worried");
+      } else if (circ.period === TimeOfDay.LateNight && Math.random() < 0.2) {
+        showBubble("\u8fd8\u4e0d\u7761\u5440\u2026", 6000);
+      }
+    }, 10 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [showBubble, awayMode]);
+
+  // P12: Drag handling
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return; // left click only
+    if (!petPos) return;
+    e.preventDefault();
+    physicsRef.current?.startDrag();
+    setIsBeingDragged(true);
+  }, [petPos]);
+
+  useEffect(() => {
+    if (!isBeingDragged) return;
+    const onMove = (e: MouseEvent) => {
+      setPetPos({ x: e.clientX - 100, y: e.clientY - 60 });
+    };
+    const onUp = () => {
+      physicsRef.current?.release();
+      setIsBeingDragged(false);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [isBeingDragged]);
 
   const handleSend = useCallback(async () => {
     const text = inputText.trim();
@@ -312,8 +422,10 @@ export default function App() {
 
       <div
         ref={petRef}
-        className="pet-char-wrapper"
+        className={`pet-char-wrapper ${isWalking ? "walking" : ""} ${isBeingDragged ? "dragging" : ""}`}
         onDoubleClick={() => setInputVisible(true)}
+        onMouseDown={handleDragStart}
+        style={petPos ? { left: petPos.x, top: petPos.y } : undefined}
       >
         <PetCharacter
           moodLabel={moodLabel}
