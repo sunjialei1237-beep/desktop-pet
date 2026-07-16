@@ -252,7 +252,8 @@ fn compute_semantic(
     keyword_similarity(query, summary) * W_SEMANTIC
 }
 
-/// Simple keyword overlap similarity for fallback.
+/// Keyword overlap similarity for fallback. Falls back to character bigrams
+/// for CJK text where whitespace tokenization produces no word overlap.
 fn keyword_similarity(a: &str, b: &str) -> f64 {
     let words_a: std::collections::HashSet<&str> = a.split_whitespace().collect();
     let words_b: std::collections::HashSet<&str> = b.split_whitespace().collect();
@@ -261,7 +262,28 @@ fn keyword_similarity(a: &str, b: &str) -> f64 {
     }
     let intersection = words_a.intersection(&words_b).count() as f64;
     let union = words_a.union(&words_b).count() as f64;
-    intersection / union
+    let word_sim = intersection / union;
+    if word_sim > 0.0 {
+        return word_sim;
+    }
+    // CJK fallback: character bigram Jaccard similarity.
+    let bigrams_a = char_bigrams(a);
+    let bigrams_b = char_bigrams(b);
+    if bigrams_a.is_empty() || bigrams_b.is_empty() {
+        return 0.0;
+    }
+    let bi_i = bigrams_a.intersection(&bigrams_b).count() as f64;
+    let bi_u = bigrams_a.union(&bigrams_b).count() as f64;
+    bi_i / bi_u
+}
+
+/// Generates character bigrams from a string (for CJK fallback similarity).
+fn char_bigrams(s: &str) -> std::collections::HashSet<String> {
+    let chars: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).collect();
+    chars
+        .windows(2)
+        .map(|w| format!("{}{}", w[0], w[1]))
+        .collect()
 }
 
 /// Computes time-based recency score: exp(-days_old / halflife).

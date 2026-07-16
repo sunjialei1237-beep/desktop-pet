@@ -123,8 +123,14 @@ impl LlmClient {
         messages: &[ChatMessage],
         temperature: Option<f64>,
         max_tokens: Option<u32>,
-    ) -> Result<ChatResult, LlmError> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+   ) -> Result<ChatResult, LlmError> {
+        // base_url from config includes the API version (e.g. "https://api.deepseek.com/v1").
+        // Append "/chat/completions" directly; add "/v1" for base_urls without version.
+        let url = if self.base_url.ends_with("/v1") {
+            format!("{}/chat/completions", self.base_url)
+        } else {
+            format!("{}/v1/chat/completions", self.base_url)
+        };
 
         let request = ChatRequest {
             model: model.to_string(),
