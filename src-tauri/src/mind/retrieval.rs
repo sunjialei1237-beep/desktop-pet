@@ -3,6 +3,7 @@ use crate::db::persona as db_persona;
 use crate::db::relationship as db_relationship;
 use crate::db::episodes as db_episodes;
 use crate::db::DbState;
+use crate::db::vectors as db_vectors;
 use crate::embedding::{cosine_similarity, EmbeddingService};
 use crate::emotion::state::EmotionState;
 use chrono::{DateTime, Utc};
@@ -69,7 +70,29 @@ pub fn retrieve(
     };
 
     // Get candidate episodes from DB.
-    let candidates: Vec<(db_episodes::Episode, Option<Vec<f32>>)> = db.with_conn(|conn| {
+  let candidates: Vec<(db_episodes::Episode, Option<Vec<f32>>)> = db.with_conn(|conn| {
+      get_candidate_episodes(conn, 50)
+  })?;
+    let candidates = db.with_conn(|conn| {
+        // When a query embedding is available, search the vector store by
+        // cosine similarity and load those specific episodes. This replaces
+        // the old keyword-only fallback for any conversation where the model
+        // is loaded.
+        if query_vec.is_some() {
+            let qv = query_vec.as_ref().unwrap();
+            let hits = db_vectors::search(conn, qv, 50)?;
+            if !hits.is_empty() {
+                let mut result = Vec::new();
+                for (ep_id, _) in hits {
+                    if let Some(ep) = db_episodes::get(conn, &ep_id)? {
+                        let vec = db_vectors::get(conn, &ep_id)?;
+                        result.push((ep, vec));
+                    }
+                }
+                return Ok(result);
+            }
+        }
+        // Fallback: keyword-based candidate selection.
         get_candidate_episodes(conn, 50)
     })?;
 
@@ -129,7 +152,7 @@ pub fn retrieve(
 }
 
 /// Gets candidate episodes with their stored vectors (if available).
-/// TODO: use sqlite-vec for vector search once integrated.
+/// Fallback candidate selection by memory strength (used when no query embedding).
 fn get_candidate_episodes(
     conn: &Connection,
     limit: usize,

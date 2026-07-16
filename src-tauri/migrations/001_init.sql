@@ -174,3 +174,11 @@ INSERT OR IGNORE INTO emotion_state (id, last_homeostasis_at, updated_at)
 -- Record migration
 INSERT OR REPLACE INTO schema_migrations (version, applied_at)
     VALUES (1, datetime('now'));
+
+-- Episode vectors (semantic retrieval: BLOB of little-endian f32 values)
+CREATE TABLE IF NOT EXISTS episode_vectors (
+    episode_id  TEXT PRIMARY KEY,
+    embedding   BLOB NOT NULL,
+    created_at  TEXT NOT NULL,
+    FOREIGN KEY (episode_id) REFERENCES episodes(id)
+);

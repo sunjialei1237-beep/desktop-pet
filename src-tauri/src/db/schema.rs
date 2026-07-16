@@ -1,20 +1,31 @@
 use rusqlite::Connection;
 
-/// Runs all pending migrations. Currently only migration v1.
+/// Runs all pending migrations (v1 init + v2 episode_vectors).
 /// Future versions will branch on the recorded version number.
 pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     let current_version = get_schema_version(conn)?;
 
-    if current_version >= 1 {
+    if current_version >= 2 {
         log::info!("Database schema at version {}, no migration needed", current_version);
         return Ok(());
     }
 
-    log::info!("Running migration v1 (init)...");
-    let sql = include_str!("../../migrations/001_init.sql");
-    conn.execute_batch(sql)
-        .map_err(|e| format!("Migration v1 failed: {}", e))?;
-    log::info!("Migration v1 applied successfully");
+    if current_version < 1 {
+        log::info!("Running migration v1 (init)...");
+        let sql = include_str!("../../migrations/001_init.sql");
+        conn.execute_batch(sql)
+            .map_err(|e| format!("Migration v1 failed: {}", e))?;
+        log::info!("Migration v1 applied successfully");
+    }
+
+    let current_version = get_schema_version(conn)?;
+    if current_version < 2 {
+        log::info!("Running migration v2 (episode_vectors)...");
+        let sql = include_str!("../../migrations/002_vectors.sql");
+        conn.execute_batch(sql)
+            .map_err(|e| format!("Migration v2 failed: {}", e))?;
+        log::info!("Migration v2 applied successfully");
+    }
 
     Ok(())
 }
@@ -53,11 +64,11 @@ mod tests {
     fn test_migration_runs_once() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 1);
+        assert_eq!(get_schema_version(&conn).unwrap(), 2);
 
         // Running again should be a no-op
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 1);
+        assert_eq!(get_schema_version(&conn).unwrap(), 2);
     }
 
     #[test]
@@ -78,6 +89,7 @@ mod tests {
             "internal_thoughts",
             "app_config",
             "change_log",
+            "episode_vectors",
         ];
 
         for table in &expected {

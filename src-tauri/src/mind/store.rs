@@ -2,6 +2,7 @@ use crate::db::emotion as db_emotion;
 use crate::db::episodes as db_episodes;
 use crate::db::facts as db_facts;
 use crate::db::pending as db_pending;
+use crate::db::vectors as db_vectors;
 use crate::db::DbState;
 use crate::embedding::EmbeddingService;
 use crate::mind::extractor::{EmotionDelta, ExtractionResult, FactInput};
@@ -61,8 +62,9 @@ pub fn store(
                 match emb.embed(&ep.summary) {
                     Ok(vector) => {
                         log::info!("Generated embedding for episode {} ({} dim)", ep_id, vector.len());
-                        // TODO: store in episode_vectors once sqlite-vec is integrated
-                        // For now, we could store in a JSON column or skip
+                        if let Err(e) = db.with_conn(|conn| db_vectors::insert(conn, &ep_id, &vector)) {
+                            log::warn!("Failed to store vector for episode {}: {}", ep_id, e);
+                        }
                     }
                     Err(e) => {
                         log::warn!("Failed to embed episode {}: {}", ep_id, e);

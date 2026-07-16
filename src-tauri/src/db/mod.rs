@@ -8,6 +8,7 @@ pub mod relationship;
 pub mod emotion;
 pub mod pending;
 pub mod reflections;
+pub mod vectors;
 
 use rusqlite::Connection;
 use std::sync::Mutex;
