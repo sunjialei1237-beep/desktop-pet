@@ -33,7 +33,7 @@ function bubbleClassForMood(label: string): string {
   if (label === "调皮") return "bubble-playful";
   if (label === "难过") return "bubble-sad";
   if (label === "担心") return "bubble-worried";
-  if (label === "第难") return "bubble-sad";
+  if (label === "疲惫") return "bubble-sad";
   return "bubble-calm";
 }
 

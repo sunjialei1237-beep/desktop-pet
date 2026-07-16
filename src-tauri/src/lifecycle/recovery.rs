@@ -11,30 +11,30 @@ pub fn handle_llm_error(err: &str, app: &AppHandle) -> Option<String> {
     let (animation, message) = if lower.contains("timeout") {
         (
             "dazed",
-            Some("wo...ganggang you dian zou shen...".to_string()),
+            Some("我……刚刚有点走神……".to_string()),
         )
     } else if lower.contains("network") || lower.contains("connection") {
         (
             "dazed",
-            Some("xin hao bu tai hao ne...".to_string()),
+            Some("信号不太好呢……".to_string()),
         )
     } else if lower.contains("auth") || lower.contains("401") || lower.contains("403") {
         (
             "confused",
-            Some("(mi yue hao xiang bu dui...)".to_string()),
+            Some("（密钥好像不对……）".to_string()),
         )
     } else if lower.contains("rate") || lower.contains("429") {
         (
             "tired",
-            Some("shuo le hao duo hua, rang wo chuan kou qi ba~".to_string()),
+            Some("说了好多话，让我喘口气吧~".to_string()),
         )
     } else if lower.contains("not configured") {
         (
             "confused",
-            Some("(hai mei you peizhi hao lian jie...)".to_string()),
+            Some("（还没有配置好连接……）".to_string()),
         )
     } else {
-        ("dazed", Some("e...wo zan shi mei fan ying guo lai".to_string()))
+        ("dazed", Some("额……我暂时没反应过来".to_string()))
     };
 
     let _ = app.emit("animation-command", serde_json::json!({ "state": animation }));

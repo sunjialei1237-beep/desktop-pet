@@ -49,7 +49,7 @@ pub struct DebugData {
 
 // -- Tauri commands --
 
-/// Handles a user message. For now returns a placeholder reply.
+/// Handles a user message through the full conversation pipeline.
 #[tauri::command]
 pub async fn send_message(
     text: String,
