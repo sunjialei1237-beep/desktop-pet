@@ -82,6 +82,7 @@ pub fn update_fields(
 /// Applies homeostasis: drifts all values toward their baselines.
 /// rate is 0..1, where 1 = instantly snap to baseline, 0 = no movement.
 pub fn apply_homeostasis(conn: &Connection, rate: f64, now: &str) -> Result<(), String> {
+    let before = get(conn).ok();
     conn.execute(
         "UPDATE emotion_state SET
             mood = mood + (bl_mood - mood) * ?1,
@@ -94,13 +95,126 @@ pub fn apply_homeostasis(conn: &Connection, rate: f64, now: &str) -> Result<(), 
         params![rate, now],
     )
     .map_err(|e| format!("Failed to apply homeostasis: {}", e))?;
+    if let Some(b) = before {
+        let _ = crate::db::changelog::append(
+            conn, "emotion", "homeostasis", Some("emotion_state"), None,
+            Some(&format!("mood={:.3},stress={:.3}", b.mood, b.stress)),
+            Some(&format!("rate={:.3}", rate)),
+            Some("medium-loop tick"),
+        );
+    }
     Ok(())
+}
+
+/// Time constants (tau) for exponential drift toward baseline, in seconds.
+/// Matches emotion::homeostasis design-doc values.
+const TAU_MOOD: f64 = 300.0;
+const TAU_STRESS: f64 = 7200.0;
+const TAU_ENERGY: f64 = 1800.0;
+const TAU_SOCIAL: f64 = 600.0;
+
+/// Maximum elapsed time (seconds) we compensate in one tick.
+/// Prevents runaway drift after very long suspends.
+const MAX_CATCHUP_SECS: f64 = 86400.0; // 24 hours
+
+/// Threshold (seconds) above which we consider a gap a suspend/resume event.
+pub const SUSPEND_THRESHOLD_SECS: f64 = 300.0; // 5 minutes
+
+/// Applies time-aware homeostatic drift.
+/// Computes actual elapsed seconds since last_homeostasis_at and uses exponential
+/// interpolation toward baselines. Naturally handles suspend/resume: if the system
+/// slept for hours, the drift formula accounts for the full elapsed time.
+///
+/// Returns the elapsed seconds (capped at MAX_CATCHUP_SECS) so callers can detect
+/// suspend events (elapsed > SUSPEND_THRESHOLD_SECS).
+pub fn apply_homeostasis_time_aware(conn: &Connection, now: &str) -> Result<f64, String> {
+    let current = get(conn)?;
+    let elapsed = compute_elapsed_secs(&current.last_homeostasis_at, now);
+
+    let new_mood = drift_toward(current.mood, current.bl_mood, elapsed, TAU_MOOD);
+    let new_energy = drift_toward(current.physical_energy, current.bl_energy, elapsed, TAU_ENERGY);
+    let new_social = drift_toward(current.social_battery, current.bl_social, elapsed, TAU_SOCIAL);
+    let new_stress = drift_toward(current.stress, current.bl_stress, elapsed, TAU_STRESS);
+
+    let new_label = crate::emotion::state::label_for_mood(new_mood);
+
+    conn.execute(
+        "UPDATE emotion_state SET
+            mood = ?1, mood_label = ?2,
+            physical_energy = ?3, social_battery = ?4, stress = ?5,
+            last_homeostasis_at = ?6, updated_at = ?6
+         WHERE id = 1",
+        params![new_mood, new_label, new_energy, new_social, new_stress, now],
+    )
+    .map_err(|e| format!("Failed to apply time-aware homeostasis: {}", e))?;
+
+    if elapsed > SUSPEND_THRESHOLD_SECS {
+        let _ = crate::db::changelog::append(
+            conn, "emotion", "resume", Some("emotion_state"), None,
+            Some(&format!("last_at={}", current.last_homeostasis_at)),
+            Some(&format!("elapsed_secs={:.0}", elapsed)),
+            Some("suspend/resume detected"),
+        );
+    }
+
+    Ok(elapsed)
+}
+
+/// Computes elapsed seconds between two RFC 3339 timestamps, capped at MAX_CATCHUP_SECS.
+fn compute_elapsed_secs(last_at: &str, now: &str) -> f64 {
+    let elapsed = match (
+        chrono::DateTime::parse_from_rfc3339(last_at),
+        chrono::DateTime::parse_from_rfc3339(now),
+    ) {
+        (Ok(last), Ok(n)) => (n.with_timezone(&chrono::Utc) - last.with_timezone(&chrono::Utc)).num_seconds().max(0) as f64,
+        _ => 30.0, // fallback: assume one tick
+    };
+    elapsed.min(MAX_CATCHUP_SECS)
+}
+
+/// Exponential interpolation toward a target.
+fn drift_toward(value: f64, target: f64, elapsed: f64, tau: f64) -> f64 {
+    let rate = 1.0 - (-elapsed / tau).exp();
+    value + (target - value) * rate
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::test_utils::test_db;
+
+    #[test]
+    fn test_time_aware_homeostasis_normal() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute("UPDATE emotion_state SET last_homeostasis_at = '2026-01-01T00:00:00+00:00' WHERE id = 1", []).map_err(|e| format!("{}", e))?;
+            update_fields(conn, Some(0.1), None, None, None, Some(0.8), None, None, "2026-01-01T00:00:00+00:00")?;
+            let elapsed = apply_homeostasis_time_aware(conn, "2026-01-01T00:05:00+00:00")?;
+            assert!((elapsed - 300.0).abs() < 1.0, "5 min elapsed");
+            let emo = get(conn)?;
+            assert!(emo.stress < 0.8, "stress should drift toward baseline");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_time_aware_homeostasis_suspend() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute("UPDATE emotion_state SET last_homeostasis_at = '2026-01-01T00:00:00+00:00' WHERE id = 1", []).map_err(|e| format!("{}", e))?;
+            update_fields(conn, Some(0.1), None, None, None, Some(0.9), None, None, "2026-01-01T00:00:00+00:00")?;
+            // 8 hours later (suspend/resume)
+            let elapsed = apply_homeostasis_time_aware(conn, "2026-01-01T08:00:00+00:00")?;
+            assert!(elapsed > SUSPEND_THRESHOLD_SECS, "should detect time jump");
+            assert!((elapsed - 28800.0).abs() < 1.0, "8h elapsed");
+            let emo = get(conn)?;
+            // After 8h, stress should be very close to baseline
+            assert!((emo.stress - 0.2).abs() < 0.05, "stress fully recovered, got {}", emo.stress);
+            Ok(())
+        })
+        .unwrap();
+    }
 
     #[test]
     fn test_emotion_singleton() {

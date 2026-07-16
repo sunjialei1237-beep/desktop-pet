@@ -41,9 +41,25 @@ fn medium_tick(app: &AppHandle) {
     };
     let now = chrono::Utc::now().to_rfc3339();
 
-    // 1. Emotion homeostasis: drift values toward baselines.
-    if let Err(e) = db.with_conn(|conn| crate::db::emotion::apply_homeostasis(conn, 0.01, &now)) {
-        log::warn!("Homeostasis tick failed: {}", e);
+    // 1. Emotion homeostasis: time-aware drift toward baselines.
+    // Returns elapsed seconds so we can detect suspend/resume.
+    let elapsed = db
+        .with_conn(|conn| crate::db::emotion::apply_homeostasis_time_aware(conn, &now))
+        .unwrap_or(0.0);
+
+    if elapsed > crate::db::emotion::SUSPEND_THRESHOLD_SECS {
+        log::info!(
+            "Life loop: suspend/resume detected ({:.0}s elapsed), catching up",
+            elapsed
+        );
+        // Signal frontend that the pet woke up after a long absence.
+        let _ = app.emit(
+            "app-status",
+            serde_json::json!({
+                "status": "resumed",
+                "elapsed_secs": elapsed,
+            }),
+        );
     }
 
     // 2. Pending event check.

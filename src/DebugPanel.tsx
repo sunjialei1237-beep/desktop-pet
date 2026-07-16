@@ -20,6 +20,7 @@ interface DebugSnapshot {
   recent_episodes: { id: string; summary: string; strength: number; recall_count: number }[];
   recent_facts: { category: string; key: string; value: string; confidence: number }[];
   pending_events: { id: string; title: string; status: string; remind_date: string | null }[];
+  change_log: { timestamp: string; module: string; action: string; target: string | null; field: string | null; old_value: string | null; new_value: string | null; reason: string | null }[];
   llm_configured: boolean;
 }
 
@@ -89,6 +90,17 @@ export function DebugPanel() {
           {snapshot.pending_events.map((p, i) => (
             <div key={i} className="debug-item">
               [{p.status}] {p.title} {p.remind_date ? `(${p.remind_date.split('T')[0]})` : ''}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {snapshot.change_log.length > 0 && (
+        <div className="debug-section">
+          <span className="debug-title">Timeline</span>
+          {snapshot.change_log.slice(0, 8).map((c, i) => (
+            <div key={i} className="debug-item">
+              [{c.module}:{c.action}] {c.new_value ?? ''} {c.reason ? `(${c.reason})` : ''}
             </div>
           ))}
         </div>

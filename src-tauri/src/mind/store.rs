@@ -103,7 +103,20 @@ pub fn store(
             triggered_at: None,
             resolved_at: None,
         };
-        db.with_conn(|conn| db_pending::insert(conn, &event))?;
+        db.with_conn(|conn| {
+            db_pending::insert(conn, &event)?;
+            let _ = crate::db::changelog::append(
+                conn,
+                "pending",
+                "insert",
+                Some(&event.id),
+                None,
+                None,
+                Some(&event.title),
+                Some("memory extractor"),
+            );
+            Ok(())
+        })?;
     }
 
     Ok(stored_episode_id)
@@ -131,7 +144,20 @@ fn store_fact(
         updated_at: now.to_string(),
     };
 
-    db_facts::dedup_insert(conn, &new_fact)
+    db_facts::dedup_insert(conn, &new_fact)?;
+
+    let _ = crate::db::changelog::append(
+        conn,
+        "facts",
+        "insert",
+        Some(&new_fact.id),
+        Some(&fact.category),
+        None,
+        Some(&format!("{}: {}", fact.key, fact.value)),
+        Some("memory extractor"),
+    );
+
+    Ok(())
 }
 
 /// Computes the remind_date for a pending event from event_date.
@@ -154,6 +180,16 @@ pub(crate) fn apply_emotion_delta(conn: &rusqlite::Connection, delta: &EmotionDe
     // Read current values
     let current = db_emotion::get(conn)?;
     let new_mood = (current.mood + delta.mood).clamp(0.0, 1.0);
+
+    let _ = crate::db::changelog::log_change(
+        conn,
+        "emotion",
+        "emotion_state",
+        "mood",
+        &format!("{:.3}", current.mood),
+        &format!("{:.3}", new_mood),
+        "conversation emotion delta",
+    );
     let new_stress = (current.stress + delta.stress).clamp(0.0, 1.0);
     let new_energy = (current.physical_energy + delta.energy).clamp(0.0, 1.0);
 

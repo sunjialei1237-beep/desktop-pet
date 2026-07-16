@@ -9,6 +9,7 @@ pub mod emotion;
 pub mod pending;
 pub mod reflections;
 pub mod vectors;
+pub mod changelog;
 
 use rusqlite::Connection;
 use std::sync::Mutex;

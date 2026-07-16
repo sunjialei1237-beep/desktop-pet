@@ -377,6 +377,7 @@ pub struct DebugSnapshot {
     pub recent_episodes: Vec<DebugEpisode>,
     pub recent_facts: Vec<DebugFact>,
     pub pending_events: Vec<DebugPending>,
+    pub change_log: Vec<crate::db::changelog::ChangeLogEntry>,
     pub llm_configured: bool,
 }
 
@@ -481,6 +482,7 @@ pub async fn get_debug_snapshot(
             recent_episodes,
             recent_facts,
             pending_events,
+            change_log: crate::db::changelog::recent(conn, 20).unwrap_or_default(),
             llm_configured: state.llm.is_some(),
         })
     })

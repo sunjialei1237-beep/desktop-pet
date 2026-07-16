@@ -26,15 +26,26 @@ impl Default for EmotionState {
 /// Derives a human-readable mood label from the emotion vector.
 /// Used by the chat bubble system and debug panel.
 pub fn derive_mood_label(state: &EmotionState) -> &'static str {
-    if state.stress > 0.7 {
+    label_for_mood_full(state.mood, state.stress, state.social_battery)
+}
+
+/// Derives a mood label from a single mood value (0..1).
+/// Used by the homeostasis tick when only mood is available.
+pub fn label_for_mood(mood: f64) -> &'static str {
+    label_for_mood_full(mood, 0.0, 1.0)
+}
+
+/// Core label logic.
+fn label_for_mood_full(mood: f64, stress: f64, social: f64) -> &'static str {
+    if stress > 0.7 {
         "担心"
-    } else if state.social_battery < 0.2 {
+    } else if social < 0.2 {
         "疲惫"
-    } else if state.mood < 0.3 {
+    } else if mood < 0.3 {
         "难过"
-    } else if state.mood < 0.45 {
+    } else if mood < 0.45 {
         "平静"
-    } else if state.mood > 0.7 {
+    } else if mood > 0.7 {
         "开心"
     } else {
         "调皮"
