@@ -4,7 +4,7 @@ use crate::db::facts as db_facts;
 use crate::db::pending as db_pending;
 use crate::db::DbState;
 use crate::embedding::EmbeddingService;
-use crate::mind::extractor::{EmotionDelta, EpisodeInput, ExtractionResult, FactInput, PendingInput};
+use crate::mind::extractor::{EmotionDelta, ExtractionResult, FactInput};
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -172,7 +172,7 @@ pub(crate) fn apply_emotion_delta(conn: &rusqlite::Connection, delta: &EmotionDe
 mod tests {
     use super::*;
     use crate::db::test_utils::test_db;
-    use crate::mind::extractor::*;
+    use crate::mind::extractor::{ExtractionResult, EpisodeInput, FactInput, PendingInput, EmotionDelta};
 
     #[test]
     fn test_store_episode_only() {

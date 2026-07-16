@@ -18,6 +18,7 @@ use crate::mind::retrieval::RetrievalResult;
 use crate::mind::planner::Intent;
 
 /// Maximum total input tokens (target budget).
+#[allow(dead_code)]
 const MAX_TOKENS: usize = 4096;
 
 /// Budget allocations per module (in approximate tokens).

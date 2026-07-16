@@ -116,7 +116,7 @@ pub fn retrieve(
     // Retrieve persona snapshot.
     let relationship = db.with_conn(|conn| db_relationship::get(conn)).ok();
     let persona_traits = db.with_conn(|conn| {
-        Ok(db_persona::get_traits_by_type(conn, "all")
+        Ok(db_persona::get_all_traits(conn)
             .unwrap_or_default())
     })?;
 

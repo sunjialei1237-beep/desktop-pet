@@ -55,6 +55,33 @@ pub fn get_traits_by_type(conn: &Connection, trait_type: &str) -> Result<Vec<Per
     rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
 }
 
+/// Gets all traits regardless of type, ordered by confidence descending.
+pub fn get_all_traits(conn: &Connection) -> Result<Vec<PersonaTrait>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, trait_type, trait_key, confidence, source, created_at, updated_at
+             FROM persona_traits
+             ORDER BY confidence DESC",
+        )
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(PersonaTrait {
+                id: row.get(0)?,
+                trait_type: row.get(1)?,
+                trait_key: row.get(2)?,
+                confidence: row.get(3)?,
+                source: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query traits: {}", e))?;
+
+    rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
+}
+
 trait Pipe: Sized {
     fn pipe<F, R>(self, f: F) -> R where F: FnOnce(Self) -> R { f(self) }
 }

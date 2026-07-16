@@ -154,8 +154,6 @@ pub fn is_good_news(text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::db::episodes::Episode;
-    use crate::db::facts::Fact;
-    use crate::db::persona::PersonaTrait;
     use crate::mind::retrieval::{RetrievalResult, ScoreBreakdown, ScoredEpisode};
 
     fn empty_retrieval() -> RetrievalResult {

@@ -156,7 +156,7 @@ pub async fn poke(_state: State<'_, AppState>) -> Result<(), String> {
 /// Checks for due pending events and returns a proactive action if appropriate.
 #[tauri::command]
 pub async fn check_proactive(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     db: State<'_, DbState>,
 ) -> Result<Option<crate::pending::ProactiveAction>, String> {
     let events = crate::pending::check_due(&db)?;
