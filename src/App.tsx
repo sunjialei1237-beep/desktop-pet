@@ -157,6 +157,14 @@ export default function App() {
       showBubble(event.payload.title + "怎么样啦？", 15000);
     }).then((un) => unlisteners.push(un));
 
+    listen<{ status: string; elapsed_secs: number }>("app-status", (event) => {
+      if (event.payload.status === "resumed") {
+        const hours = Math.round(event.payload.elapsed_secs / 3600);
+        const msg = hours > 1 ? `我睡了${hours}个小时……你回来啦~` : "你回来啦~";
+        showBubble(msg, 8000, "bubble-calm");
+      }
+    }).then((un) => unlisteners.push(un));
+
     const emotionTimer = setInterval(async () => {
       try {
         const emo = await invoke<EmotionData>("get_emotion_state");
