@@ -95,7 +95,7 @@ pub fn run() {
             // Welcome bubble after a short delay.
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                let _ = handle.emit("bubble-show", "ni hao ya! wo shi ni de zhuo chong.");
+                let _ = handle.emit("bubble-show", "你好呀！我是你的桌宠。");
             });
 
             Ok(())

@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS relationship (
 CREATE TABLE IF NOT EXISTS emotion_state (
     id                  INTEGER PRIMARY KEY CHECK(id = 1),
     mood                REAL NOT NULL DEFAULT 0.5,
-    mood_label          TEXT NOT NULL DEFAULT 'ping jing',
+    mood_label          TEXT NOT NULL DEFAULT '平静',
     physical_energy     REAL NOT NULL DEFAULT 0.7,
     social_battery      REAL NOT NULL DEFAULT 0.8,
     stress              REAL NOT NULL DEFAULT 0.2,

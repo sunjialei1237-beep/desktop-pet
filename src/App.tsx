@@ -4,6 +4,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { PetCharacter } from "./PetCharacter";
 import { SettingsPanel } from "./SettingsPanel";
 import { DebugPanel } from "./DebugPanel";
+import { AnimationFSM, BehaviorState } from "./animation/fsm";
+import { pickNextBehavior } from "./animation/microBehavior";
 
 interface EmotionData {
   mood: number;
@@ -26,16 +28,59 @@ export default function App() {
   const [inputVisible, setInputVisible] = useState(false);
   const [inputText, setInputText] = useState("");
   const [isThinking, setIsThinking] = useState(false);
-  const [moodLabel, setMoodLabel] = useState("ping jing");
+    const [moodLabel, setMoodLabel] = useState("平静");
   const [showSettings, setShowSettings] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [behavior, setBehavior] = useState<BehaviorState>(BehaviorState.Idle);
+  const fsmRef = useRef<AnimationFSM | null>(null);
+  const closenessRef = useRef(0);
+  const moodRef = useRef(0.5);
+  const energyRef = useRef(0.7);
+
+  if (!fsmRef.current) {
+    fsmRef.current = new AnimationFSM();
+    fsmRef.current.onStateChange((s) => setBehavior(s));
+  }
 
   const showBubble = useCallback((text: string, duration = 8000) => {
     setBubbleText(text);
     setBubbleVisible(true);
     if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current);
     bubbleTimerRef.current = setTimeout(() => setBubbleVisible(false), duration);
+  }, []);
+
+  // FSM tick timer: drives microbehaviors independently of LLM (Principle 5)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const fsm = fsmRef.current;
+      if (!fsm) return;
+      if (isThinking || behavior === BehaviorState.Talking) return;
+      fsm.tick(moodRef.current, energyRef.current, closenessRef.current, Date.now(), pickNextBehavior);
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [isThinking, behavior]);
+
+  // Update emotion + closeness refs for FSM
+  useEffect(() => {
+    const emoTimer = setInterval(async () => {
+      try {
+        const emo = await invoke<EmotionData>("get_emotion_state");
+        moodRef.current = emo.mood;
+        energyRef.current = emo.physical_energy;
+      } catch { /* ignore */ }
+    }, 10000);
+    return () => clearInterval(emoTimer);
+  }, []);
+
+  useEffect(() => {
+    const snapTimer = setInterval(async () => {
+      try {
+        const snap = await invoke<Record<string, number>>("get_debug_snapshot");
+        closenessRef.current = snap.closeness || 0;
+      } catch { /* ignore */ }
+    }, 15000);
+    return () => clearInterval(snapTimer);
   }, []);
 
   useEffect(() => {
@@ -54,7 +99,7 @@ export default function App() {
     }).then((un) => unlisteners.push(un));
 
     listen<{ title: string; event_id: string }>("proactive-prompt", (event) => {
-      showBubble(event.payload.title + " zenmeyang la?", 15000);
+            showBubble(event.payload.title + "怎么样啦？", 15000);
     }).then((un) => unlisteners.push(un));
 
     const emotionTimer = setInterval(async () => {
@@ -76,12 +121,12 @@ export default function App() {
         if (action) {
           let msg = "";
           if (action.action_type === "followup") {
-            msg = action.message_hint + " zenmeyang la?";
+                        msg = action.message_hint + "怎么样啦？";
           } else if (action.action_type === "random_chat") {
             const greetings = [
-              "ni zai mang shenme ya?",
-              "lei bu lei? xiu xi yixia ba.",
-              "wo zai ne, you shenme shi ma?",
+              "你在忙什么呀？",
+              "累不累？休息一下吧。",
+              "我在呢，有什么事吗？",
             ];
             msg = greetings[Math.floor(Math.random() * greetings.length)];
           }
@@ -130,13 +175,13 @@ export default function App() {
       setIsThinking(false);
       const errMsg = String(e);
       if (errMsg.includes("not configured") || errMsg.includes("NotConfigured")) {
-        showBubble("(hai mei you peizhi hao lian jie...)", 5000);
+                showBubble("（还没有配置好连接……）", 5000);
       } else if (errMsg.includes("Timeout") || errMsg.includes("timeout")) {
-        showBubble("wo...ganggang you dian zou shen...", 5000);
+                showBubble("我……刚刚有点走神……", 5000);
       } else if (errMsg.includes("Network") || errMsg.includes("network")) {
-        showBubble("xin hao bu tai hao ne...", 5000);
+                showBubble("信号不太好呢……", 5000);
       } else if (errMsg.includes("RateLimit") || errMsg.includes("429")) {
-        showBubble("shuo le hao duo hua, rang wo chuan kou qi ba~", 5000);
+                showBubble("说了好多话，让我喘口气吧~", 5000);
       } else {
         showBubble("...", 3000);
       }
@@ -180,7 +225,7 @@ export default function App() {
         onDoubleClick={() => setInputVisible(true)}
         onClick={() => invoke("poke").catch(() => {})}
       >
-        <PetCharacter moodLabel={moodLabel} isThinking={isThinking} />
+        <PetCharacter moodLabel={moodLabel} isThinking={isThinking} behavior={behavior} />
       </div>
 
       <button

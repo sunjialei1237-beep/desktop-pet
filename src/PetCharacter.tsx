@@ -1,10 +1,12 @@
 import { memo } from "react";
+import { BehaviorState } from "./animation/fsm";
 
 type MoodLabel = string;
 
 interface PetCharacterProps {
   moodLabel: MoodLabel;
   isThinking: boolean;
+  behavior: BehaviorState;
 }
 
 function renderEyes(mood: string, thinking: boolean) {
@@ -17,42 +19,42 @@ function renderEyes(mood: string, thinking: boolean) {
     );
   }
   switch (mood) {
-    case "kai xin":
+    case "开心":
       return (
         <>
           <path d="M125 200 Q135 188 145 200" stroke="#4a4a6a" strokeWidth="4" fill="none" strokeLinecap="round" />
           <path d="M175 200 Q185 188 195 200" stroke="#4a4a6a" strokeWidth="4" fill="none" strokeLinecap="round" />
         </>
       );
-    case "tiao pi":
+    case "调皮":
       return (
         <>
           <path d="M125 198 L145 192 M125 192 L145 198" stroke="#4a4a6a" strokeWidth="3" fill="none" strokeLinecap="round" />
           <path d="M175 198 L195 192 M175 192 L195 198" stroke="#4a4a6a" strokeWidth="3" fill="none" strokeLinecap="round" />
         </>
       );
-    case "ping jing":
+    case "平静":
       return (
         <>
           <line x1="128" y1="195" x2="142" y2="195" stroke="#4a4a6a" strokeWidth="3" strokeLinecap="round" />
           <line x1="178" y1="195" x2="192" y2="195" stroke="#4a4a6a" strokeWidth="3" strokeLinecap="round" />
         </>
       );
-    case "nan guo":
+    case "难过":
       return (
         <>
           <path d="M125 190 Q135 200 145 190" stroke="#4a4a6a" strokeWidth="3" fill="none" strokeLinecap="round" />
           <path d="M175 190 Q185 200 195 190" stroke="#4a4a6a" strokeWidth="3" fill="none" strokeLinecap="round" />
         </>
       );
-    case "pi bei":
+    case "疲惫":
       return (
         <>
           <line x1="128" y1="193" x2="142" y2="197" stroke="#4a4a6a" strokeWidth="3" strokeLinecap="round" />
           <line x1="178" y1="193" x2="192" y2="197" stroke="#4a4a6a" strokeWidth="3" strokeLinecap="round" />
         </>
       );
-    case "dan xin":
+    case "担心":
       return (
         <>
           <circle cx="135" cy="195" r="6" fill="#4a4a6a" />
@@ -74,28 +76,38 @@ function renderMouth(mood: string, thinking: boolean) {
     return <circle cx="160" cy="235" r="5" fill="#4a4a6a" opacity="0.5" />;
   }
   switch (mood) {
-    case "kai xin":
+    case "开心":
       return <path d="M140 225 Q160 245 180 225" stroke="#4a4a6a" strokeWidth="3.5" fill="none" strokeLinecap="round" />;
-    case "tiao pi":
+    case "调皮":
       return <path d="M140 230 Q155 240 180 228" stroke="#4a4a6a" strokeWidth="3" fill="none" strokeLinecap="round" />;
-    case "ping jing":
+    case "平静":
       return <path d="M148 232 Q160 236 172 232" stroke="#4a4a6a" strokeWidth="3" fill="none" strokeLinecap="round" />;
-    case "nan guo":
+    case "难过":
       return <path d="M140 238 Q160 225 180 238" stroke="#4a4a6a" strokeWidth="3" fill="none" strokeLinecap="round" />;
-    case "pi bei":
+    case "疲惫":
       return <line x1="150" y1="234" x2="170" y2="234" stroke="#4a4a6a" strokeWidth="3" strokeLinecap="round" />;
-    case "dan xin":
+    case "担心":
       return <path d="M145 235 Q160 230 175 235" stroke="#4a4a6a" strokeWidth="3" fill="none" strokeLinecap="round" />;
     default:
       return <path d="M145 230 Q160 238 175 230" stroke="#4a4a6a" strokeWidth="3" fill="none" strokeLinecap="round" />;
   }
 }
 
-function PetCharacterComponent({ moodLabel, isThinking }: PetCharacterProps) {
+function PetCharacterComponent({ moodLabel, isThinking, behavior }: PetCharacterProps) {
+  // Map behavior states to CSS classes for animation
+  const behaviorClass = behavior === BehaviorState.LookAround ? " look-around"
+    : behavior === BehaviorState.Yawn ? " yawn"
+    : behavior === BehaviorState.Stretch ? " stretch"
+    : behavior === BehaviorState.Sway ? " sway"
+    : behavior === BehaviorState.Peek ? " peek"
+    : behavior === BehaviorState.Sleeping ? " sleeping"
+    : behavior === BehaviorState.TiltHead ? " tilt-head"
+    : "";
+
   return (
     <svg
       viewBox="0 0 320 400"
-      className={`pet-svg ${isThinking ? "thinking" : ""}`}
+      className={`pet-svg ${isThinking ? "thinking" : ""}${behaviorClass}`}
       style={{ width: "200px", height: "250px", overflow: "visible" }}
     >
       <defs>
@@ -127,6 +139,10 @@ function PetCharacterComponent({ moodLabel, isThinking }: PetCharacterProps) {
 
       {renderEyes(moodLabel, isThinking)}
       {renderMouth(moodLabel, isThinking)}
+
+      {behavior === BehaviorState.Sleeping && (
+        <text x="245" y="120" fontSize="20" fill="#aaa" opacity="0.6">Z z</text>
+      )}
 
       <path
         d="M120 110 Q130 100 140 108"

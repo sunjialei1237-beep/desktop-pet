@@ -27,17 +27,17 @@ impl Default for EmotionState {
 /// Used by the chat bubble system and debug panel.
 pub fn derive_mood_label(state: &EmotionState) -> &'static str {
     if state.stress > 0.7 {
-        "dan xin"
+        "担心"
     } else if state.social_battery < 0.2 {
-        "pi bei"
+        "疲惫"
     } else if state.mood < 0.3 {
-        "nan guo"
+        "难过"
     } else if state.mood < 0.45 {
-        "ping jing"
+        "平静"
     } else if state.mood > 0.7 {
-        "kai xin"
+        "开心"
     } else {
-        "tiao pi"
+        "调皮"
     }
 }
 
@@ -57,26 +57,26 @@ mod tests {
         let mut s = EmotionState::default();
 
         s.mood = 0.8;
-        assert_eq!(derive_mood_label(&s), "kai xin");
+        assert_eq!(derive_mood_label(&s), "开心");
 
         s.mood = 0.6;
-        assert_eq!(derive_mood_label(&s), "tiao pi");
+        assert_eq!(derive_mood_label(&s), "调皮");
 
         s.mood = 0.5;
-        assert_eq!(derive_mood_label(&s), "tiao pi");
+        assert_eq!(derive_mood_label(&s), "调皮");
 
         s.mood = 0.4;
-        assert_eq!(derive_mood_label(&s), "ping jing");
+        assert_eq!(derive_mood_label(&s), "平静");
 
         s.mood = 0.2;
-        assert_eq!(derive_mood_label(&s), "nan guo");
+        assert_eq!(derive_mood_label(&s), "难过");
 
         s.mood = 0.5;
         s.stress = 0.8;
-        assert_eq!(derive_mood_label(&s), "dan xin");
+        assert_eq!(derive_mood_label(&s), "担心");
 
         s.stress = 0.2;
         s.social_battery = 0.1;
-        assert_eq!(derive_mood_label(&s), "pi bei");
+        assert_eq!(derive_mood_label(&s), "疲惫");
     }
 }

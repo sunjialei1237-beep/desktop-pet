@@ -1,4 +1,4 @@
-use crate::db::facts as db_facts;
+﻿use crate::db::facts as db_facts;
 use crate::db::persona as db_persona;
 use crate::db::relationship as db_relationship;
 use crate::db::episodes as db_episodes;
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn test_emotion_match() {
         let emotion = EmotionState::default();
-        let matched = compute_emotion_match(&Some("tiao pi".to_string()), &emotion);
+       let matched = compute_emotion_match(&Some("调皮".to_string()), &emotion);
         let unmatched = compute_emotion_match(&Some("angry".to_string()), &emotion);
         assert!(matched > unmatched);
     }
@@ -401,3 +401,4 @@ mod tests {
         .unwrap();
     }
 }
+

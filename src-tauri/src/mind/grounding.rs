@@ -1,4 +1,4 @@
-//! Grounded Generation: builds the system prompt with memory constraints
+﻿//! Grounded Generation: builds the system prompt with memory constraints
 //! and formats retrieved memories with confidence/source annotations.
 //! Design doc 5.10: LLM may only reference retrieved memories; must say
 //! "not sure" rather than fabricate when relevant memory is absent.
@@ -437,6 +437,7 @@ mod tests {
         };
         let prompt = build_system_prompt(&empty_retrieval(), &emotion, &Intent::default());
         assert!(prompt.contains("[Current Mood]"));
-        assert!(prompt.contains("kai xin"));
+        assert!(prompt.contains("开心"));
     }
 }
+

@@ -287,4 +287,71 @@ html, body, #root {
   margin-top: 1px;
   opacity: 0.8;
 }
+
+/* Animation FSM behavior classes */
+.pet-svg.look-around {
+  animation: look-around 2.5s ease-in-out;
+}
+
+@keyframes look-around {
+  0%, 100% { transform: translateX(0) rotate(0deg); }
+  25% { transform: translateX(-8px) rotate(-3deg); }
+  50% { transform: translateX(0) rotate(0deg); }
+  75% { transform: translateX(8px) rotate(3deg); }
+}
+
+.pet-svg.yawn {
+  animation: yawn 2s ease-in-out;
+}
+
+@keyframes yawn {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05, 0.95); }
+}
+
+.pet-svg.stretch {
+  animation: stretch 2s ease-in-out;
+}
+
+@keyframes stretch {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  50% { transform: scale(1.08) rotate(-2deg); }
+}
+
+.pet-svg.sway {
+  animation: sway 3s ease-in-out;
+}
+
+@keyframes sway {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-4deg); }
+  75% { transform: rotate(4deg); }
+}
+
+.pet-svg.peek {
+  animation: peek 1.5s ease-in-out;
+}
+
+@keyframes peek {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-5px) scale(0.98); }
+}
+
+.pet-svg.tilt-head {
+  animation: tilt-head 1.5s ease-in-out;
+}
+
+@keyframes tilt-head {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(8deg); }
+}
+
+.pet-svg.sleeping {
+  animation: sleeping 3s ease-in-out infinite;
+  opacity: 0.85;
+}
+
+@keyframes sleeping {
+  0%, 100% { transform: scale(1) rotate(-5deg); }
+  50% { transform: scale(0.98) rotate(-5deg); }
 }
