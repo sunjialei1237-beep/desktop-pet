@@ -1,12 +1,18 @@
 import { memo } from "react";
 import { BehaviorState } from "./animation/fsm";
+import { AttentionState } from "./animation/attention";
 
 type MoodLabel = string;
 
 interface PetCharacterProps {
-  moodLabel: MoodLabel;
-  isThinking: boolean;
-  behavior: BehaviorState;
+ moodLabel: MoodLabel;
+ isThinking: boolean;
+ behavior: BehaviorState;
+  attention: AttentionState;
+  headAngleX: number;
+  headAngleY: number;
+  onHeadClick: () => void;
+  onBodyClick: () => void;
 }
 
 function renderEyes(mood: string, thinking: boolean) {
@@ -93,23 +99,46 @@ function renderMouth(mood: string, thinking: boolean) {
   }
 }
 
-function PetCharacterComponent({ moodLabel, isThinking, behavior }: PetCharacterProps) {
-  // Map behavior states to CSS classes for animation
-  const behaviorClass = behavior === BehaviorState.LookAround ? " look-around"
-    : behavior === BehaviorState.Yawn ? " yawn"
-    : behavior === BehaviorState.Stretch ? " stretch"
-    : behavior === BehaviorState.Sway ? " sway"
-    : behavior === BehaviorState.Peek ? " peek"
-    : behavior === BehaviorState.Sleeping ? " sleeping"
-    : behavior === BehaviorState.TiltHead ? " tilt-head"
-    : "";
+function PetCharacterComponent({
+  moodLabel, isThinking, behavior,
+  attention, headAngleX, headAngleY,
+  onHeadClick, onBodyClick,
+}: PetCharacterProps) {
+ // Map behavior states to CSS classes for animation
+ const behaviorClass = behavior === BehaviorState.LookAround ? " look-around"
+   : behavior === BehaviorState.Yawn ? " yawn"
+   : behavior === BehaviorState.Stretch ? " stretch"
+   : behavior === BehaviorState.Sway ? " sway"
+   : behavior === BehaviorState.Peek ? " peek"
+   : behavior === BehaviorState.Sleeping ? " sleeping"
+   : behavior === BehaviorState.TiltHead ? " tilt-head"
+   : "";
 
-  return (
-    <svg
-      viewBox="0 0 320 400"
-      className={`pet-svg ${isThinking ? "thinking" : ""}${behaviorClass}`}
-      style={{ width: "200px", height: "250px", overflow: "visible" }}
-    >
+  // Peripheral attention: eyes/face shift slightly toward cursor
+  const eyeOffsetX = attention === AttentionState.Peripheral ? headAngleX * 4 : 0;
+  const eyeOffsetY = attention === AttentionState.Peripheral ? headAngleY * 3 : 0;
+  const focusedClass = attention === AttentionState.Focused ? " attention-focused" : "";
+
+ return (
+   <svg
+     viewBox="0 0 320 400"
+      className={`pet-svg ${isThinking ? "thinking" : ""}${behaviorClass}${focusedClass}`}
+     style={{ width: "200px", height: "250px", overflow: "visible" }}
+   >
+      {/* Head click region: upper portion of the SVG */}
+      <ellipse
+        cx="160" cy="170" rx="110" ry="90"
+        fill="transparent"
+        style={{ cursor: "pointer" }}
+        onClick={onHeadClick}
+      />
+      {/* Body click region: lower portion */}
+      <ellipse
+        cx="160" cy="320" rx="110" ry="80"
+        fill="transparent"
+        style={{ cursor: "pointer" }}
+        onClick={onBodyClick}
+    />
       <defs>
         <radialGradient id="bodyGrad" cx="40%" cy="35%">
           <stop offset="0%" stopColor="#c5a3f0" />
@@ -137,8 +166,13 @@ function PetCharacterComponent({ moodLabel, isThinking, behavior }: PetCharacter
       <ellipse cx="115" cy="225" rx="18" ry="12" fill="url(#cheekGrad)" />
       <ellipse cx="205" cy="225" rx="18" ry="12" fill="url(#cheekGrad)" />
 
-      {renderEyes(moodLabel, isThinking)}
-      {renderMouth(moodLabel, isThinking)}
+      <g
+        transform={`translate(${eyeOffsetX}, ${eyeOffsetY})`}
+        style={{ transition: "transform 0.2s ease-out" }}
+      >
+        {renderEyes(moodLabel, isThinking)}
+        {renderMouth(moodLabel, isThinking)}
+      </g>
 
       {behavior === BehaviorState.Sleeping && (
         <text x="245" y="120" fontSize="20" fill="#aaa" opacity="0.6">Z z</text>

@@ -355,3 +355,129 @@ html, body, #root {
   0%, 100% { transform: scale(1) rotate(-5deg); }
   50% { transform: scale(0.98) rotate(-5deg); }
 }
+
+/* === P11: Emotion-driven bubble styles === */
+.chat-bubble.bubble-happy {
+  animation: bubble-pop-happy 0.3s ease-out;
+  border-radius: 20px;
+  font-weight: 500;
+}
+
+.chat-bubble.bubble-playful {
+  animation: bubble-wobble 0.4s ease-out;
+  border-radius: 18px;
+}
+
+.chat-bubble.bubble-calm {
+  animation: bubble-fade-in 0.4s ease-out;
+  border-radius: 16px;
+}
+
+.chat-bubble.bubble-sad {
+  animation: bubble-deflate 0.6s ease-out;
+  border-radius: 16px;
+  opacity: 0.85;
+}
+
+.chat-bubble.bubble-worried {
+  animation: bubble-tremble 0.3s ease-in-out;
+  border-radius: 16px;
+}
+
+@keyframes bubble-pop-happy {
+  0% { transform: scale(0.7) translateY(10px); opacity: 0; }
+  60% { transform: scale(1.05) translateY(0); opacity: 1; }
+  100% { transform: scale(1); }
+}
+
+@keyframes bubble-wobble {
+  0% { transform: scale(0.8) rotate(-2deg); opacity: 0; }
+  50% { transform: scale(1.03) rotate(1deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+
+@keyframes bubble-fade-in {
+  0% { transform: translateY(8px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes bubble-deflate {
+  0% { transform: scale(1.1); opacity: 0; }
+  100% { transform: scale(0.97); opacity: 0.85; }
+}
+
+@keyframes bubble-tremble {
+  0%, 100% { transform: translateX(0); opacity: 0; }
+  20% { transform: translateX(-2px); opacity: 0.7; }
+  40% { transform: translateX(2px); }
+  60% { transform: translateX(-1px); opacity: 1; }
+  80% { transform: translateX(1px); }
+}
+
+/* === P11: Attention focus glow === */
+.pet-svg.attention-focused {
+  filter: drop-shadow(0 0 8px rgba(200, 160, 255, 0.4));
+}
+
+/* === P11: Context Menu === */
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: rgba(40, 38, 55, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 6px 0;
+  min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.context-menu-item:hover {
+  background: rgba(157, 126, 224, 0.3);
+  color: #fff;
+}
+
+.context-menu-item svg {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.context-menu-item:hover svg {
+  opacity: 1;
+}
+
+.context-menu-danger {
+  color: rgba(255, 130, 130, 0.85);
+}
+
+.context-menu-danger:hover {
+  background: rgba(220, 80, 80, 0.25);
+  color: #ff9090;
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 4px 10px;
+}
+
+/* === P11: Input placeholder === */
+.input-bubble input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 13px;
+}

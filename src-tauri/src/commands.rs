@@ -228,16 +228,41 @@ pub async fn get_debug_data(state: State<'_, AppState>) -> Result<DebugData, Str
 
 /// Pet head interaction.
 #[tauri::command]
-pub async fn pet_head(_state: State<'_, AppState>) -> Result<(), String> {
-    log::info!("Pet head triggered");
+pub async fn pet_head(db: State<'_, DbState>) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    db.with_conn(|conn| {
+        crate::db::relationship::add_closeness(conn, 0.5, &now)?;
+        let emo = crate::db::emotion::get(conn)?;
+        let new_mood = (emo.mood + 0.05).min(1.0);
+        let new_battery = (emo.social_battery - 0.01).max(0.0);
+        crate::db::emotion::update_fields(
+            conn,
+            Some(new_mood), None, None,
+            Some(new_battery), None, None, None, &now,
+        )?;
+        Ok(())
+    })?;
     Ok(())
 }
 
 /// Poke interaction.
 #[tauri::command]
-pub async fn poke(_state: State<'_, AppState>) -> Result<(), String> {
-    log::info!("Poke triggered");
-    Ok(())
+pub async fn poke(db: State<'_, DbState>, count: Option<i32>) -> Result<bool, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let poke_count = count.unwrap_or(1);
+    db.with_conn(|conn| {
+        crate::db::relationship::add_closeness(conn, 0.1, &now)?;
+        let emo = crate::db::emotion::get(conn)?;
+        let mood_delta = if poke_count >= 3 { -0.08 } else { -0.02 };
+        let new_mood = (emo.mood + mood_delta).max(0.0);
+        crate::db::emotion::update_fields(
+            conn,
+            Some(new_mood), None, None,
+            None, None, None, None, &now,
+        )?;
+        Ok(())
+    })?;
+    Ok(poke_count >= 3)
 }
 
 /// Checks for due pending events and returns a proactive action if appropriate.
