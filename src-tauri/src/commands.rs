@@ -10,7 +10,7 @@ use crate::mind::working::WorkingMemory;
 /// Shared application state.
 pub struct AppState {
     pub config: AppConfig,
-    pub llm: Option<LlmClient>,
+    pub llm: std::sync::Mutex<Option<LlmClient>>,
     pub working_memory: Mutex<WorkingMemory>,
 }
 
@@ -72,7 +72,10 @@ pub async fn send_message(
 
     let llm = state
         .llm
+        .lock()
+        .map_err(|e| format!("LLM lock error: {}", e))?
         .as_ref()
+        .cloned()
         .ok_or("LLM not configured. Please set your API key in settings.")?;
 
     let result = crate::mind::converse::converse(
@@ -80,7 +83,7 @@ pub async fn send_message(
         &conversation_id,
         turn,
         &wm_context,
-        llm,
+        &llm,
         &db,
         None,
     )
@@ -123,7 +126,7 @@ pub async fn trigger_reflection_if_due(
     state: State<'_, AppState>,
     db: State<'_, DbState>,
 ) -> Result<bool, String> {
-    let llm = match state.llm.as_ref() {
+    let llm = match state.llm.lock().ok().and_then(|g| g.clone()) {
         Some(l) => l,
         None => return Ok(false),
     };
@@ -150,7 +153,7 @@ pub async fn trigger_reflection_if_due(
 
     match crate::soul::reflection::run_reflection(
         crate::soul::reflection::ReflectionTrigger::Daily,
-        &db, llm,
+        &db, &llm,
     ).await {
         Ok(r) => {
             log::info!("Reflection triggered: {}", r.summary);
@@ -217,7 +220,7 @@ pub async fn get_emotion_state(db: State<'_, DbState>) -> Result<EmotionResponse
 #[tauri::command]
 pub async fn get_debug_data(state: State<'_, AppState>) -> Result<DebugData, String> {
     Ok(DebugData {
-        llm_configured: state.llm.is_some(),
+        llm_configured: state.llm.lock().map(|g| g.is_some()).unwrap_or(false),
         embedding_configured: !state.config.embedding.model_dir.is_empty(),
         db_path: crate::config::resolve_db_path(&state.config)
             .to_string_lossy()
@@ -345,13 +348,25 @@ pub async fn update_llm_config(
         reflection_model
     };
     crate::config::save_config(&config)?;
-    log::info!("LLM config saved (restart to take effect)");
+    log::info!("LLM config saved, reinitializing client");
+
+    // Reinitialize the LLM client immediately so the user can chat without restart.
+    let new_llm = crate::llm::client::LlmClient::new(
+        &config.llm.base_url,
+        &config.llm.api_key,
+        &config.llm.main_model,
+        &config.llm.reflection_model,
+    ).ok();
+
+    if let Ok(mut guard) = state.llm.lock() {
+        *guard = new_llm;
+    }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn get_llm_status(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.llm.is_some())
+    Ok(state.llm.lock().map(|g| g.is_some()).unwrap_or(false))
 }
 
 /// Resolves a pending event (user confirmed it).
@@ -483,7 +498,7 @@ pub async fn get_debug_snapshot(
             recent_facts,
             pending_events,
             change_log: crate::db::changelog::recent(conn, 20).unwrap_or_default(),
-            llm_configured: state.llm.is_some(),
+            llm_configured: state.llm.lock().map(|g| g.is_some()).unwrap_or(false),
         })
     })
 }

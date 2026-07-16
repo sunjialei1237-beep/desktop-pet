@@ -59,6 +59,7 @@ pub struct ChatResult {
 }
 
 /// OpenAI-compatible LLM client. Works with DeepSeek, OpenAI, Moonshot, Ollama, vLLM, etc.
+#[derive(Clone)]
 pub struct LlmClient {
     http: HttpClient,
     base_url: String,

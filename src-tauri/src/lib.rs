@@ -51,14 +51,14 @@ pub fn run() {
     );
 
     // Initialize LLM client if configured.
-    let llm = crate::llm::client::LlmClient::new(
+    let llm_client = crate::llm::client::LlmClient::new(
         &config.llm.base_url,
         &config.llm.api_key,
         &config.llm.main_model,
         &config.llm.reflection_model,
     )
     .ok();
-    if llm.is_some() {
+    if llm_client.is_some() {
         log::info!("LLM client initialized (model: {})", config.llm.main_model);
     } else {
         log::warn!("LLM not configured — conversation will fail until API key is set");
@@ -71,7 +71,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             config,
-            llm,
+            llm: std::sync::Mutex::new(llm_client),
             working_memory,
         })
         .manage(db_state)
