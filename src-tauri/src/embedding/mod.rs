@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// High-level embedding service that wraps the model with lifecycle management.
-/// Owns an Option<Arc<Mutex<EmbeddingModel>>> - None means model not loaded yet.
-/// Mutex provides interior mutability (ort session.run() needs &mut self).
+/// Uses interior mutability so `load()` can be called on a shared reference
+/// (required for Tauri's `State<AppState>` which only provides `&self`).
 pub struct EmbeddingService {
-    model: Option<Arc<Mutex<EmbeddingModel>>>,
+    model: Mutex<Option<Arc<Mutex<EmbeddingModel>>>>,
     model_dir: PathBuf,
 }
 
@@ -22,31 +22,35 @@ impl EmbeddingService {
     /// Call load after verifying the model files are present.
     pub fn new(model_dir: &Path) -> Self {
         EmbeddingService {
-            model: None,
+            model: Mutex::new(None),
             model_dir: model_dir.to_path_buf(),
         }
     }
 
     /// Attempts to load the model from disk. Returns an error if files are missing.
-    pub fn load(&mut self) -> Result<()> {
+    /// Safe to call on a shared reference (uses interior mutability).
+    pub fn load(&self) -> Result<()> {
         let model = EmbeddingModel::load(&self.model_dir)?;
-        self.model = Some(Arc::new(Mutex::new(model)));
+        let mut guard = self.model.lock()
+            .map_err(|e| EmbeddingError::Onnx(format!("Service lock: {}", e)))?;
+        *guard = Some(Arc::new(Mutex::new(model)));
         log::info!("EmbeddingService model loaded");
         Ok(())
     }
 
     /// Returns true if the model is loaded and ready for inference.
     pub fn is_ready(&self) -> bool {
-        self.model.is_some()
+        self.model.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
     /// Embeds a single text. Returns an error if the model isn't loaded.
     pub fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        let model = self
-            .model
-            .as_ref()
-            .ok_or(EmbeddingError::ModelNotConfigured)?;
-        let mut guard = model
+        let model_arc = {
+            let guard = self.model.lock()
+                .map_err(|e| EmbeddingError::Onnx(format!("Service lock: {}", e)))?;
+            guard.as_ref().ok_or(EmbeddingError::ModelNotConfigured)?.clone()
+        };
+        let mut guard = model_arc
             .lock()
             .map_err(|e| EmbeddingError::Onnx(format!("Model lock: {}", e)))?;
         guard.embed(text)
@@ -54,19 +58,25 @@ impl EmbeddingService {
 
     /// Embeds multiple texts.
     pub fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let model = self
-            .model
-            .as_ref()
-            .ok_or(EmbeddingError::ModelNotConfigured)?;
-        let mut guard = model
+        let model_arc = {
+            let guard = self.model.lock()
+                .map_err(|e| EmbeddingError::Onnx(format!("Service lock: {}", e)))?;
+            guard.as_ref().ok_or(EmbeddingError::ModelNotConfigured)?.clone()
+        };
+        let mut guard = model_arc
             .lock()
             .map_err(|e| EmbeddingError::Onnx(format!("Model lock: {}", e)))?;
         guard.embed_batch(texts)
     }
 
+    /// Returns the model directory path.
+    pub fn model_dir(&self) -> &Path {
+        &self.model_dir
+    }
+
     /// Returns a clone of the Arc to the loaded model, if available.
     pub fn model_handle(&self) -> Option<Arc<Mutex<EmbeddingModel>>> {
-        self.model.clone()
+        self.model.lock().ok().and_then(|g| g.clone())
     }
 }
 
@@ -86,7 +96,7 @@ mod tests {
         let dir = std::env::temp_dir().join("dpet_test_svc_missing");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut svc = EmbeddingService::new(&dir);
+        let svc = EmbeddingService::new(&dir);
         let result = svc.load();
         assert!(result.is_err());
         assert!(!svc.is_ready());

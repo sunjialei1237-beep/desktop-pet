@@ -78,6 +78,16 @@ pub fn resolve_db_path(config: &AppConfig) -> PathBuf {
     }
 }
 
+/// Resolves the embedding model directory.
+/// Empty string in config means default location under app data dir.
+pub fn resolve_model_dir(config: &AppConfig) -> PathBuf {
+    if config.embedding.model_dir.is_empty() {
+        app_data_dir().join("models").join(&config.embedding.model_name)
+    } else {
+        PathBuf::from(&config.embedding.model_dir)
+    }
+}
+
 /// Loads the configuration from config.toml.
 /// If the file does not exist, copies it from the bundled example template
 /// and returns the default values.

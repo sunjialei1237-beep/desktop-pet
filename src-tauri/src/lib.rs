@@ -66,12 +66,31 @@ pub fn run() {
 
     let working_memory = Mutex::new(crate::mind::working::WorkingMemory::new());
 
+    // Initialize embedding service. Try to load if model files already exist.
+    let model_dir = config::resolve_model_dir(&config);
+    let embedding_service = crate::embedding::EmbeddingService::new(&model_dir);
+    {
+        let downloader = crate::embedding::ModelDownloader::new(&model_dir);
+        if downloader.check_complete() {
+            match embedding_service.load() {
+                Ok(()) => log::info!("Embedding model loaded from {:?}", model_dir),
+                Err(e) => log::warn!("Failed to load embedding model: {}", e),
+            }
+        } else {
+            log::info!(
+                "Embedding model not found at {:?}. Use Settings to download.",
+                model_dir
+            );
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             config,
             llm: std::sync::Mutex::new(llm_client),
+            embedding: embedding_service,
             working_memory,
         })
         .manage(db_state)
@@ -115,6 +134,8 @@ pub fn run() {
             commands::get_llm_config,
             commands::update_llm_config,
             commands::get_debug_snapshot,
+            commands::get_embedding_status,
+            commands::download_embedding_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

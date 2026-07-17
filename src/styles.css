@@ -251,6 +251,61 @@ html, body, #root {
   opacity: 0.6;
 }
 
+.settings-divider {
+  height: 1px;
+  background: #eee;
+  margin: 20px 0 4px;
+}
+
+.emb-status {
+  margin-top: 12px;
+}
+
+.emb-badge {
+  display: inline-block;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.emb-ok {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.emb-warn {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.emb-missing {
+  background: #fce4ec;
+  color: #c62828;
+}
+
+.emb-download-btn {
+  background: #66bb6a;
+}
+
+.emb-download-btn:hover {
+  background: #4caf50;
+}
+
+.emb-progress-text {
+  font-size: 12px;
+  color: #888;
+  margin-top: 8px;
+  word-break: break-all;
+}
+
+.emb-hint {
+  font-size: 11px;
+  color: #aaa;
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
 .debug-panel {
   position: absolute;
   top: 0;

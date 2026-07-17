@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::config::AppConfig;
 use crate::db::DbState;
+use crate::embedding::{EmbeddingService, ModelDownloader};
 use crate::llm::client::{ChatMessage, LlmClient};
 use crate::mind::working::WorkingMemory;
 
@@ -11,6 +12,7 @@ use crate::mind::working::WorkingMemory;
 pub struct AppState {
     pub config: AppConfig,
     pub llm: std::sync::Mutex<Option<LlmClient>>,
+    pub embedding: EmbeddingService,
     pub working_memory: Mutex<WorkingMemory>,
 }
 
@@ -85,7 +87,7 @@ pub async fn send_message(
         &wm_context,
         &llm,
         &db,
-        None,
+        Some(&state.embedding),
     )
     .await?;
 
@@ -221,7 +223,7 @@ pub async fn get_emotion_state(db: State<'_, DbState>) -> Result<EmotionResponse
 pub async fn get_debug_data(state: State<'_, AppState>) -> Result<DebugData, String> {
     Ok(DebugData {
         llm_configured: state.llm.lock().map(|g| g.is_some()).unwrap_or(false),
-        embedding_configured: !state.config.embedding.model_dir.is_empty(),
+        embedding_configured: state.embedding.is_ready(),
         db_path: crate::config::resolve_db_path(&state.config)
             .to_string_lossy()
             .to_string(),
@@ -367,6 +369,79 @@ pub async fn update_llm_config(
 #[tauri::command]
 pub async fn get_llm_status(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.llm.lock().map(|g| g.is_some()).unwrap_or(false))
+}
+
+/// Checks the embedding model status: whether files exist on disk and are loaded.
+#[derive(Debug, Serialize)]
+pub struct EmbeddingStatus {
+    pub ready: bool,
+    pub files_present: bool,
+    pub model_dir: String,
+    pub missing_files: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn get_embedding_status(
+    state: State<'_, AppState>,
+) -> Result<EmbeddingStatus, String> {
+    let model_dir = state.embedding.model_dir().to_path_buf();
+    let downloader = ModelDownloader::new(&model_dir);
+    let missing = downloader.missing_files();
+    let files_present = missing.is_empty();
+    Ok(EmbeddingStatus {
+        ready: state.embedding.is_ready(),
+        files_present,
+        model_dir: model_dir.to_string_lossy().to_string(),
+        missing_files: missing,
+    })
+}
+
+/// Downloads the BGE-M3 embedding model files. Emits progress via events.
+/// After download completes, loads the model into memory.
+#[tauri::command]
+pub async fn download_embedding_model(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let model_dir = state.embedding.model_dir().to_path_buf();
+    let downloader = ModelDownloader::new(&model_dir);
+
+    if downloader.check_complete() {
+        log::info!("Embedding model already downloaded");
+        if !state.embedding.is_ready() {
+            state.embedding.load().map_err(|e| format!("{}", e))?;
+        }
+        return Ok(true);
+    }
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("HTTP client: {}", e))?;
+
+    let app_handle = app.clone();
+    let progress: crate::embedding::ProgressCallback = Box::new(move |p| {
+        let _ = app_handle.emit(
+            "download-progress",
+            serde_json::json!({
+                "file_name": p.file_name,
+                "downloaded": p.downloaded,
+                "total": p.total,
+                "fraction": p.fraction,
+            }),
+        );
+    });
+
+    downloader
+        .download_all(&http, Some(&progress))
+        .await
+        .map_err(|e| format!("Download failed: {}", e))?;
+
+    log::info!("Embedding model downloaded, loading into memory");
+    state.embedding.load().map_err(|e| format!("Load failed: {}", e))?;
+
+    let _ = app.emit("embedding-ready", serde_json::json!({ "ready": true }));
+    Ok(true)
 }
 
 /// Resolves a pending event (user confirmed it).
