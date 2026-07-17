@@ -14,3 +14,15 @@ Thumbs.db
 
 # Test screenshots
 *.png
+
+# User config (contains API key — never commit!)
+config.toml
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# Model weights
+*.onnx
+onnxruntime.dll
