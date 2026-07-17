@@ -46,7 +46,7 @@ pub async fn converse(
     let outcome = crate::mind::ingest(text, conversation_id, turn, &known_facts, llm, db, embedding).await?;
 
     // Step 2: Load emotion state from DB and convert to business type.
-    let db_emotion = db.with_conn(|conn| crate::db::emotion::get(conn))?;
+    let db_emotion = db.with_conn(crate::db::emotion::get)?;
     let emotion = crate::emotion::state::EmotionState {
         mood: db_emotion.mood,
         physical_energy: db_emotion.physical_energy,
@@ -72,7 +72,7 @@ pub async fn converse(
 
     // Step 6: Planner — produce Intent.
     let relationship = db
-        .with_conn(|conn| crate::db::relationship::get(conn))
+        .with_conn(crate::db::relationship::get)
         .ok();
     let intent = crate::mind::planner::plan(
         text,

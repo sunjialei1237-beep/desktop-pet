@@ -13,7 +13,7 @@ fn vec_to_blob(vec: &[f32]) -> Vec<u8> {
 
 /// Deserializes a little-endian byte blob back into a float vector.
 fn blob_to_vec(blob: &[u8]) -> Vec<f32> {
-    assert!(blob.len() % 4 == 0, "corrupt embedding blob");
+    assert!(blob.len().is_multiple_of(4), "corrupt embedding blob");
     (0..blob.len())
         .step_by(4)
         .map(|i| {

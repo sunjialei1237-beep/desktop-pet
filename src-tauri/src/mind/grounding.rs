@@ -25,10 +25,7 @@ pub fn build_system_prompt(
     emotion: &EmotionState,
     intent: &Intent,
 ) -> String {
-    let mut sections = Vec::new();
-
-    // 0. Base personality template (static rules).
-    sections.push(SYSTEM_TEMPLATE.to_string());
+    let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
 
     // 1. Persona + relationship
     sections.push(format_persona(&retrieval.persona_traits, &retrieval.relationship));

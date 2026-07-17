@@ -10,6 +10,9 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use serde::Serialize;
 
+/// An episode paired with its stored embedding vector (if available).
+type EpisodeWithVector = (db_episodes::Episode, Option<Vec<f32>>);
+
 /// Weights for the hybrid retrieval score.
 const W_SEMANTIC: f64 = 0.4;
 const W_STRENGTH: f64 = 0.3;
@@ -75,8 +78,7 @@ pub fn retrieve(
         // cosine similarity and load those specific episodes. This replaces
         // the old keyword-only fallback for any conversation where the model
         // is loaded.
-        if query_vec.is_some() {
-            let qv = query_vec.as_ref().unwrap();
+        if let Some(qv) = query_vec.as_ref() {
             let hits = db_vectors::search(conn, qv, 50)?;
             if !hits.is_empty() {
                 let mut result = Vec::new();
@@ -131,10 +133,10 @@ pub fn retrieve(
     }
 
     // Retrieve active facts.
-    let facts = db.with_conn(|conn| get_active_facts(conn))?;
+    let facts = db.with_conn(get_active_facts)?;
 
     // Retrieve persona snapshot.
-    let relationship = db.with_conn(|conn| db_relationship::get(conn)).ok();
+    let relationship = db.with_conn(db_relationship::get).ok();
     let persona_traits = db.with_conn(|conn| {
         Ok(db_persona::get_all_traits(conn)
             .unwrap_or_default())
@@ -153,7 +155,7 @@ pub fn retrieve(
 fn get_candidate_episodes(
     conn: &Connection,
     limit: usize,
-) -> Result<Vec<(db_episodes::Episode, Option<Vec<f32>>)>, String> {
+) -> Result<Vec<EpisodeWithVector>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, time, summary, emotion, importance, is_landmark,

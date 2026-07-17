@@ -297,7 +297,7 @@ pub async fn check_proactive(
 ) -> Result<Option<crate::pending::ProactiveAction>, String> {
     let events = crate::pending::check_due(&db)?;
 
-    let db_emotion = db.with_conn(|conn| crate::db::emotion::get(conn))?;
+    let db_emotion = db.with_conn(crate::db::emotion::get)?;
     let emotion = crate::emotion::state::EmotionState {
         mood: db_emotion.mood,
         physical_energy: db_emotion.physical_energy,
@@ -308,7 +308,7 @@ pub async fn check_proactive(
     };
 
     let closeness = db
-        .with_conn(|conn| crate::db::relationship::get(conn))
+        .with_conn(crate::db::relationship::get)
         .ok()
         .map(|r| r.closeness)
         .unwrap_or(0.0);

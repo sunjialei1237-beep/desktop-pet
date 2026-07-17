@@ -81,7 +81,7 @@ fn medium_tick(app: &AppHandle) {
     }
 
     // 3. Push current emotion state to frontend.
-    match db.with_conn(|conn| crate::db::emotion::get(conn)) {
+    match db.with_conn(crate::db::emotion::get) {
         Ok(emo) => {
             let _ = app.emit(
                 "emotion-update",
@@ -108,13 +108,13 @@ fn slow_tick(app: &AppHandle) {
     let now = chrono::Utc::now().to_rfc3339();
 
     // 1. Episode memory decay.
-    match db.with_conn(|conn| crate::db::episodes::decay_strength(conn)) {
+    match db.with_conn(crate::db::episodes::decay_strength) {
         Ok(count) => log::info!("Life loop: decayed {} episodes", count),
         Err(e) => log::warn!("Memory decay failed: {}", e),
     }
 
     // 2. Relationship closeness drift (after 24h of no interaction).
-    match db.with_conn(|conn| crate::db::relationship::get(conn)) {
+    match db.with_conn(crate::db::relationship::get) {
         Ok(rel) => {
             if let Some(last) = &rel.last_interaction_at {
                 if let Ok(last_dt) = chrono::DateTime::parse_from_rfc3339(last) {

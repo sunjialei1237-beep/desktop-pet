@@ -40,6 +40,11 @@ impl WorkingMemory {
         self.messages.len()
     }
 
+    /// Returns true if no messages are held.
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
     /// Clears all messages.
     pub fn clear(&mut self) {
         self.messages.clear();

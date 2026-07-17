@@ -1,7 +1,6 @@
 /// Relationship Pace (design doc 10.2).
 /// Logarithmic curve: fast at low closeness, slow at high.
 /// Can decrease: ignoring her drops closeness.
-
 /// Daily closeness gain cap.
 pub const DAILY_GAIN_CAP: f64 = 3.0;
 /// Decay factor per day of no interaction.
