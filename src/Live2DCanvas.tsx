@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 
 // PixiJS + Live2D integration for the desktop pet rendering layer.
-// This replaces the SVG PetCharacter with a proper Live2D Cubism 4 model.
 // The Cubism Core library is loaded via a script tag in index.html.
 // pixi-live2d-display is imported dynamically to keep the initial bundle small.
 
@@ -12,24 +11,25 @@ interface Live2DCanvasProps {
   onBodyClick: () => void;
 }
 
-// Map internal mood labels to Haru model expression indices (F01-F08).
-const MOOD_EXPRESSION: Record<string, number> = {
-  happy: 0,
-  playful: 1,
-  calm: 2,
-  sad: 3,
-  worried: 4,
-  tired: 5,
+// Map internal mood labels to Haru model expression names.
+// The model defines f00..f07 in model3.json.
+const MOOD_EXPRESSION_NAME: Record<string, string> = {
+  happy: "f00",
+  playful: "f01",
+  calm: "f02",
+  sad: "f03",
+  worried: "f04",
+  tired: "f05",
 };
 
-function moodToIndex(label: string): number {
-  if (label === "\u5f00\u5fc3") return MOOD_EXPRESSION.happy;
-  if (label === "\u8c03\u76ae") return MOOD_EXPRESSION.playful;
-  if (label === "\u5e73\u9759") return MOOD_EXPRESSION.calm;
-  if (label === "\u96be\u8fc7" || label === "\u7b2e\u96be") return MOOD_EXPRESSION.sad;
-  if (label === "\u62c5\u5fc3") return MOOD_EXPRESSION.worried;
-  if (label === "\u75b2\u60eb") return MOOD_EXPRESSION.tired;
-  return MOOD_EXPRESSION.calm;
+function moodToExpressionName(label: string): string {
+  if (label === "\u5f00\u5fc3") return MOOD_EXPRESSION_NAME.happy;       // 开心 = happy
+  if (label === "\u8c03\u76ae") return MOOD_EXPRESSION_NAME.playful;    // 调皮 = playful
+  if (label === "\u5e73\u9759") return MOOD_EXPRESSION_NAME.calm;       // 平静 = calm
+  if (label === "\u96be\u8fc7" || label === "\u7b2e\u96be") return MOOD_EXPRESSION_NAME.sad;
+  if (label === "\u62c5\u5fc3") return MOOD_EXPRESSION_NAME.worried;    // worried
+  if (label === "\u75b2\u60eb") return MOOD_EXPRESSION_NAME.tired;      // tired
+  return MOOD_EXPRESSION_NAME.calm;
 }
 
 export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }: Live2DCanvasProps) {
@@ -41,8 +41,19 @@ export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }
     let destroyed = false;
 
     (async () => {
-      const PIXI = await import("pixi.js");
-      const { Live2DModel } = await import("pixi-live2d-display-lipsyncpatch");
+      // Verify Cubism Core is loaded before attempting model creation.
+      const w = window as any;
+      if (!w.Live2DCubismCore) {
+        console.error("[Live2D] Cubism Core runtime not found. Check index.html script tag + CSP wasm-unsafe-eval.");
+        return;
+      }
+
+     const PIXI = await import("pixi.js");
+      // Use cubism4 subpath to avoid requiring the Cubism 2 runtime (live2d.min.js).
+      const { Live2DModel } = await import("pixi-live2d-display-lipsyncpatch/cubism4");
+
+      // Register the PIXI Ticker so the model animates (breathing, blink, motion).
+      Live2DModel.registerTicker(PIXI.Ticker);
 
       if (destroyed || !canvasRef.current) return;
 
@@ -52,13 +63,14 @@ export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }
         autoDensity: true,
         width: 400,
         height: 600,
-       antialias: true,
+        antialias: true,
         view: canvasRef.current,
-     });
+      });
       appRef.current = app;
 
       try {
-        const model = await Live2DModel.from("/live2d/models/haru/haru_greeter_t03.model3.json");
+        const modelUrl = "/live2d/models/haru/haru_greeter_t03.model3.json";
+        const model = await Live2DModel.from(modelUrl);
         if (destroyed) {
           model.destroy();
           return;
@@ -66,6 +78,7 @@ export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }
 
         app.stage.addChild(model);
 
+        // Scale model to fit within the canvas, centered.
         const scale = Math.min(app.screen.width / model.width, app.screen.height / model.height) * 0.85;
         model.scale.set(scale);
         model.anchor.set(0.5, 0.5);
@@ -82,7 +95,7 @@ export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }
           }
         });
       } catch (err) {
-        console.error("Live2D model load failed:", err);
+        console.error("[Live2D] model load failed:", err);
       }
     })();
 
@@ -103,9 +116,9 @@ export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }
   useEffect(() => {
     const model = modelRef.current;
     if (!model) return;
-    const idx = moodToIndex(moodLabel);
+    const name = moodToExpressionName(moodLabel);
     try {
-      model.expression(idx);
+      model.expression(name);
     } catch {
       // expression may not be ready yet
     }
