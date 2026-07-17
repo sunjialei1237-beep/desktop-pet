@@ -8,6 +8,8 @@ pub struct AppConfig {
     pub llm: LlmConfig,
     pub embedding: EmbeddingConfig,
     pub app: AppConfigData,
+    #[serde(default)]
+    pub perception: PerceptionConfig,
 }
 
 /// LLM API configuration (OpenAI-compatible).
@@ -34,6 +36,25 @@ pub struct AppConfigData {
     pub log_level: String,
 }
 
+/// Perception layer toggles (Architecture Principle 6: every feature must be disableable).
+/// Missing [perception] section in older config files uses all-enabled defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerceptionConfig {
+    pub enable_time: bool,
+    pub enable_presence: bool,
+    pub enable_window: bool,
+}
+
+impl Default for PerceptionConfig {
+    fn default() -> Self {
+        PerceptionConfig {
+            enable_time: true,
+            enable_presence: true,
+            enable_window: true,
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         AppConfig {
@@ -52,6 +73,7 @@ impl Default for AppConfig {
                 debug: true,
                 log_level: "info".to_string(),
             },
+            perception: PerceptionConfig::default(),
         }
     }
 }

@@ -136,6 +136,7 @@ pub fn run() {
             commands::get_debug_snapshot,
             commands::get_embedding_status,
             commands::download_embedding_model,
+            commands::check_cold_start,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

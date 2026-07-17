@@ -180,22 +180,41 @@ pub async fn get_pending_thoughts(
 
 /// Returns the current perception snapshot (time, presence, window category).
 #[tauri::command]
-pub async fn get_perception(db: State<'_, DbState>) -> Result<crate::perception::PerceptionSnapshot, String> {
+pub async fn get_perception(
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<crate::perception::PerceptionSnapshot, String> {
+    let cfg = &state.config.perception;
+
     let last_interaction = db.with_conn(|conn| {
         let rel = crate::db::relationship::get(conn)?;
         Ok(rel.last_interaction_at)
     })?;
 
-    let since_last = match last_interaction {
-        Some(ts) => crate::perception::time::seconds_since(&ts),
-        None => 0,
+    let since_last = if cfg.enable_time {
+        match last_interaction {
+            Some(ts) => crate::perception::time::seconds_since(&ts),
+            None => 0,
+        }
+    } else {
+        0
     };
 
-    let presence = crate::perception::presence::current_presence();
-    let proc = crate::perception::window::foreground_process();
-    let category = match &proc {
-        Some(p) => crate::perception::window::classify_process(p),
-        None => crate::perception::AppCategory::Other,
+    let presence = if cfg.enable_presence {
+        crate::perception::presence::current_presence()
+    } else {
+        crate::perception::PresenceState::Active
+    };
+
+    let (proc, category) = if cfg.enable_window {
+        let p = crate::perception::window::foreground_process();
+        let c = match &p {
+            Some(name) => crate::perception::window::classify_process(name),
+            None => crate::perception::AppCategory::Other,
+        };
+        (p, c)
+    } else {
+        (None, crate::perception::AppCategory::Other)
     };
 
     Ok(crate::perception::PerceptionSnapshot {
@@ -310,6 +329,52 @@ pub async fn check_proactive(
     }
 
     Ok(action)
+}
+
+/// Checks for due cold-start interview questions (first 3 days).
+/// These bypass the closeness gate to help build the relationship early on.
+/// Returns the next due interview question, or None if none are due.
+#[tauri::command]
+pub async fn check_cold_start(db: State<'_, DbState>) -> Result<Option<String>, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let question: Option<String> = db.with_conn(|conn| {
+        let event: Option<crate::db::pending::PendingEvent> = conn
+            .query_row(
+                "SELECT id, title, event_date, remind_date, source_episode,
+                        status, importance, followup_count, created_at, triggered_at, resolved_at
+                 FROM pending_events
+                 WHERE status = 'interview' AND remind_date IS NOT NULL AND remind_date <= ?1
+                 ORDER BY remind_date ASC LIMIT 1",
+                rusqlite::params![now],
+                |row| {
+                    Ok(crate::db::pending::PendingEvent {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        event_date: row.get(2)?,
+                        remind_date: row.get(3)?,
+                        source_episode: row.get(4)?,
+                        status: row.get(5)?,
+                        importance: row.get(6)?,
+                        followup_count: row.get(7)?,
+                        created_at: row.get(8)?,
+                        triggered_at: row.get(9)?,
+                        resolved_at: row.get(10)?,
+                    })
+                },
+            )
+            .ok();
+
+        if let Some(ev) = event {
+            // Mark as triggered so it doesn't fire again.
+            let _ = crate::db::pending::mark_triggered(conn, &ev.id, &now);
+            Ok(Some(ev.title))
+        } else {
+            Ok(None)
+        }
+    })?;
+
+    Ok(question)
 }
 
 #[derive(Debug, Serialize)]

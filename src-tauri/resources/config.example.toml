@@ -24,3 +24,10 @@ model_name = "bge-m3"
 db_path = ""
 debug = true
 log_level = "info"
+
+[perception]
+# Each perception layer can be independently disabled (Architecture Principle 6).
+# When disabled, the layer returns neutral defaults instead of querying the OS.
+enable_time = true
+enable_presence = true
+enable_window = true

@@ -180,6 +180,13 @@ export default function App() {
     const proactiveTimer = setInterval(async () => {
       if (awayMode) return;
       try {
+        // Cold-start interview check (bypasses closeness gate).
+        const interview = await invoke<string | null>("check_cold_start");
+        if (interview) {
+          showBubble(interview, 15000, "bubble-calm");
+          return;
+        }
+
         const action = await invoke<ProactiveAction | null>("check_proactive");
         if (action) {
           let msg = "";
