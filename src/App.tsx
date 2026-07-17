@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Live2DCanvas } from "./Live2DCanvas";
 import { SettingsPanel } from "./SettingsPanel";
 import { DebugPanel } from "./DebugPanel";
@@ -42,6 +41,7 @@ export default function App() {
   const [bubbleText, setBubbleText] = useState("");
   const [bubbleVisible, setBubbleVisible] = useState(false);
   const [bubbleStyle, setBubbleStyle] = useState("");
+  const [bubblePos, setBubblePos] = useState("");
   const [inputVisible, setInputVisible] = useState(false);
   const [inputText, setInputText] = useState("");
   const [isThinking, setIsThinking] = useState(false);
@@ -52,6 +52,7 @@ export default function App() {
  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [awayMode, setAwayMode] = useState(false);
   const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const welcomeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [behavior, setBehavior] = useState<BehaviorState>(BehaviorState.Idle);
   const fsmRef = useRef<AnimationFSM | null>(null);
   const petRef = useRef<HTMLDivElement>(null);
@@ -64,9 +65,13 @@ export default function App() {
   const physicsRef = useRef<Physics | null>(null);
   const spatialRef = useRef<SpatialMemory | null>(null);
   const [petPos, setPetPos] = useState<PetPosition | null>(null);
-  const [isWalking, setIsWalking] = useState(false);
-  const [isBeingDragged, setIsBeingDragged] = useState(false);
-  const circadianRef = useRef(getCircadianState());
+ const [isWalking, setIsWalking] = useState(false);
+ const [isBeingDragged, setIsBeingDragged] = useState(false);
+ const circadianRef = useRef(getCircadianState());
+  const pointerRef = useRef({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+  const dragStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null);
+  const dragPendingRef = useRef(false);
+  const thinkStartRef = useRef(0);
 
   if (!physicsRef.current) {
     physicsRef.current = new Physics();
@@ -80,9 +85,10 @@ export default function App() {
     fsmRef.current.onStateChange((s) => setBehavior(s));
   }
 
-  const showBubble = useCallback((text: string, duration = 8000, style = "") => {
+  const showBubble = useCallback((text: string, duration = 8000, style = "", pos = "") => {
     setBubbleText(text);
     setBubbleStyle(style);
+    setBubblePos(pos);
     setBubbleVisible(true);
     if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current);
     bubbleTimerRef.current = setTimeout(() => setBubbleVisible(false), duration);
@@ -101,10 +107,11 @@ export default function App() {
 
   // Attention tracking: mouse proximity to pet (Design doc 6.6)
   useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      const el = petRef.current;
-      if (!el || awayMode) return;
-      const rect = el.getBoundingClientRect();
+   const onMouseMove = (e: MouseEvent) => {
+     const el = petRef.current;
+     if (!el || awayMode) return;
+      pointerRef.current = { x: e.clientX, y: e.clientY };
+     const rect = el.getBoundingClientRect();
       const petRect: PetRect = {
         centerX: rect.left + rect.width / 2,
         centerY: rect.top + rect.height / 2,
@@ -143,7 +150,8 @@ export default function App() {
     const unlisteners: UnlistenFn[] = [];
 
     listen<string>("bubble-show", (event) => {
-      showBubble(event.payload);
+      if (welcomeTimerRef.current) { clearTimeout(welcomeTimerRef.current); welcomeTimerRef.current = null; }
+      showBubble(event.payload, 8000, "bubble-calm");
     }).then((un) => unlisteners.push(un));
 
     listen("bubble-hide", () => {
@@ -155,7 +163,7 @@ export default function App() {
     }).then((un) => unlisteners.push(un));
 
     listen<{ title: string; event_id: string }>("proactive-prompt", (event) => {
-      showBubble(event.payload.title + "怎么样啦？", 15000);
+      showBubble(event.payload.title + "怎么样啦？", 15000, "bubble-calm");
     }).then((un) => unlisteners.push(un));
 
     listen<{ status: string; elapsed_secs: number }>("app-status", (event) => {
@@ -176,6 +184,12 @@ export default function App() {
     invoke<EmotionData>("get_emotion_state")
       .then((emo) => setMoodLabel(emo.mood_label))
       .catch(() => {});
+
+    // FIX-J: frontend welcome fallback (2s) if backend bubble-show not received.
+    welcomeTimerRef.current = setTimeout(() => {
+      showBubble("你好呀！我是你的桌宠～", 8000, "bubble-calm");
+      welcomeTimerRef.current = null;
+    }, 2000);
 
     const proactiveTimer = setInterval(async () => {
       if (awayMode) return;
@@ -200,7 +214,7 @@ export default function App() {
             ];
             msg = greetings[Math.floor(Math.random() * greetings.length)];
           }
-          if (msg) showBubble(msg, 12000);
+          if (msg) showBubble(msg, 12000, "bubble-calm");
         }
       } catch { /* ignore */ }
     }, 5 * 60 * 1000);
@@ -210,6 +224,7 @@ export default function App() {
       clearInterval(emotionTimer);
       clearInterval(proactiveTimer);
       if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current);
+      if (welcomeTimerRef.current) clearTimeout(welcomeTimerRef.current);
     };
   }, [showBubble, awayMode]);
 
@@ -220,6 +235,16 @@ export default function App() {
    window.addEventListener("keydown", onKey);
    return () => window.removeEventListener("keydown", onKey);
  }, []);
+
+  // FIX-0 guard: detect browser mode (no Tauri backend) and warn once.
+  useEffect(() => {
+    if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+      const t = setTimeout(() => {
+        showBubble("请在桌面模式下运行 (npm run tauri dev)", 10000, "bubble-worried");
+      }, 1500);
+      return () => clearTimeout(t);
+    }
+  }, [showBubble]);
 
   // P12: Initialize nest position on first mount
   useEffect(() => {
@@ -283,29 +308,58 @@ export default function App() {
         const msgs = deepNightMessages();
         showBubble(msgs[Math.floor(Math.random() * msgs.length)], 8000, "bubble-worried");
       } else if (circ.period === TimeOfDay.LateNight && Math.random() < 0.2) {
-        showBubble("\u8fd8\u4e0d\u7761\u5440\u2026", 6000);
+        showBubble("还不睡呀…", 6000, "bubble-sad");
       }
     }, 10 * 60 * 1000);
     return () => clearInterval(timer);
   }, [showBubble, awayMode]);
 
-  // P12: Drag handling
+ // P12: Drag handling
+  // FIX-E / FIX-M: window-internal drag with a movement threshold so that
+  // a clean click falls through to the Live2D hit detection (head/body),
+  // while a move beyond ~5px starts dragging the pet within the window.
+  const DRAG_THRESHOLD = 5;
+
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return; // left click only
-    e.preventDefault();
-    // Drag the Tauri window (not the wrapper within the window).
-    // The canvas fills the window, so we move the whole window instead.
-    getCurrentWindow().startDragging();
-  }, []);
+    const pos = petPos;
+    dragStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      offsetX: e.clientX - (pos ? pos.x : 0),
+      offsetY: e.clientY - (pos ? pos.y : 0),
+    };
+    dragPendingRef.current = true;
+  }, [petPos]);
 
   useEffect(() => {
-    if (!isBeingDragged) return;
+    if (!dragPendingRef.current && !isBeingDragged) return;
     const onMove = (e: MouseEvent) => {
-      setPetPos({ x: e.clientX - 100, y: e.clientY - 60 });
+      const start = dragStartRef.current;
+      if (!start) return;
+      if (dragPendingRef.current && !isBeingDragged) {
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        if (Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD) return;
+        // crossed threshold -> enter real drag
+        dragPendingRef.current = false;
+        setIsBeingDragged(true);
+        physicsRef.current?.startDrag();
+      }
+      if (isBeingDragged) {
+        const bounds = { width: window.innerWidth, height: window.innerHeight };
+        const nx = Math.max(0, Math.min(bounds.width - 400, e.clientX - start.offsetX));
+        const ny = Math.max(0, Math.min(bounds.height - 600, e.clientY - start.offsetY));
+        setPetPos({ x: nx, y: ny });
+      }
     };
     const onUp = () => {
-      physicsRef.current?.release();
-      setIsBeingDragged(false);
+      dragPendingRef.current = false;
+      if (isBeingDragged) {
+        physicsRef.current?.release();
+        setIsBeingDragged(false);
+      }
+      dragStartRef.current = null;
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -320,36 +374,45 @@ export default function App() {
     if (!text) { setInputVisible(false); return; }
     setInputVisible(false);
     setInputText("");
-    setIsThinking(true);
-    fsmRef.current?.forceState(BehaviorState.Thinking);
+   setIsThinking(true);
+   fsmRef.current?.forceState(BehaviorState.Thinking);
+    thinkStartRef.current = Date.now();
 
-    try {
-      const reply = await invoke<string>("send_message", { text });
-      setIsThinking(false);
+   try {
+     const reply = await invoke<string>("send_message", { text });
+      // FIX-G: guarantee the thinking dots stay visible >= 500ms even on fast replies.
+      const elapsed = Date.now() - thinkStartRef.current;
+      if (elapsed < 500) await new Promise((r) => setTimeout(r, 500 - elapsed));
+     setIsThinking(false);
       fsmRef.current?.forceState(BehaviorState.Talking);
-      if (reply) {
-        showBubble(reply, 10000, bubbleClassForMood(moodLabel));
-      } else {
-        showBubble("...", 3000);
-      }
-      setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 2000);
-    } catch (e) {
-      setIsThinking(false);
-      fsmRef.current?.forceState(BehaviorState.Idle);
-      const errMsg = String(e);
-      if (errMsg.includes("not configured") || errMsg.includes("NotConfigured")) {
-        showBubble("（还没有配置好连接……）", 5000);
-      } else if (errMsg.includes("Timeout") || errMsg.includes("timeout")) {
-        showBubble("我……刚刚有点走神……", 5000);
-      } else if (errMsg.includes("Network") || errMsg.includes("network")) {
-        showBubble("信号不太好呢……", 5000);
-      } else if (errMsg.includes("RateLimit") || errMsg.includes("429")) {
-        showBubble("说了好多话，让我喘口气吧~", 5000);
-      } else {
-        showBubble("...", 3000);
-      }
-    }
-  }, [inputText, showBubble, moodLabel]);
+     if (reply) {
+       showBubble(reply, 10000, bubbleClassForMood(moodLabel));
+     } else {
+        showBubble("（……）", 3000, "bubble-calm");
+     }
+     setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 2000);
+   } catch (e) {
+      // FIX-G: keep the dots up for >= 500ms even when it fails fast.
+      const elapsed = Date.now() - thinkStartRef.current;
+      if (elapsed < 500) await new Promise((r) => setTimeout(r, 500 - elapsed));
+     setIsThinking(false);
+     fsmRef.current?.forceState(BehaviorState.Idle);
+      // FIX-F: surface a readable error instead of a bare "...", and log full detail.
+      console.error("[Conversation] send_message failed:", e);
+     const errMsg = String(e);
+     if (errMsg.includes("not configured") || errMsg.includes("NotConfigured")) {
+        showBubble("（还没有配置好连接……）", 5000, "bubble-worried");
+     } else if (errMsg.includes("Timeout") || errMsg.includes("timeout")) {
+        showBubble("我……刚刚有点走神……", 5000, "bubble-worried");
+     } else if (errMsg.includes("Network") || errMsg.includes("network")) {
+        showBubble("信号不太好呢……", 5000, "bubble-worried");
+     } else if (errMsg.includes("RateLimit") || errMsg.includes("429")) {
+        showBubble("说了好多话，让我喘口气吧~", 5000, "bubble-calm");
+     } else {
+        showBubble("（连接出了点问题…）", 5000, "bubble-worried");
+     }
+   }
+ }, [inputText, showBubble, moodLabel]);
 
   // Head pet: closeness + mood up, 3s cooldown
   const handleHeadClick = useCallback(() => {
@@ -359,21 +422,30 @@ export default function App() {
     invoke("pet_head").catch(() => {});
     fsmRef.current?.transition(BehaviorState.Embarrassed);
     const reactions = ["嘿嘿…", "谢谢你～", "抹抹~"];
-    showBubble(reactions[Math.floor(Math.random() * reactions.length)], 3000);
+    showBubble(reactions[Math.floor(Math.random() * reactions.length)], 3000, "bubble-happy", "bubble-pet");
     setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 1500);
   }, [showBubble]);
 
-  // Body poke: mood down after 3 pokes
-  const handleBodyClick = useCallback(() => {
-    pokeCountRef.current++;
-    if (pokeResetTimerRef.current) clearTimeout(pokeResetTimerRef.current);
-    pokeResetTimerRef.current = setTimeout(() => { pokeCountRef.current = 0; }, 5000);
+ // Body poke: mood down after 3 pokes
+ const handleBodyClick = useCallback(() => {
+   pokeCountRef.current++;
+   if (pokeResetTimerRef.current) clearTimeout(pokeResetTimerRef.current);
+   pokeResetTimerRef.current = setTimeout(() => { pokeCountRef.current = 0; }, 5000);
 
-    invoke<boolean>("poke", { count: pokeCountRef.current }).then((isAngry) => {
-      if (isAngry) {
-        showBubble("…！别戳了啦！", 3000);
-      }
-    }).catch(() => {});
+    // FIX-C: every poke gets a visible reaction (FSM transition + graded bubble),
+    // not just the 3rd. Leverages the FIX-B behavior->motion mapping on the model.
+    fsmRef.current?.transition(BehaviorState.Embarrassed);
+    setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 1500);
+    const n = pokeCountRef.current;
+    if (n === 1) {
+      showBubble("？", 2500, "bubble-worried");
+    } else if (n === 2) {
+      showBubble("嗯…", 2500, "bubble-worried");
+    } else {
+      showBubble("别戳了啦！", 3000, "bubble-worried");
+    }
+
+    invoke<boolean>("poke", { count: pokeCountRef.current }).catch(() => {});
   }, [showBubble]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
@@ -381,26 +453,32 @@ export default function App() {
     setContextMenu({ x: e.clientX, y: e.clientY });
   }, []);
 
-  const handleExportMemory = useCallback(() => {
-    showBubble("记忆导出中…", 3000);
-    invoke("get_debug_snapshot").then((snap) => {
-      const blob = new Blob([JSON.stringify(snap, null, 2)], { type: "application/json" });
+  const handleExportMemory = useCallback(async () => {
+    showBubble("记忆导出中…", 3000, "bubble-calm");
+    try {
+      const snap = await invoke("get_debug_snapshot");
+      const json = JSON.stringify(snap, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = "pet-memory-export.json";
       a.click();
       URL.revokeObjectURL(url);
-    }).catch(() => {});
+      showBubble("记忆已保存～", 3000, "bubble-happy");
+    } catch (e) {
+      console.error("[Export]", e);
+      showBubble("导出失败了…", 3000, "bubble-worried");
+    }
   }, [showBubble]);
 
   const handleAwayMode = useCallback(() => {
     setAwayMode(true);
-    showBubble("我先休息一下哦~", 4000);
+    showBubble("我先休息一下哦~", 4000, "bubble-calm");
   }, [showBubble]);
 
   const handleQuit = useCallback(() => {
-    showBubble("再见…", 3000);
+    showBubble("再见…", 3000, "bubble-sad");
   }, [showBubble]);
 
   return (
@@ -430,23 +508,27 @@ export default function App() {
         </div>
       )}
 
-      <div className={`chat-bubble ${bubbleVisible ? "" : "hidden"} ${bubbleStyle}`}>
+      <div className={`chat-bubble ${bubbleVisible ? "" : "hidden"} ${bubbleStyle} ${bubblePos}`}>
         {bubbleText}
       </div>
 
-      <div
-        ref={petRef}
+     <div
+       ref={petRef}
         className={`pet-char-wrapper ${isWalking ? "walking" : ""} ${isBeingDragged ? "dragging" : ""}`}
-        onDoubleClick={() => setInputVisible(true)}
-        onMouseDown={handleDragStart}
-    >
-     <Live2DCanvas
-       moodLabel={moodLabel}
-       isThinking={isThinking}
-       onHeadClick={handleHeadClick}
-       onBodyClick={handleBodyClick}
-     />
-    </div>
+        style={petPos ? { transform: `translate(${petPos.x}px, ${petPos.y}px)` } : undefined}
+       onDoubleClick={() => setInputVisible(true)}
+       onMouseDown={handleDragStart}
+   >
+    <Live2DCanvas
+      moodLabel={moodLabel}
+       behavior={behavior}
+       attention={attention}
+       pointerRef={pointerRef}
+      isThinking={isThinking}
+      onHeadClick={handleHeadClick}
+      onBodyClick={handleBodyClick}
+    />
+   </div>
 
       <button
         className="settings-btn"

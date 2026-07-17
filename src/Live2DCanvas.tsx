@@ -1,11 +1,21 @@
 import { useEffect, useRef } from "react";
+import { BehaviorState } from "./animation/fsm";
+import { AttentionState } from "./animation/attention";
 
 // PixiJS + Live2D integration for the desktop pet rendering layer.
 // The Cubism Core library is loaded via a script tag in index.html.
 // pixi-live2d-display is imported dynamically to keep the initial bundle small.
 
+export interface PointerXY {
+  x: number;
+  y: number;
+}
+
 interface Live2DCanvasProps {
   moodLabel: string;
+  behavior: BehaviorState;
+  attention: AttentionState;
+  pointerRef: React.MutableRefObject<PointerXY>;
   isThinking: boolean;
   onHeadClick: () => void;
   onBodyClick: () => void;
@@ -23,19 +33,60 @@ const MOOD_EXPRESSION_NAME: Record<string, string> = {
 };
 
 function moodToExpressionName(label: string): string {
-  if (label === "\u5f00\u5fc3") return MOOD_EXPRESSION_NAME.happy;       // 开心 = happy
-  if (label === "\u8c03\u76ae") return MOOD_EXPRESSION_NAME.playful;    // 调皮 = playful
-  if (label === "\u5e73\u9759") return MOOD_EXPRESSION_NAME.calm;       // 平静 = calm
+  if (label === "\u5f00\u5fc3") return MOOD_EXPRESSION_NAME.happy;       // happy
+  if (label === "\u8c03\u76ae") return MOOD_EXPRESSION_NAME.playful;    // playful
+  if (label === "\u5e73\u9759") return MOOD_EXPRESSION_NAME.calm;       // calm
   if (label === "\u96be\u8fc7" || label === "\u7b2e\u96be") return MOOD_EXPRESSION_NAME.sad;
   if (label === "\u62c5\u5fc3") return MOOD_EXPRESSION_NAME.worried;    // worried
   if (label === "\u75b2\u60eb") return MOOD_EXPRESSION_NAME.tired;      // tired
   return MOOD_EXPRESSION_NAME.calm;
 }
 
-export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }: Live2DCanvasProps) {
+// FIX-B: Haru only exposes Idle x3 + Tap x2 motions (see model3.json).
+// Map FSM microbehaviors onto Tap motion + expression overlays.
+function applyBehaviorToModel(model: any, behavior: BehaviorState) {
+  try {
+    switch (behavior) {
+      case BehaviorState.Yawn:
+      case BehaviorState.Sleeping:
+        model.expression("f05"); // tired / drowsy
+        break;
+      case BehaviorState.Embarrassed:
+        model.expression("f04"); // worried / flustered
+        model.motion("Tap");
+        break;
+      case BehaviorState.LookAround:
+      case BehaviorState.TiltHead:
+      case BehaviorState.Stretch:
+      case BehaviorState.Peek:
+      case BehaviorState.Sway:
+      case BehaviorState.Hum:
+      case BehaviorState.Blink:
+      case BehaviorState.Talking:
+      case BehaviorState.Thinking:
+        model.motion("Tap");
+        break;
+      case BehaviorState.Idle:
+      case BehaviorState.Recovering:
+      default:
+        // Let the library's idle breathing run untouched.
+        break;
+    }
+  } catch {
+    // model may not be fully ready yet
+  }
+}
+
+export function Live2DCanvas({ moodLabel, behavior, attention, pointerRef, isThinking, onHeadClick, onBodyClick }: Live2DCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const modelRef = useRef<any>(null);
+  const lastBehaviorRef = useRef<BehaviorState>(BehaviorState.Idle);
+
+  // FIX-A / FIX-B: mirror the latest props into a ref read each ticker frame,
+  // so focus/motion react instantly without re-running the heavy load effect.
+  const propsRef = useRef({ attention, behavior, isThinking, moodLabel });
+  propsRef.current = { attention, behavior, isThinking, moodLabel };
 
   useEffect(() => {
     let destroyed = false;
@@ -48,7 +99,7 @@ export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }
         return;
       }
 
-     const PIXI = await import("pixi.js");
+      const PIXI = await import("pixi.js");
       // Use cubism4 subpath to avoid requiring the Cubism 2 runtime (live2d.min.js).
       const { Live2DModel } = await import("pixi-live2d-display-lipsyncpatch/cubism4");
 
@@ -94,6 +145,24 @@ export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }
             onBodyClick();
           }
         });
+
+        // FIX-A: per-frame focus override. The library auto-tracks the global
+        // mouse and never lets the gaze return to center; our last-write-per-frame
+        // wins, so Ignored forces the gaze back to the model's front.
+        const focusTickerFn = () => {
+          const m = modelRef.current;
+          const canvas = canvasRef.current;
+          if (!m || !canvas) return;
+          if (propsRef.current.attention === AttentionState.Ignored) {
+            m.focus(app.screen.width / 2, app.screen.height / 2);
+          } else {
+            const rect = canvas.getBoundingClientRect();
+            const p = pointerRef.current;
+            m.focus(p.x - rect.left, p.y - rect.top);
+          }
+        };
+        app.ticker.add(focusTickerFn);
+        (app as any).__focusFn = focusTickerFn;
       } catch (err) {
         console.error("[Live2D] model load failed:", err);
       }
@@ -101,6 +170,10 @@ export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }
 
     return () => {
       destroyed = true;
+      const app = appRef.current;
+      if (app && (app as any).__focusFn) {
+        app.ticker.remove((app as any).__focusFn);
+      }
       if (modelRef.current) {
         modelRef.current.destroy();
         modelRef.current = null;
@@ -112,6 +185,15 @@ export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // FIX-B: react to FSM behavior changes by triggering the mapped motion/expression.
+  useEffect(() => {
+    const model = modelRef.current;
+    if (!model) return;
+    if (behavior === lastBehaviorRef.current) return;
+    lastBehaviorRef.current = behavior;
+    applyBehaviorToModel(model, behavior);
+  }, [behavior]);
 
   useEffect(() => {
     const model = modelRef.current;
@@ -127,6 +209,7 @@ export function Live2DCanvas({ moodLabel, isThinking, onHeadClick, onBodyClick }
   useEffect(() => {
     const model = modelRef.current;
     if (!model || !isThinking) return;
+    lastBehaviorRef.current = BehaviorState.Thinking;
     try {
       model.motion("Tap");
     } catch {
