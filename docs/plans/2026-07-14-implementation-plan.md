@@ -1,6 +1,6 @@
 # 带记忆的桌宠 - 实施计划 v1
 
-> 基于: docs/superpowers/specs/2026-07-14-desktop-pet-design.md v2 (855 行, 16 节)
+> 基于: docs/specs/2026-07-14-desktop-pet-design.md v2 (855 行, 16 节)
 > 目标: 把设计文档拆解为可执行的工程任务。每步有明确的文件路径、数据结构、接口签名、验证标准。
 > 原则: 严格按照 Mind/Body/Soul 框架, 不发明新模块, 不模糊处理细节。
 > 修订: v1.1 — 采纳 GPT 架构审计 (BrainState / Scheduler / Suspend / 版本控制 / Evaluation / Kill List)

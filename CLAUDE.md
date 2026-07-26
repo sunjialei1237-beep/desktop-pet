@@ -5,8 +5,8 @@
 
 ## 项目一句话
 带记忆的 Windows 桌宠（Tauri v2/Rust + React/TS + Live2D + SQLite/sqlite-vec + BGE-M3 + DeepSeek）。核心是**陪伴**不是工具。成功标准：用户说"准备找实习"，一周后她主动问"实习怎么样"。
-- 设计：`docs/superpowers/specs/2026-07-14-desktop-pet-design.md`
-- 实施：`docs/superpowers/plans/2026-07-14-implementation-plan.md`（P0–P17）
+- 设计：`docs/specs/2026-07-14-desktop-pet-design.md`
+- 实施：`docs/plans/2026-07-14-implementation-plan.md`（P0–P17）
 
 ## ⭐ 先读（真正的北极星）
 `docs/Architecture-Principles.md` —— 12 条不可违背原则。**做任何技术决策前回查。**
@@ -33,8 +33,8 @@ F12                                                         # Debug Panel（仅 
 ## 文档导航
 - `docs/HANDOFF.md` — ⭐ 跨会话进度/交接（**每次会话先读**）
 - `docs/Architecture-Principles.md` — 12 条北极星原则
-- `docs/superpowers/specs/...design.md` — 产品设计 v2（16 节）
-- `docs/superpowers/plans/...plan.md` — 实施计划 v1.1（P0–P17 + Kill List）
+- `docs/specs/...design.md` — 产品设计 v2（16 节）
+- `docs/plans/...plan.md` — 实施计划 v1.1（P0–P17 + Kill List）
 - `docs/decisions/` — ADR 决策记录（窗口策略等）
-- `docs/known-issues-2026-07-18.md` — 未解决问题（P1 视线等）
+- `docs/archive/known-issues-2026-07-18.md` — 历史问题诊断（P1 视线已修复，留作上下文）
 - `docs/followup-frequency-2026-07-20.md` / `proactive-recall-standard-2026-07-18.md` — 行为标准

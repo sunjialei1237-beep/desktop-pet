@@ -3,8 +3,8 @@
 > 本文件是所有技术决策的北极星。代码可以重构, 模块可以替换, 但这些原则不可违背。
 > 半年后当你忘了最初的设计, 或者新贡献者加入时, 先读这一页。
 > 协同设计: 用户 (SunJialei) + Codex + GPT
-> 设计文档: docs/superpowers/specs/2026-07-14-desktop-pet-design.md
-> 实施计划: docs/superpowers/plans/2026-07-14-implementation-plan.md
+> 设计文档: docs/specs/2026-07-14-desktop-pet-design.md
+> 实施计划: docs/plans/2026-07-14-implementation-plan.md
 
 ---
 
