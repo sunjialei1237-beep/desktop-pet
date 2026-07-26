@@ -165,6 +165,33 @@ pub async fn converse(
     // budget compression so the latest question can never be truncated away,
     // and the LLM always answers *this* turn (not a stale history entry).
     let mut messages = messages;
+
+    // If this turn just scheduled a reminder (extracted in Step 1), tell the
+    // expression LLM so it naturally confirms it ("好的，3分钟后提醒你").
+    // Extractor and converse are separate LLM calls; without this bridge she
+    // wouldn't know she just accepted a reminder (Architecture Principle #2:
+    // cross-module state flows through the shared IngestionOutcome).
+    if let Some(pe) = outcome
+        .extraction
+        .as_ref()
+        .and_then(|e| e.pending_event.as_ref())
+    {
+        let timing = if let Some(mins) = pe.offset_minutes {
+            format!("{}分钟后", mins)
+        } else if let Some(date) = pe.event_date.as_deref() {
+            date.split('T').next().unwrap_or(date).to_string()
+        } else {
+            "稍后".to_string()
+        };
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!(
+                "（系统提示：你刚刚帮用户记下了一个提醒——「{}」，{}. 在回复里自然地确认这件事，简短温暖，比如「好的，{}提醒你」.）",
+                pe.title, timing, timing
+            ),
+        });
+    }
+
     messages.push(ChatMessage {
         role: "user".to_string(),
         content: text.to_string(),

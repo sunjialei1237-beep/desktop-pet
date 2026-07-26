@@ -21,8 +21,13 @@ Output JSON only:
   "episode": {"summary": "...", "emotion": "...", "importance": 0.0, "participants": [], "topics": []},
   "facts": [{"category": "...", "key": "...", "value": "...", "confidence": 0.0}],
   "emotion_delta": {"mood": 0.0, "stress": 0.0, "energy": 0.0},
-  "pending_event": {"title": "...", "event_date": "2026-01-01"}
+  "pending_event": {"title": "...", "event_date": "2026-01-01", "offset_minutes": 30}
 }
+
+pending_event: extract when the user states a future plan OR asks you to remind them of something.
+- Short-term reminder ("remind me to drink water in 30 minutes", "提醒我3分钟后喝水", "一小时后叫我"): set title to what to remind about, and offset_minutes to the number of minutes from now (e.g. 30, 3, 60). Do NOT set event_date — the system computes the exact time itself.
+- Dated future event ("interview next Friday", "exam on 2026-08-05"): set title and event_date to the ISO date (YYYY-MM-DD). Do NOT set offset_minutes.
+- Use offset_minutes OR event_date, never both. Most messages have no pending_event — omit it entirely then.
 
 Categories: preference, relationship, goal, profile, school, work, health.
 Confidence: "maybe/I think" 0.3-0.5; "I like/prefer" 0.7-0.85; "my favorite/I always/never" 0.9-0.98.

@@ -378,7 +378,8 @@ fn gc_009_store_pipeline_completeness() {
         }),
         pending_event: Some(desktop_pet_lib::mind::extractor::PendingInput {
             title: "find internship".to_string(),
-            event_date: "2026-08-01".to_string(),
+            event_date: Some("2026-08-01".to_string()),
+            offset_minutes: None,
         }),
     };
 

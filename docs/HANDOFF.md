@@ -13,30 +13,35 @@
 | 闭环 / 层 | 状态 | 锚定测试 |
 |---|---|---|
 | 闭环1 说→记住→跨会话召回 | ✅ | `cargo test --test memory_recall` |
-| 闭环2 到期主动提起 | ✅ | `cargo test --test closed_loop2_harness` |
+| 闭环2 到期主动提起 | ✅ | harness + 实跑：3分钟后主动冒泡提醒 |
 | Soul 反思→念头外显 | ✅ | `cargo test --test soul_harness` |
 | 闭环3 "她记得我"体感 | ✅ | 实跑：重启后问"我最近忙啥"→recall 出"找实习" |
-| 库单测 | ✅ 184 passed | `cargo test --lib` |
+| 库单测 | ✅ 185 passed | `cargo test --lib` |
 | Body 视线 360°（上下） | ✅ | 实跑验收通过（autoFocus:false + ny 取反） |
 
-**阶段**：Soul 层（P13）刚激活并通过端到端验证。按 Kill List，闭环 1+2 已稳，可推进闭环 3（体感）或收尾项。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。
+**阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
-**MVP 三闭环全通（2026-07-26）。** P1 视线修复已提交 `86ca465`；闭环3 体感验收通过——用户实跑 `npm run tauri dev`，**重启**后问"我最近忙啥"，她从持久记忆 recall 出"找实习"（闭环1 真实运行 ✅ + 闭环3 体感 ✅）。闭环2 真实运行待 pending 自然到期触发（harness 已 ✅）。无进行中任务，工作区干净。等选下一步（见 §下一步候选）。
+**提醒功能修复完成并实跑验收（2026-07-26）。** "提醒我X在Y分钟后"全链路通：gate 路由 → extractor 提 `offset_minutes` → Rust 算 `remind_date` → converse 确认"好的" → 到期主动冒泡。闭环2 真实运行 ✅（harness + 实跑）。lib 185 + 闭环2 harness 过。本轮提交中。等选下一步（见 §下一步候选）。
 
-## §最近一轮 (2026-07-26)：P1 视线修复（autoFocus + y 翻转）
-**起因**：用户选 P1 视线修复方向。`known-issues-2026-07-18.md` 自 07-18 起卡住，诊断了 A/B/C 三假设但未坐实。
+## §最近一轮 (2026-07-26)：提醒功能修复（闭环2 真实运行打通）
+**起因**：用户实测"3分钟后提醒喝水"失败——她说"没办法定闹钟，只能现在提醒"。读 5 处源码诊断出断点链。
 
-做了（读库 `pixi-live2d-display-lipsyncpatch/dist/cubism4.es.js` 源码定位）：
-- **坐实 A（主因）**：`_Automator` 默认 `autoFocus=true`（:10149）→ 绑 `globalpointermove` → `model.focus`（:10272）→ atan2 耦合（:10495）把 target 锁单位圆 → 鼠标在右时 `targetY≈0` → 永不上下看 = "卡死"。每次指针移动覆盖我们 `focusTickerFn` 写的独立 x/y。
-- **坐实 C（次要）**：库 `model.focus` 的 y 用 `-sin(radian)`（:10496）翻转（PIXI y 向下、`ParamAngleY` 正=看上），我们裸 `ny` 没翻 → 解锁后上下会颠倒。
-- **排除 B**：`focusController` 结构正确（`FocusController` :7992，`focus()` 设 target / `update()` 加速度平滑）。但 `autoFocus` setter 在 **Automator**（:10244）不在 Live2DModel，`model.autoFocus=false` 会静默失败 → 必须 `from(url,{autoFocus:false})`。
+根因链（"提醒我X在Y分钟后"为什么失败）：
+1. `gate.txt` 的 pending_event 定义只含"未来计划"，不含"提醒请求" → gate 不路由到 PendingEvent
+2. `PendingInput` 只有 `event_date`（绝对日期），无相对时间
+3. `extractor.txt` 没引导短期提醒
+4. `compute_remind_date` 只解析 `%Y-%m-%d`，不支持相对分钟
+5. `converse` 不读 `outcome.extraction`，她不知这轮设了提醒 → 据"常识"答"没办法"
 
-修复 `src/Live2DCanvas.tsx` 两处（最小改动）：
-1. `Live2DModel.from(modelUrl)` → `from(modelUrl, { autoFocus: false })`（治卡死；`autoHitTest` 默认 true 保留 Head/Body 点击）
-2. `ny` 归一化处取反 `const ny = -Math.max(-1, Math.min(1, ...))`（治 y 反；与库 `-sin` 对齐，`focus(nx,ny)` 不变）
+修复（7 文件，原则 #1：时间由 Rust 算，不交 LLM）：
+- `PendingInput` 加 `offset_minutes`、`event_date` 改 `Option`（extractor.rs；serde 向后兼容旧 JSON）
+- `compute_remind_date(&PendingInput, now)` 支持 `offset_minutes` → `now + offset`（store.rs）；`store()`/`mod.rs` PendingEvent 分支适配 event_date 回填
+- `gate.txt` / `extractor.txt`：纳入"提醒请求"，区分短期(`offset_minutes`)/远期(`event_date`)，带中英文例子
+- `converse` 读 `outcome.extraction.pending_event`，注入 system 提示让她自然确认"好的，N分钟后提醒你"
+- 适配调用方 `store.rs`/`mod.rs`/`tests/golden_conversations.rs` + 更新单测（踩坑 #4：grep 全部 `PendingInput`/`compute_remind_date` 用法，抓到 golden_conversations 漏改）
 
-**验证**：`tsc --noEmit` 零错误；`cargo test --lib` 184 passed（未动后端）。用户实跑 `npm run tauri dev` 确认 360° 通过；遂删 `[gaze]`/`[ct]` 诊断日志 + `mode` 孤儿变量。详见 `docs/known-issues-2026-07-18.md` 🔧 修复小节。
+**验证**：`cargo test --lib` 185 passed、闭环2 harness 1 passed；**用户实跑"3分钟后提醒喝水"全链路通过**——她回"好的"+ Pending 区有记录 + 3分钟后主动冒泡。闭环2 真实运行 ✅。
 
 ## §未解决问题
 - **Codex 技术债**：`tests/proactive_harness.rs`（Codex 写的）复刻了 `generate` 的旧逻辑，现可简化为调 `proactive::generate`。
@@ -47,4 +52,3 @@
 1. **清技术债**（agent 做，小快）— `tests/proactive_harness.rs` 简化为调 `proactive::generate`，消除逻辑重复。
 2. **docs 治理**（agent 做）— 去 `superpowers/` 嵌套 + 归档过期 `bug-audit`/`fix-plan`/`feature-checklist` 到 `archive/`，更新 CLAUDE.md/HANDOFF.md 导航路径。
 3. **P16 Debug Panel 补全** — Prompt token 预算 / Retrieved score breakdown / Reflect 分区（核心状态面板已在）。
-4. **闭环2 真实运行验证**（可选，用户做）— 设一个近期 pending（如"明天提醒我 X"），等自然到期看她是否主动冒泡提起；harness 已 ✅，此项是真实运行补验。

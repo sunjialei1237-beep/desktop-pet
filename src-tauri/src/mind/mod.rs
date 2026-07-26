@@ -79,11 +79,16 @@ pub async fn ingest(
             if let Some(pe) = &extraction.pending_event {
                 let now = chrono::Utc::now().to_rfc3339();
                 let pe_id = format!("pe_{}", uuid::Uuid::new_v4().simple());
+                let remind_date = crate::mind::store::compute_remind_date(pe, &now);
+                let event_date = pe
+                    .event_date
+                    .clone()
+                    .unwrap_or_else(|| remind_date.clone().unwrap_or_else(|| now.clone()));
                 let event = crate::db::pending::PendingEvent {
                     id: pe_id,
                     title: pe.title.clone(),
-                    event_date: pe.event_date.clone(),
-                    remind_date: crate::mind::store::compute_remind_date(&pe.event_date, &now),
+                    event_date,
+                    remind_date,
                     source_episode: None,
                     status: "pending".to_string(),
                     importance: 0.5,

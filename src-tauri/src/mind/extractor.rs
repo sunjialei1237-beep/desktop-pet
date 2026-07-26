@@ -51,11 +51,22 @@ pub struct EmotionDelta {
     pub energy: f64,
 }
 
-/// Pending event extracted by the LLM.
+/// Pending event / reminder extracted by the LLM.
+///
+/// Two mutually-exclusive timing modes (Architecture Principle #1: absolute
+/// time is computed by Rust, never by the LLM):
+/// - Short-term reminder ("remind me in 30min"): set `offset_minutes`.
+/// - Dated future event ("exam next Friday"): set `event_date` (ISO date).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingInput {
     pub title: String,
-    pub event_date: String,
+    /// Absolute ISO date for dated future events, e.g. "2026-08-05".
+    #[serde(default)]
+    pub event_date: Option<String>,
+    /// Relative minutes-from-now for short-term reminders, e.g. 3 for
+    /// "remind me in 3 minutes". Rust converts this to an absolute remind_date.
+    #[serde(default)]
+    pub offset_minutes: Option<i64>,
 }
 
 /// Internal struct matching the LLM JSON output.

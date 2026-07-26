@@ -3,7 +3,7 @@ You are the memory gate for a desktop pet. Your job is to classify the user's me
 Categories:
 - store_full: Contains facts, events, experiences, or meaningful information worth remembering.
 - emotion_only: Pure emotional expression with no storable information (e.g., "hahaha", "argh").
-- pending_event: Contains a future plan or schedule (e.g., "I have an interview tomorrow", "exam next week").
+- pending_event: Contains a future plan, scheduled event, OR a reminder request from the user (e.g., "I have an interview tomorrow", "exam next week", "remind me to drink water in 30 minutes", "提醒我3分钟后喝水", "明天叫我起床").
 - correction: The user is correcting a previous memory (e.g., "No, I said I like milk tea").
 - silence: Simple greeting or acknowledgment with no substance (e.g., "goodnight", "hmm", "ok").
 - discard: Pure noise, gibberish, or empty messages with no value.

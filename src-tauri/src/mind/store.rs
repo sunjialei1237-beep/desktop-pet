@@ -5,7 +5,7 @@ use crate::db::pending as db_pending;
 use crate::db::vectors as db_vectors;
 use crate::db::DbState;
 use crate::embedding::EmbeddingService;
-use crate::mind::extractor::{EmotionDelta, ExtractionResult, FactInput};
+use crate::mind::extractor::{EmotionDelta, ExtractionResult, FactInput, PendingInput};
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -89,11 +89,18 @@ pub fn store(
     // 4. Pending event
     if let Some(pe) = &result.pending_event {
         let pe_id = format!("pe_{}", Uuid::new_v4().simple());
-        let remind_date = compute_remind_date(&pe.event_date, &now);
+        let remind_date = compute_remind_date(pe, &now);
+        // For short-term reminders (offset_minutes) there's no absolute
+        // event_date; fall back to the computed remind_date so the NOT NULL
+        // DB column stays meaningful (the event happens when we remind).
+        let event_date = pe
+            .event_date
+            .clone()
+            .unwrap_or_else(|| remind_date.clone().unwrap_or_else(|| now.clone()));
         let event = db_pending::PendingEvent {
             id: pe_id,
             title: pe.title.clone(),
-            event_date: pe.event_date.clone(),
+            event_date,
             remind_date,
             source_episode: stored_episode_id.clone(),
             status: "pending".to_string(),
@@ -160,17 +167,23 @@ fn store_fact(
     Ok(())
 }
 
-/// Computes the remind_date for a pending event from event_date.
-/// If event_date is parseable as ISO date, sets remind to 08:00 that day.
-/// Otherwise falls back to 1 day from now.
-pub fn compute_remind_date(event_date: &str, now: &str) -> Option<String> {
-    let date_part = &event_date[..event_date.len().min(10)];
-    if let Ok(d) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
-        return Some(format!("{}T08:00:00+00:00", d.format("%Y-%m-%d")));
+/// Computes the absolute remind_date from a pending input.
+/// Architecture Principle #1: time arithmetic stays in Rust, never the LLM.
+/// - `offset_minutes` (short-term reminder) -> now + offset.
+/// - `event_date` (dated future event) -> that date at 08:00 UTC.
+/// - neither -> None (not schedulable; caller falls back gracefully).
+pub fn compute_remind_date(pending: &PendingInput, now: &str) -> Option<String> {
+    if let Some(mins) = pending.offset_minutes {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(now) {
+            let remind = dt.with_timezone(&Utc) + chrono::Duration::minutes(mins);
+            return Some(remind.to_rfc3339());
+        }
     }
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(now) {
-        let remind = dt.with_timezone(&Utc) + chrono::Duration::days(1);
-        return Some(remind.to_rfc3339());
+    if let Some(event_date) = &pending.event_date {
+        let date_part = &event_date[..event_date.len().min(10)];
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+            return Some(format!("{}T08:00:00+00:00", d.format("%Y-%m-%d")));
+        }
     }
     None
 }
@@ -304,7 +317,8 @@ mod tests {
             emotion_delta: None,
             pending_event: Some(PendingInput {
                 title: "job interview".to_string(),
-                event_date: "2026-07-20".to_string(),
+                event_date: Some("2026-07-20".to_string()),
+                offset_minutes: None,
             }),
         };
 
@@ -327,24 +341,32 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_remind_date_iso() {
-        let r = compute_remind_date("2026-07-20", "2026-07-14T10:00:00+00:00");
+    fn test_compute_remind_date_dated() {
+        let p = PendingInput { title: "exam".into(), event_date: Some("2026-07-20".into()), offset_minutes: None };
+        let r = compute_remind_date(&p, "2026-07-14T10:00:00+00:00");
         assert_eq!(r.as_deref(), Some("2026-07-20T08:00:00+00:00"));
     }
 
     #[test]
-    fn test_compute_remind_date_iso_datetime() {
-        let r = compute_remind_date("2026-07-20T14:00:00", "2026-07-14T10:00:00+00:00");
+    fn test_compute_remind_date_offset() {
+        let p = PendingInput { title: "drink water".into(), event_date: None, offset_minutes: Some(3) };
+        let r = compute_remind_date(&p, "2026-07-26T10:00:00+00:00");
+        assert_eq!(r.as_deref(), Some("2026-07-26T10:03:00+00:00"));
+    }
+
+    #[test]
+    fn test_compute_remind_date_dated_datetime() {
+        let p = PendingInput { title: "exam".into(), event_date: Some("2026-07-20T14:00:00".into()), offset_minutes: None };
+        let r = compute_remind_date(&p, "2026-07-14T10:00:00+00:00");
         assert_eq!(r.as_deref(), Some("2026-07-20T08:00:00+00:00"));
     }
 
     #[test]
-    fn test_compute_remind_date_fallback() {
-        let r = compute_remind_date("tomorrow", "2026-07-14T10:00:00+00:00");
-        assert!(r.is_some());
-        // Should be 1 day later
-        let parsed = chrono::DateTime::parse_from_rfc3339(r.as_deref().unwrap()).unwrap();
-        assert_eq!(parsed.format("%Y-%m-%d").to_string(), "2026-07-15");
+    fn test_compute_remind_date_none_without_timing() {
+        // No offset_minutes and no event_date -> not schedulable.
+        let p = PendingInput { title: "vague".into(), event_date: None, offset_minutes: None };
+        let r = compute_remind_date(&p, "2026-07-14T10:00:00+00:00");
+        assert!(r.is_none());
     }
 
     #[test]
@@ -356,7 +378,8 @@ mod tests {
             emotion_delta: None,
             pending_event: Some(PendingInput {
                 title: "exam".to_string(),
-                event_date: "2020-01-01".to_string(), // past date, always due
+                event_date: Some("2020-01-01".to_string()), // past date, always due
+                offset_minutes: None,
             }),
         };
 
