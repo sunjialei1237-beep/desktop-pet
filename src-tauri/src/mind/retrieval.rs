@@ -9,6 +9,7 @@ use crate::emotion::state::EmotionState;
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use serde::Serialize;
+use crate::db::onboarding::UserProfile;
 
 /// An episode paired with its stored embedding vector (if available).
 type EpisodeWithVector = (db_episodes::Episode, Option<Vec<f32>>);
@@ -46,6 +47,7 @@ pub struct RetrievalResult {
     pub facts: Vec<db_facts::Fact>,
     pub relationship: Option<db_relationship::Relationship>,
     pub persona_traits: Vec<db_persona::PersonaTrait>,
+    pub user_profile: UserProfile,
 }
 
 /// Performs hybrid retrieval: semantic + strength + recency + emotion scoring.
@@ -142,11 +144,15 @@ pub fn retrieve(
             .unwrap_or_default())
     })?;
 
+    // Onboarding profile (user-chosen nickname / pet name / personality / relationship).
+    let user_profile = db.with_conn(crate::db::onboarding::load)?;
+
     Ok(RetrievalResult {
         episodes: scored,
         facts,
         relationship,
         persona_traits,
+        user_profile,
     })
 }
 

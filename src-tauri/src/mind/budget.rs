@@ -14,6 +14,8 @@
 use crate::emotion::state::EmotionState;
 use crate::llm::client::ChatMessage;
 use crate::mind::retrieval::RetrievalResult;
+#[cfg(test)]
+use crate::db::onboarding::UserProfile;
 
 use crate::mind::planner::Intent;
 
@@ -157,13 +159,14 @@ fn compress_system_prompt(
     }
     let _ = remaining; // suppress unused warning
 
-    // Rebuild with truncated retrieval.
-    let truncated_retrieval = RetrievalResult {
-        episodes: retrieval.episodes[..keep_episodes.min(retrieval.episodes.len())].to_vec(),
-        facts: retrieval.facts[..keep_facts.min(retrieval.facts.len())].to_vec(),
-        relationship: retrieval.relationship.clone(),
-        persona_traits: retrieval.persona_traits.clone(),
-    };
+   // Rebuild with truncated retrieval.
+   let truncated_retrieval = RetrievalResult {
+       episodes: retrieval.episodes[..keep_episodes.min(retrieval.episodes.len())].to_vec(),
+       facts: retrieval.facts[..keep_facts.min(retrieval.facts.len())].to_vec(),
+       relationship: retrieval.relationship.clone(),
+       persona_traits: retrieval.persona_traits.clone(),
+       user_profile: retrieval.user_profile.clone(),
+   };
 
     crate::mind::grounding::build_system_prompt(&truncated_retrieval, emotion, intent)
 }
@@ -198,16 +201,17 @@ mod tests {
     use crate::db::relationship::Relationship;
     use crate::mind::retrieval::{RetrievalResult, ScoreBreakdown, ScoredEpisode};
 
-    fn empty_retrieval() -> RetrievalResult {
-        RetrievalResult {
-            episodes: vec![],
-            facts: vec![],
-            relationship: None,
-            persona_traits: vec![],
-        }
-    }
+   fn empty_retrieval() -> RetrievalResult {
+       RetrievalResult {
+           episodes: vec![],
+           facts: vec![],
+           relationship: None,
+           persona_traits: vec![],
+           user_profile: UserProfile::default(),
+       }
+   }
 
-    fn retrieval_with_episodes(count: usize) -> RetrievalResult {
+   fn retrieval_with_episodes(count: usize) -> RetrievalResult {
         let episodes: Vec<ScoredEpisode> = (0..count)
             .map(|i| ScoredEpisode {
                 episode: Episode {
@@ -239,15 +243,16 @@ mod tests {
             })
             .collect();
 
-        RetrievalResult {
-            episodes,
-            facts: vec![],
-            relationship: None,
-            persona_traits: vec![],
-        }
-    }
+       RetrievalResult {
+           episodes,
+           facts: vec![],
+           relationship: None,
+           persona_traits: vec![],
+           user_profile: UserProfile::default(),
+       }
+   }
 
-    fn msg(role: &str, content: &str) -> ChatMessage {
+   fn msg(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
             role: role.to_string(),
             content: content.to_string(),
@@ -355,18 +360,19 @@ mod tests {
                 closeness_log: None,
                 updated_at: "2026-07-14T10:00:00+00:00".to_string(),
             }),
-            persona_traits: vec![PersonaTrait {
-                id: "t1".to_string(),
-                trait_type: "core".to_string(),
-                trait_key: "cheerful".to_string(),
-                confidence: 0.9,
-                source: "design".to_string(),
-                created_at: "2026-07-14T10:00:00+00:00".to_string(),
-                updated_at: "2026-07-14T10:00:00+00:00".to_string(),
-            }],
-        };
+           persona_traits: vec![PersonaTrait {
+               id: "t1".to_string(),
+               trait_type: "core".to_string(),
+               trait_key: "cheerful".to_string(),
+               confidence: 0.9,
+               source: "design".to_string(),
+               created_at: "2026-07-14T10:00:00+00:00".to_string(),
+               updated_at: "2026-07-14T10:00:00+00:00".to_string(),
+           }],
+           user_profile: UserProfile::default(),
+       };
 
-        let messages = allocate_and_compress(
+       let messages = allocate_and_compress(
             &retrieval,
             &[],
             &EmotionState::default(),

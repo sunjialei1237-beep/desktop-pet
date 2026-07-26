@@ -9,6 +9,7 @@ pub mod retrieval;
 pub mod trigger;
 pub mod planner;
 pub mod converse;
+pub mod pacing;
 
 pub use correction::{handle_correction, CorrectionResult};
 pub use extractor::{extract, EmotionDelta, EpisodeInput, ExtractionResult, FactInput, PendingInput};

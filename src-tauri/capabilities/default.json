@@ -5,6 +5,12 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-set-position",
+    "core:window:allow-outer-position",
+    "core:window:allow-scale-factor",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:webview:allow-internal-toggle-devtools",
     "shell:allow-open",
     "dialog:allow-open",
     "dialog:allow-save"

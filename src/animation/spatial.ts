@@ -2,7 +2,7 @@
 // Design doc 6.8: First appearance picks a random corner, stays there.
 // After 30s away from nest (not interacting), she walks back.
 
-import type { PetPosition, ScreenBounds } from "./physics";
+import type { PetPosition } from "./physics";
 
 const RETURN_DELAY = 30; // seconds before auto-return
 const WALK_SPEED = 60; // px/s
@@ -11,15 +11,9 @@ export class SpatialMemory {
   nestPosition: PetPosition | null = null;
   returnTimer = 0; // seconds accumulated away from nest
 
-  init(bounds: ScreenBounds): PetPosition {
-    const corners: PetPosition[] = [
-      { x: 50, y: bounds.height - 48 - 120 }, // bottom-left
-      { x: bounds.width - 250, y: bounds.height - 48 - 120 }, // bottom-right
-      { x: 50, y: 50 }, // top-left
-      { x: bounds.width - 250, y: 50 }, // top-right
-    ];
-    this.nestPosition = corners[Math.floor(Math.random() * corners.length)];
-    return { ...this.nestPosition };
+  // 方案 B: the nest is the initial window position in screen coordinates.
+  setNest(pos: PetPosition) {
+    this.nestPosition = { ...pos };
   }
 
   // Called each tick. If away from nest and not interacting, count down.

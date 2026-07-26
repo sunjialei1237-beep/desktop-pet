@@ -4,6 +4,7 @@
 //! "not sure" rather than fabricate when relevant memory is absent.
 
 use crate::db::persona as db_persona;
+use crate::db::onboarding::UserProfile;
 use crate::db::relationship as db_relationship;
 use crate::emotion::state::EmotionState;
 use crate::mind::retrieval::RetrievalResult;
@@ -27,8 +28,12 @@ pub fn build_system_prompt(
 ) -> String {
     let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
 
-    // 1. Persona + relationship
-    sections.push(format_persona(&retrieval.persona_traits, &retrieval.relationship));
+   // 1. Persona + relationship
+   sections.push(format_persona(
+       &retrieval.persona_traits,
+       &retrieval.relationship,
+       &retrieval.user_profile,
+   ));
 
     // 2. Grounding constraint
     sections.push(MEMORY_CONSTRAINT.to_string());
@@ -61,6 +66,7 @@ remembered unless it appears in the memories section below.";
 fn format_persona(
     traits: &[db_persona::PersonaTrait],
     relationship: &Option<db_relationship::Relationship>,
+    user_profile: &UserProfile,
 ) -> String {
     let mut lines = vec!["[Persona]".to_string()];
 
@@ -92,7 +98,22 @@ fn format_persona(
             rel.trust,
             rel.days_known,
             rel.total_conversations,
-        ));
+       ));
+   }
+
+    // Onboarding profile (user-chosen at first launch): nickname, pet name,
+    // personality, relationship style. Primary identity signals for the LLM.
+    if let Some(nn) = &user_profile.user_nickname {
+        lines.push(format!("用户的称呼: {}", nn));
+    }
+    if let Some(pn) = &user_profile.pet_name {
+        lines.push(format!("你的名字: {}", pn));
+    }
+    if let Some(ps) = &user_profile.personality_style {
+        lines.push(format!("你被期望的性格: {}", ps));
+    }
+    if let Some(rs) = &user_profile.relationship_style {
+        lines.push(format!("与用户的关系设定: {}", rs));
     }
 
     if lines.len() == 1 {
@@ -130,6 +151,11 @@ fn format_intent(intent: &Intent) -> String {
     }
     if intent.proactive {
         s.push_str("\n(be proactive: bring up the memory naturally)");
+    }
+    if intent.goal == "engage" {
+        s.push_str("\n(engage: react specifically to what they just shared, then ask ONE genuine follow-up question about it — not a generic '怎么样')");
+    } else if intent.goal == "react" {
+        s.push_str("\n(react: react warmly and specifically to what they just shared, but do NOT ask any question this turn — just be present and show you listened)");
     }
     s
 }
@@ -282,11 +308,12 @@ mod tests {
             episodes: vec![],
             facts: vec![],
             relationship: None,
-            persona_traits: vec![],
-        }
-    }
+           persona_traits: vec![],
+           user_profile: UserProfile::default(),
+       }
+   }
 
-    fn retrieval_with_data() -> RetrievalResult {
+   fn retrieval_with_data() -> RetrievalResult {
         RetrievalResult {
             episodes: vec![ScoredEpisode {
                 episode: Episode {
@@ -345,14 +372,15 @@ mod tests {
                 trait_type: "core".to_string(),
                 trait_key: "gentle".to_string(),
                 confidence: 0.95,
-                source: "design".to_string(),
-                created_at: "2026-07-14T10:00:00+00:00".to_string(),
-                updated_at: "2026-07-14T10:00:00+00:00".to_string(),
-            }],
-        }
-    }
+               source: "design".to_string(),
+               created_at: "2026-07-14T10:00:00+00:00".to_string(),
+               updated_at: "2026-07-14T10:00:00+00:00".to_string(),
+           }],
+           user_profile: UserProfile::default(),
+       }
+   }
 
-    #[test]
+   #[test]
     fn test_system_prompt_contains_constraint() {
         let prompt = build_system_prompt(&empty_retrieval(), &EmotionState::default(), &Intent::default());
         assert!(prompt.contains("[Grounding Constraint]"));

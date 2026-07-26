@@ -3,6 +3,7 @@
   --bubble-bg: rgba(255, 255, 255, 0.82);
   --bubble-border: rgba(200, 200, 220, 0.4);
   --text-primary: #333;
+  --bubble-bottom: 560px;
 }
 
 * {
@@ -61,10 +62,10 @@ html, body, #root {
 
 .chat-bubble {
   position: absolute;
-  bottom: 360px;
+  bottom: var(--bubble-bottom);
   left: 50%;
   transform: translateX(-50%);
-  max-width: 300px;
+  max-width: 360px;
   min-width: 60px;
   background: var(--bubble-bg);
   border: 1px solid var(--bubble-border);
@@ -93,8 +94,8 @@ html, body, #root {
 }
 
 .chat-bubble.bubble-pet {
-  bottom: 380px;
-  left: 38%;
+  bottom: var(--bubble-bottom);
+  left: 40%;
   transform: translateX(-50%);
 }
 
@@ -110,11 +111,17 @@ html, body, #root {
 
 .input-bubble {
   position: absolute;
-  bottom: 290px;
+  /* 输入框钉在窗口底部常驻，与头顶回复气泡在空间上彻底分开（见 .chat-bubble top） */
+  /* 输入框钉在窗口底部常驻，与头顶回复气泡在空间上彻底分开（见 .chat-bubble bottom） */
+  bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  width: 280px;
-  background: var(--bubble-bg);
+  width: 160px;
+  /* 高度钉死，避免随输入内容长度变化而顶到桌宠头部 */
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  background: rgba(255, 255, 255, 0.41);
   border: 1px solid var(--bubble-border);
   border-radius: 16px;
   padding: 8px 14px;
@@ -130,11 +137,13 @@ html, body, #root {
   font-size: 14px;
   color: var(--text-primary);
   font-family: inherit;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .thinking-dots {
   position: absolute;
-  bottom: 360px;
+  bottom: calc(var(--bubble-bottom) + 4px);
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -561,16 +570,11 @@ html, body, #root {
 
 /* === P12: Physics + Spatial + Circadian === */
 .pet-char-wrapper {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 400px;
-  height: 600px;
+  position: relative;
   transition: none;
   user-select: none;
   -webkit-user-select: none;
   cursor: grab;
-  will-change: transform;
 }
 
 .pet-char-wrapper.dragging {

@@ -1,8 +1,12 @@
 //! Proactive behavior: decides when the pet should initiate a conversation.
 //! Design doc 9.2: bubbles at most every 30 minutes; silent during deep focus.
 
+use crate::db::facts::Fact;
 use crate::db::pending::PendingEvent;
+use crate::db::DbState;
+use crate::embedding::EmbeddingService;
 use crate::emotion::state::EmotionState;
+use crate::llm::client::{ChatMessage, LlmClient};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
@@ -74,6 +78,136 @@ pub fn trigger_proactive(
     }
 
     None
+}
+
+/// Generates a proactive bubble by picking a memory anchor — a due pending
+/// event first, then an anchorable fact, then a recent episode — and running it
+/// through the same retrieval + budget + LLM pipeline as a normal turn, with
+/// `proactive = true`. Returns `None` when nothing is worth surfacing (the pet
+/// stays silent).
+///
+/// Backend of the `proactive_bubble` command; extracted so the closed-loop-2
+/// path ("she brings up your past plan the next day") is testable without
+/// constructing AppState / Tauri State.
+///
+/// Principle 1 (LLM expresses, Rust maintains state): Rust picks the anchor and
+/// assembles the prompt; the LLM only voices it.
+/// Principle 8 (Cost): at most one LLM call per invocation.
+pub async fn generate(
+    db: &DbState,
+    llm: &LlmClient,
+    embedding: Option<&EmbeddingService>,
+    wm_context: &[ChatMessage],
+) -> Result<Option<String>, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let db_emotion = db.with_conn(crate::db::emotion::get)?;
+    let emotion = EmotionState {
+        mood: db_emotion.mood,
+        physical_energy: db_emotion.physical_energy,
+        social_battery: db_emotion.social_battery,
+        stress: db_emotion.stress,
+        loneliness: db_emotion.loneliness,
+        rest_need: db_emotion.rest_need,
+    };
+
+    let pending_due: Vec<PendingEvent> =
+        db.with_conn(|conn| crate::db::pending::get_due(conn, &now))?;
+
+    let retrieval = crate::mind::retrieval::retrieve(
+        "user's life recent events preferences",
+        &emotion,
+        embedding,
+        db,
+        3,
+    )?;
+
+    let (memory_anchor, goal, tone): (String, &'static str, &'static str) =
+        if let Some(ev) = pending_due.first() {
+            (ev.title.clone(), "care", "gentle")
+        // Only durable, anchorable facts make good proactive-bubble material;
+        // pseudo-facts (questions phrased as facts) are excluded.
+        } else if let Some(f) = retrieval.facts.iter().find(|f| is_anchorable_fact(f)) {
+            (format!("{}: {}", f.key, f.value), "accompany", "playful")
+        } else if let Some(ep) = retrieval.episodes.first() {
+            (ep.episode.summary.clone(), "accompany", "gentle")
+        } else {
+            log::info!("proactive_bubble: no usable memory, staying silent");
+            return Ok(None);
+        };
+
+    let intent = crate::mind::planner::Intent {
+        goal: goal.to_string(),
+        memory_anchor: memory_anchor.clone(),
+        tone: tone.to_string(),
+        proactive: true,
+        action: "proactive_check".to_string(),
+    };
+
+    let mut messages =
+        crate::mind::budget::allocate_and_compress(&retrieval, wm_context, &emotion, &intent);
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: format!(
+            "（你刚刚突然想起了这件事，想主动跟用户说。提起的记忆：{}。按规则 8/8a/8b 回复。）",
+            memory_anchor
+        ),
+    });
+
+    log::info!(
+        "[proactive] anchor={:?} goal={} facts={} episodes={} msgs={}",
+        memory_anchor.chars().take(30).collect::<String>(),
+        goal,
+        retrieval.facts.len(),
+        retrieval.episodes.len(),
+        messages.len(),
+    );
+
+    let chat_result = llm
+        .chat(&messages, Some(0.8), Some(4096))
+        .await
+        .map_err(|e| format!("LLM error: {:?}", e))?;
+
+    if let Some(ev) = pending_due.first() {
+        let _ = crate::pending::mark_triggered(db, &ev.id);
+        let _ = crate::pending::increment_followup(db, &ev.id);
+    }
+    let _ =
+        db.with_conn(|conn| crate::db::relationship::record_interaction(conn, "proactive", &now));
+
+    let reply = chat_result.content.trim().to_string();
+    if reply.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(reply))
+    }
+}
+
+/// Whether a fact is worth proactively bringing up. Excludes pseudo-facts
+/// (questions the user asked, phrased as facts by an over-eager extractor) and
+/// requires reasonable confidence. Durable preferences/relationships/goals pass.
+fn is_anchorable_fact(f: &Fact) -> bool {
+    if f.confidence < 0.7 {
+        return false;
+    }
+    let bad_key_prefixes = ["knowledge_", "belief_", "chemistry_", "geography_"];
+    if bad_key_prefixes.iter().any(|p| f.key.starts_with(p)) {
+        return false;
+    }
+    let v = f.value.to_lowercase();
+    let bad_value_markers = [
+        "user asked",
+        "user is asking",
+        "curious about user",
+        "asking about",
+        "does not know",
+        "user doesn't know",
+        "user is busy",
+    ];
+    if bad_value_markers.iter().any(|m| v.contains(m)) {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]

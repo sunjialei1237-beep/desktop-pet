@@ -61,8 +61,8 @@ impl Default for AppConfig {
             llm: LlmConfig {
                 base_url: "https://api.deepseek.com/v1".to_string(),
                 api_key: String::new(),
-                main_model: "deepseek-chat".to_string(),
-                reflection_model: "deepseek-chat".to_string(),
+                main_model: "deepseek-v4-pro".to_string(),
+                reflection_model: "deepseek-v4-flash".to_string(),
             },
             embedding: EmbeddingConfig {
                 model_dir: String::new(),
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = AppConfig::default();
-        assert_eq!(config.llm.main_model, "deepseek-chat");
+        assert_eq!(config.llm.main_model, "deepseek-v4-pro");
         assert_eq!(config.embedding.model_name, "bge-m3");
         assert!(config.app.debug);
     }
@@ -234,7 +234,7 @@ log_level = ""
         let mut config: AppConfig = toml::from_str(toml_str).unwrap();
         apply_defaults(&mut config);
         assert_eq!(config.llm.base_url, "https://api.deepseek.com/v1");
-        assert_eq!(config.llm.main_model, "deepseek-chat");
+        assert_eq!(config.llm.main_model, "deepseek-v4-pro");
         assert_eq!(config.embedding.model_name, "bge-m3");
         assert_eq!(config.app.log_level, "info");
     }

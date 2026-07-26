@@ -13,6 +13,7 @@ use desktop_pet_lib::db::pending as db_pending;
 use desktop_pet_lib::db::emotion as db_emotion;
 use desktop_pet_lib::emotion::state::EmotionState;
 use desktop_pet_lib::mind::retrieval;
+use desktop_pet_lib::db::onboarding::UserProfile;
 use desktop_pet_lib::mind::grounding;
 use desktop_pet_lib::mind::planner::{self, Intent};
 use desktop_pet_lib::mind::store;
@@ -132,7 +133,7 @@ fn gc_002_pending_event_tracking() {
         closeness_log: None, updated_at: "2026-07-14".to_string(),
     };
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![],
+        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
     let intent = planner::plan("hi", &emotion, Some(&rel), &due, &retrieval_result);
     assert_eq!(intent.action, "proactive_check", "GC_002 FAIL: planner should choose proactive_check");
@@ -156,7 +157,7 @@ fn gc_003_emotion_consistency() {
     };
 
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![],
+        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
 
     // User is anxious + pet is stressed → silence
@@ -441,7 +442,7 @@ fn gc_011_budget_token_limit() {
     use desktop_pet_lib::mind::retrieval::RetrievalResult;
 
     let retrieval = RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![],
+        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
 
     let mut wm = vec![];
@@ -512,6 +513,7 @@ fn gc_013_planner_celebration() {
         facts: vec![],
         relationship: None,
         persona_traits: vec![],
+        user_profile: UserProfile::default(),
     };
     let intent = planner::plan("I passed the exam! So happy!", &happy, None, &[], &retrieval_result);
     assert_eq!(intent.goal, "celebrate",
@@ -541,7 +543,7 @@ fn gc_014_planner_loneliness_proactive() {
         closeness_log: None, updated_at: "2026-07-14".to_string(),
     };
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![],
+        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
     let intent = planner::plan("hi", &lonely, Some(&rel), &[], &retrieval_result);
     assert_eq!(intent.goal, "accompany",
@@ -566,7 +568,7 @@ fn gc_015_planner_low_closeness_boundary() {
         closeness_log: None, updated_at: "2026-07-14".to_string(),
     };
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![],
+        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
     let intent = planner::plan("hi", &lonely, Some(&rel), &[], &retrieval_result);
     assert_eq!(intent.goal, "converse",
@@ -608,6 +610,7 @@ fn gc_016_planner_memory_anchor() {
             },
         }],
         facts: vec![], relationship: None, persona_traits: vec![],
+        user_profile: UserProfile::default(),
     };
     let emotion = EmotionState::default();
     let intent = planner::plan("what should I drink", &emotion, None, &[], &retrieval_result);
@@ -967,4 +970,3 @@ fn gc_030_end_to_end_memory_loop() {
 
     println!("GC_030 PASS: full memory loop (store -> retrieve -> plan) works");
 }
-

@@ -7,6 +7,8 @@ use crate::db::pending::PendingEvent;
 use crate::db::relationship::Relationship;
 use crate::emotion::state::EmotionState;
 use crate::mind::retrieval::RetrievalResult;
+#[cfg(test)]
+use crate::db::onboarding::UserProfile;
 
 /// The planner's output. Directs how the LLM actor should behave.
 #[derive(Debug, Clone)]
@@ -40,6 +42,9 @@ const ANXIETY_KEYWORDS: &[&str] = &[
     "worried", "anxious", "nervous", "stressed", "scared", "afraid",
     "panic", "overwhelm", "dan xin", "hai pa", "jing zhang", "ya li",
     "jiao lv", "fan si", "lei", "ku",
+    "焦虑", "担心", "害怕", "紧张", "压力", "好累", "累了", "哭",
+    "烦", "崩溃", "难受", "受不了", "撑不住", "慌", "怕", "心烦",
+    "低落", "失落", "沮丧", "emo", "难过", "失眠", "头疼", "丧",
 ];
 
 /// Good news keyword detection.
@@ -47,13 +52,28 @@ const GOOD_NEWS_KEYWORDS: &[&str] = &[
     "happy", "great", "amazing", "awesome", "passed", "won",
     "got it", "succeeded", "finished", "done it", "kai xin", "gao xing",
     "tongguo", "cheng gong", "wancheng", "bang", "tai bang",
+    "开心", "高兴", "通过", "成功", "完成", "搞定", "棒", "太棒",
+    "厉害", "考过", "终于", "爽", "好消息", "升职", "加薪",
+    "第一名", "赢了", "满分", "进步",
+];
+/// Shared-statement markers: the user is telling us something about
+/// themselves, their day, or their preferences. These warrant a genuine
+/// follow-up question (the "engage" goal), not a flat acknowledgment.
+/// Deliberately EXCLUDES question words so we don't engage-ask when the user
+/// actually asked us something.
+const SHARE_MARKERS: &[&str] = &[
+    "我在", "我最近", "我今天", "我昨天", "我开始", "我打算", "我想",
+    "我喜欢", "我爱", "我讨厌", "我有点", "好热", "好冷", "好累",
+    "练", "在做", "在看", "在玩", "在忙", "吃了", "喝了",
+    "i am", "i'm", "i like", "i love", "i hate", "i started", "i tried",
+    "i feel", "i went", "i had", "today i", "lately i",
 ];
 
 /// Produces an Intent based on the current brain state.
 ///
 /// Rule priority (first match wins):
 ///   1. Pending event due → proactive_check
-///   2. User expressing anxiety + high stress → silence
+///   2. User expressing anxiety → care (comfort, not silence)
 ///   3. User sharing good news + high mood → celebrate
 ///   4. High loneliness + low closeness → accompany (proactive)
 ///   5. Default → normal converse
@@ -90,14 +110,19 @@ pub fn plan(
     }
 
     // Rule 2: User is anxious and stress is high → listen quietly.
+    // Rule 2: User is anxious → comfort them (not silence).
+    // Silence was decoupled from empathy stress because it created a feedback
+    // loop: user anxious → pet absorbs stress → pet hits stress threshold →
+    // silence → silence adds more stress. Now anxiety always routes to care so
+    // she responds when the user needs her.
     let user_anxious = ANXIETY_KEYWORDS.iter().any(|kw| lower.contains(kw));
-    if user_anxious && emotion.stress > 0.7 {
+    if user_anxious {
         return Intent {
-            goal: "listen".to_string(),
+            goal: "care".to_string(),
             memory_anchor,
-            tone: "quiet".to_string(),
+            tone: "gentle".to_string(),
             proactive: false,
-            action: "silence".to_string(),
+            action: "normal".to_string(),
         };
     }
 
@@ -128,6 +153,22 @@ pub fn plan(
         }
     }
 
+    // Rule 4b: User shared a statement (not a question) → engage with a
+    // genuine follow-up question. Detected via SHARE_MARKERS and the absence
+    // of a question mark in the user's text.
+    let is_question = user_text.contains('？') || user_text.contains('?')
+        || user_text.contains("吗") || user_text.contains("呢");
+    let shared = SHARE_MARKERS.iter().any(|m| lower.contains(m));
+    if shared && !is_question {
+        return Intent {
+            goal: "engage".to_string(),
+            memory_anchor,
+            tone: "curious".to_string(),
+            proactive: false,
+            action: "normal".to_string(),
+        };
+    }
+
     // Rule 5: Default → normal conversation.
     Intent {
         goal: "converse".to_string(),
@@ -156,16 +197,17 @@ mod tests {
     use crate::db::episodes::Episode;
     use crate::mind::retrieval::{RetrievalResult, ScoreBreakdown, ScoredEpisode};
 
-    fn empty_retrieval() -> RetrievalResult {
-        RetrievalResult {
-            episodes: vec![],
-            facts: vec![],
-            relationship: None,
-            persona_traits: vec![],
-        }
-    }
+   fn empty_retrieval() -> RetrievalResult {
+       RetrievalResult {
+           episodes: vec![],
+           facts: vec![],
+           relationship: None,
+           persona_traits: vec![],
+           user_profile: UserProfile::default(),
+       }
+   }
 
-    fn retrieval_with_episode(summary: &str, score: f64) -> RetrievalResult {
+   fn retrieval_with_episode(summary: &str, score: f64) -> RetrievalResult {
         RetrievalResult {
             episodes: vec![ScoredEpisode {
                 episode: Episode {
@@ -194,14 +236,15 @@ mod tests {
                     recency: 0.9,
                     emotion: 0.5,
                 },
-            }],
-            facts: vec![],
-            relationship: None,
-            persona_traits: vec![],
-        }
-    }
+           }],
+           facts: vec![],
+           relationship: None,
+           persona_traits: vec![],
+           user_profile: UserProfile::default(),
+       }
+   }
 
-    fn calm_emotion() -> EmotionState {
+   fn calm_emotion() -> EmotionState {
         EmotionState::default()
     }
 
@@ -270,7 +313,9 @@ mod tests {
     }
 
     #[test]
-    fn test_anxiety_silence() {
+    fn test_anxiety_routes_to_care() {
+        // Anxiety now routes to care (comfort) regardless of pet stress.
+        // Silence was removed to break the anxiety → stress → silence loop.
         let intent = plan(
             "I am so nervous about the exam, I am stressed",
             &stressed_emotion(),
@@ -278,8 +323,9 @@ mod tests {
             &[],
             &empty_retrieval(),
         );
-        assert_eq!(intent.action, "silence");
-        assert_eq!(intent.tone, "quiet");
+        assert_eq!(intent.action, "normal");
+        assert_eq!(intent.goal, "care");
+        assert_eq!(intent.tone, "gentle");
     }
 
     #[test]
@@ -360,7 +406,10 @@ mod tests {
     #[test]
     fn test_default_normal() {
         let intent = plan(
-            "I had lunch at the new restaurant",
+            // NOTE: must NOT match any SHARE_MARKER (e.g. "i had") or the
+            // planner correctly classifies it as "engage", not "converse".
+            // This test verifies the DEFAULT fall-through branch only.
+            "The weather looks calm",
             &calm_emotion(),
             None,
             &[],

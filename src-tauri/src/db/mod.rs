@@ -10,6 +10,7 @@ pub mod pending;
 pub mod reflections;
 pub mod vectors;
 pub mod changelog;
+pub mod onboarding;
 
 use rusqlite::Connection;
 use std::sync::Mutex;

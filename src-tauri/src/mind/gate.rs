@@ -61,7 +61,7 @@ pub async fn classify(text: &str, llm: &LlmClient) -> Result<GateRoute, String> 
     ];
 
     let result = llm
-        .chat_reflection(&messages, Some(0.1), Some(256))
+        .chat_reflection(&messages, Some(0.1), Some(2048))
         .await
         .map_err(|e| format!("Gate LLM call failed: {}", e))?;
 

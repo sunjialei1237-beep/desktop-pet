@@ -89,7 +89,7 @@ pub async fn extract(
     ];
 
     let result = llm
-        .chat_reflection(&messages, Some(0.3), Some(1024))
+        .chat_reflection(&messages, Some(0.3), Some(4096))
         .await
         .map_err(|e| format!("Extractor LLM call failed: {}", e))?;
 

@@ -9,8 +9,9 @@
 # Ollama:   http://localhost:11434/v1
 base_url = "https://api.deepseek.com/v1"
 api_key = ""
-main_model = "deepseek-chat"
-reflection_model = "deepseek-chat"
+# DeepSeek V4: pro = strongest (main chat); flash = cheap/fast (reflection, Principle 8).
+main_model = "deepseek-v4-pro"
+reflection_model = "deepseek-v4-flash"
 
 [embedding]
 # Directory for BGE-M3 ONNX weights (~2.2GB).

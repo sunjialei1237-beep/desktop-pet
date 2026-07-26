@@ -3,7 +3,8 @@ use super::state::EmotionState;
 /// Time constants (tau) for exponential drift toward baseline, in seconds.
 /// Larger tau = slower drift. Design doc 7.7 table.
 const TAU_MOOD: f64 = 300.0; // minutes
-const TAU_STRESS: f64 = 7200.0; // hours
+const TAU_STRESS: f64 = 3600.0; // 1 hour 鈥?was 7200s, halved so absorbed
+                                // stress recovers faster (breaks anxiety loop)
 const TAU_ENERGY: f64 = 1800.0; // 30 min, halved when sleeping
 const TAU_SOCIAL: f64 = 600.0; // 10 min
 
@@ -45,14 +46,14 @@ mod tests {
         let mut s = EmotionState::default();
         s.stress = 0.9;
 
-        // 1 hour = 3600s, tau = 7200s
+        // 1 hour = 3600s, tau = 3600s (now 1 elapsed tau)
         apply_drift(&mut s, 3600.0, false);
 
         // After 1 tau/half-elapsed, stress should have dropped noticeably
         assert!(s.stress < 0.9, "stress should have dropped");
-        // rate = 1 - exp(-3600/7200) = 1 - exp(-0.5) ~ 0.393
-        // new = 0.9 + (0.2 - 0.9) * 0.393 = 0.9 - 0.275 = 0.625
-        assert!((s.stress - 0.625).abs() < 0.02, "stress should be ~0.625, got {}", s.stress);
+        // rate = 1 - exp(-3600/3600) = 1 - exp(-1) ~ 0.632
+        // new = 0.9 + (0.2 - 0.9) * 0.632 = 0.9 - 0.442 = 0.458
+        assert!((s.stress - 0.458).abs() < 0.05, "stress should be ~0.458, got {}", s.stress);
     }
 
     #[test]

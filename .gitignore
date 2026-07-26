@@ -26,3 +26,20 @@ config.toml
 # Model weights
 *.onnx
 onnxruntime.dll
+
+# CodeGraph index (regenerable via `codegraph init`)
+.codegraph/
+
+# Run logs / harness reports
+*.log
+*_report.txt
+
+# Throwaway debug/edit scripts (not product source)
+_*.cjs
+_*.py
+_*.ps1
+edit_*.mjs
+shot.ps1
+kimi_vision.ps1
+screenshot.mjs
+e2e-chat-test.mjs

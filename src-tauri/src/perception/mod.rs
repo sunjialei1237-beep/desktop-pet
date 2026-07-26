@@ -8,6 +8,7 @@
 pub mod presence;
 pub mod time;
 pub mod window;
+pub mod cursor;
 
 pub use presence::PresenceState;
 pub use time::TimeOfDay;

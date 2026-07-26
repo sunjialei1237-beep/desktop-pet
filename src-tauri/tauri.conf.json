@@ -12,11 +12,11 @@
   "app": {
     "windows": [
       {
-        "label": "main",
-        "title": "",
-        "width": 400,
-        "height": 600,
-        "transparent": true,
+       "label": "main",
+       "title": "",
+       "width": 400,
+        "height": 760,
+       "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,

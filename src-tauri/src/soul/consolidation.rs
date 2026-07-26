@@ -84,7 +84,7 @@ pub async fn consolidate(db: &DbState, llm: &LlmClient) -> Result<usize, String>
     );
 
     let messages = vec![ChatMessage { role: "system".to_string(), content: prompt }];
-    let result = llm.chat_reflection(&messages, Some(0.5), Some(200)).await
+    let result = llm.chat_reflection(&messages, Some(0.5), Some(2048)).await
         .map_err(|e| format!("Consolidation LLM call failed: {}", e))?;
 
     let consolidated_summary = result.content.trim().to_string();

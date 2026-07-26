@@ -6,6 +6,7 @@ use crate::embedding::EmbeddingService;
 use crate::llm::client::{ChatMessage, LlmClient};
 use crate::mind::gate::GateRoute;
 use crate::mind::planner::Intent;
+use rand::Rng;
 
 /// Result of a full conversation turn.
 #[derive(Debug)]
@@ -32,6 +33,7 @@ pub async fn converse(
     llm: &LlmClient,
     db: &DbState,
     embedding: Option<&EmbeddingService>,
+    pacing: &std::sync::Mutex<crate::mind::pacing::QuestionPacing>,
 ) -> Result<ConversationResult, String> {
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -74,7 +76,7 @@ pub async fn converse(
     let relationship = db
         .with_conn(crate::db::relationship::get)
         .ok();
-    let intent = crate::mind::planner::plan(
+    let mut intent = crate::mind::planner::plan(
         text,
         &emotion,
         relationship.as_ref(),
@@ -85,6 +87,40 @@ pub async fn converse(
     // Step 7: Check for silence action.
     if intent.action == "silence" {
         log::info!("Planner chose silence");
+        // Silence = user is anxious enough to warrant quiet. Apply the turn's
+        // emotion delta (silence goal adds stress+/mood-) before returning.
+        let delta = crate::emotion::react::react_to_turn(text, &intent.goal);
+        let new_mood = (emotion.mood + delta.mood).clamp(0.0, 1.0);
+        let new_energy = (emotion.physical_energy + delta.physical_energy).clamp(0.0, 1.0);
+        let new_social = (emotion.social_battery + delta.social_battery).clamp(0.0, 1.0);
+        let new_stress = (emotion.stress + delta.stress).clamp(0.0, 1.0);
+        let new_loneliness = (emotion.loneliness + delta.loneliness).clamp(0.0, 1.0);
+        let new_state = crate::emotion::state::EmotionState {
+            mood: new_mood,
+            physical_energy: new_energy,
+            social_battery: new_social,
+            stress: new_stress,
+            loneliness: new_loneliness,
+            rest_need: emotion.rest_need,
+        };
+        let new_label = crate::emotion::state::derive_mood_label(&new_state);
+        let _ = db.with_conn(|conn| {
+            crate::db::emotion::update_fields(
+                conn,
+                Some(new_mood),
+                Some(new_label),
+                Some(new_energy),
+                Some(new_social),
+                Some(new_stress),
+                Some(new_loneliness),
+                None,
+                &now,
+            )
+        });
+        log::info!(
+            "[emotion-react] (silence) mood {:.2}->{:.2} ({}) stress {:.2}->{:.2}",
+            emotion.mood, new_mood, new_label, emotion.stress, new_stress,
+        );
         let _ = db.with_conn(|conn| {
             crate::db::relationship::record_interaction(conn, "silence", &now)
         });
@@ -97,6 +133,26 @@ pub async fn converse(
         });
     }
 
+    // Step 7.5: Follow-up question frequency control. The planner stays pure
+    // (architecture #8); the throttle lives in this orchestration layer. A
+    // silence turn already returned above, so this only touches speaking turns.
+    {
+        let roll: f64 = rand::thread_rng().gen();
+        let mut guard = pacing
+            .lock()
+            .map_err(|e| format!("pacing lock error: {}", e))?;
+        let snapshot = guard.clone();
+        let (new_goal, next) =
+            crate::mind::pacing::throttle(&intent.goal, &snapshot, roll);
+        log::info!(
+            "[pacing] roll={:.3} credit={}->{} last={}->{} goal={}",
+            roll, snapshot.credit, next.credit,
+            snapshot.last_turn_was_question, next.last_turn_was_question, intent.goal
+        );
+        intent.goal = new_goal;
+        *guard = next;
+    }
+
     // Step 8: Budget — compress context into messages.
     let messages = crate::mind::budget::allocate_and_compress(
         &retrieval,
@@ -105,9 +161,26 @@ pub async fn converse(
         &intent,
     );
 
+    // Append the CURRENT user message as the final turn. This must come AFTER
+    // budget compression so the latest question can never be truncated away,
+    // and the LLM always answers *this* turn (not a stale history entry).
+    let mut messages = messages;
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: text.to_string(),
+    });
+
+    log::info!(
+        "[ctx] messages={} last_user={:?} system_tokens~={} history_turns={}",
+        messages.len(),
+        text.chars().take(40).collect::<String>(),
+        crate::mind::budget::estimate_tokens(&messages[0].content),
+        wm_context.len(),
+    );
+
     // Step 9: LLM — generate response.
     let chat_result = llm
-        .chat(&messages, Some(0.8), Some(500))
+        .chat(&messages, Some(0.8), Some(4096))
         .await
         .map_err(|e| format!("LLM error: {:?}", e))?;
     let response = chat_result.content;
@@ -119,6 +192,44 @@ pub async fn converse(
     let _ = db.with_conn(|conn| {
         crate::db::relationship::record_interaction(conn, "chat", &now)
     });
+
+    // Step 12: Emotion reactivity — apply rule-based deltas from this turn.
+    // Pure rules only (principle #8); no LLM call. Makes the expression reflect
+    // the conversation, not just the 30s homeostasis drift.
+    let delta = crate::emotion::react::react_to_turn(text, &intent.goal);
+    let new_mood = (emotion.mood + delta.mood).clamp(0.0, 1.0);
+    let new_energy = (emotion.physical_energy + delta.physical_energy).clamp(0.0, 1.0);
+    let new_social = (emotion.social_battery + delta.social_battery).clamp(0.0, 1.0);
+    let new_stress = (emotion.stress + delta.stress).clamp(0.0, 1.0);
+    let new_loneliness = (emotion.loneliness + delta.loneliness).clamp(0.0, 1.0);
+    let new_state = crate::emotion::state::EmotionState {
+        mood: new_mood,
+        physical_energy: new_energy,
+        social_battery: new_social,
+        stress: new_stress,
+        loneliness: new_loneliness,
+        rest_need: emotion.rest_need,
+    };
+    let new_label = crate::emotion::state::derive_mood_label(&new_state);
+    let _ = db.with_conn(|conn| {
+        crate::db::emotion::update_fields(
+            conn,
+            Some(new_mood),
+            Some(new_label),
+            Some(new_energy),
+            Some(new_social),
+            Some(new_stress),
+            Some(new_loneliness),
+            None,
+            &now,
+        )
+    });
+    log::info!(
+        "[emotion-react] mood {:.2}->{:.2} ({}) social {:.2}->{:.2} stress {:.2}->{:.2}",
+        emotion.mood, new_mood, new_label,
+        emotion.social_battery, new_social,
+        emotion.stress, new_stress,
+    );
 
     Ok(ConversationResult {
         response,

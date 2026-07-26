@@ -168,10 +168,12 @@ impl LlmClient {
             return Err(LlmError::Server(format!("HTTP {}: {}", status, body)));
         }
 
-        let chat_resp: ChatResponse = resp
-            .json()
+        let body = resp
+            .text()
             .await
             .map_err(|e| LlmError::Parse(e.to_string()))?;
+        let chat_resp: ChatResponse = serde_json::from_str(&body)
+            .map_err(|e| LlmError::Parse(format!("{} | body: {}", e, body)))?;
 
         let content = chat_resp
             .choices
@@ -179,6 +181,14 @@ impl LlmClient {
             .next()
             .map(|c| c.message.content)
             .unwrap_or_default();
+        if content.trim().is_empty() {
+            log::warn!(
+                "[llm-empty-content] model={} body_len={} body={}",
+                model,
+                body.len(),
+                body
+            );
+        }
 
         let usage = chat_resp.usage.unwrap_or(Usage {
             prompt_tokens: 0,

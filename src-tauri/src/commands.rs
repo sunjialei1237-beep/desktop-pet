@@ -1,12 +1,22 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::config::AppConfig;
 use crate::db::DbState;
+use crate::db::onboarding as db_onboarding;
 use crate::embedding::{EmbeddingService, ModelDownloader};
 use crate::llm::client::{ChatMessage, LlmClient};
 use crate::mind::working::WorkingMemory;
+
+/// Result of `send_message`: the LLM reply plus an optional transient
+/// expression id (f00..f07) to flash for ~8s before reverting to the
+/// accumulated mood label. None = keep the accumulated expression.
+#[derive(serde::Serialize)]
+pub struct SendMessageResult {
+    pub reply: String,
+    pub transient_expression: Option<String>,
+}
 
 /// Shared application state.
 pub struct AppState {
@@ -14,6 +24,7 @@ pub struct AppState {
     pub llm: std::sync::Mutex<Option<LlmClient>>,
     pub embedding: EmbeddingService,
     pub working_memory: Mutex<WorkingMemory>,
+    pub question_pacing: std::sync::Mutex<crate::mind::pacing::QuestionPacing>,
 }
 
 // -- Response types --
@@ -57,7 +68,7 @@ pub async fn send_message(
     text: String,
     state: State<'_, AppState>,
     db: State<'_, DbState>,
-) -> Result<String, String> {
+) -> Result<SendMessageResult, String> {
     log::info!("Received message: {}", text);
 
     // Snapshot working memory context.
@@ -88,8 +99,14 @@ pub async fn send_message(
         &llm,
         &db,
         Some(&state.embedding),
+        &state.question_pacing,
     )
     .await?;
+
+    // Transient expression for this turn (computed before `text` is moved into
+    // working memory). Pure rules, no LLM (architecture principle #8).
+    let transient = crate::emotion::react::transient_expression(&text, &result.intent.goal)
+        .map(|s| s.to_string());
 
     // Push user + assistant messages to working memory.
     {
@@ -119,7 +136,10 @@ pub async fn send_message(
         );
     }
 
-    Ok(result.response)
+    Ok(SendMessageResult {
+        reply: result.response,
+        transient_expression: transient,
+    })
 }
 
 /// Triggers a reflection cycle if due (> 20 hours since last).
@@ -168,6 +188,32 @@ pub async fn trigger_reflection_if_due(
     }
 }
 
+
+/// Forces a reflection cycle immediately (for development/testing).
+/// Bypasses the 20-hour cooldown check.
+#[tauri::command]
+pub async fn force_reflection(
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<bool, String> {
+    let llm = match state.llm.lock().ok().and_then(|g| g.clone()) {
+        Some(l) => l,
+        None => return Ok(false),
+    };
+    match crate::soul::reflection::run_reflection(
+        crate::soul::reflection::ReflectionTrigger::TurnThreshold,
+        &db, &llm,
+    ).await {
+        Ok(r) => {
+            log::info!("Forced reflection: {}", r.summary);
+            Ok(true)
+        }
+        Err(e) => {
+            log::warn!("Forced reflection failed: {}", e);
+            Ok(false)
+        }
+    }
+}
 
 /// Returns unsurfaced internal thought count (for debug panel + proactive surfacing).
 #[tauri::command]
@@ -330,7 +376,37 @@ pub async fn check_proactive(
 
     Ok(action)
 }
+/// Generates a memory-grounded proactive bubble. Picks one memory anchor
+/// (due pending event > high-confidence fact > top episode), runs the same
+/// budget/grounding pipeline as a normal turn but with a proactive intent,
+/// and returns the LLM's reply. This is the MVP loop's "主动提起" step.
+/// Returns Ok(None) when there is nothing worth proactively bringing up.
+#[tauri::command]
+pub async fn proactive_bubble(
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<Option<String>, String> {
+    let llm = state
+        .llm
+        .lock()
+        .map_err(|e| format!("LLM lock error: {}", e))?
+        .as_ref()
+        .cloned()
+        .ok_or("LLM not configured")?;
 
+    let wm_context = {
+        let wm = state
+            .working_memory
+            .lock()
+            .map_err(|e| format!("WM lock error: {}", e))?;
+        wm.get_context()
+    };
+
+    // Business logic lives in pending::proactive::generate so the closed-loop-2
+    // path is testable without AppState (Architecture Principle 1: thin command
+    // layer; logic in modules).
+    crate::pending::proactive::generate(&db, &llm, Some(&state.embedding), &wm_context).await
+}
 /// Checks for due cold-start interview questions (first 3 days).
 /// These bypass the closeness gate to help build the relationship early on.
 /// Returns the next due interview question, or None if none are due.
@@ -375,6 +451,41 @@ pub async fn check_cold_start(db: State<'_, DbState>) -> Result<Option<String>, 
     })?;
 
     Ok(question)
+}
+
+// -- Onboarding (first-launch interview) --
+// The pet asks 4 questions on first launch; answers are persisted in app_config
+// and injected into the system prompt's [Persona] section.
+
+/// Returns true if the first-launch interview has not been completed yet.
+#[tauri::command]
+pub async fn needs_onboarding(db: State<'_, DbState>) -> Result<bool, String> {
+    db.with_conn(|conn| db_onboarding::needs_onboarding(conn))
+}
+
+/// Saves one onboarding answer (key is one of: user_nickname, personality_style,
+/// relationship_style, pet_name).
+#[tauri::command]
+pub async fn save_onboarding_answer(
+    db: State<'_, DbState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    db.with_conn(|conn| db_onboarding::save(conn, &key, &value))
+}
+
+/// Marks the interview complete so it never fires again.
+#[tauri::command]
+pub async fn complete_onboarding(db: State<'_, DbState>) -> Result<(), String> {
+    db.with_conn(|conn| db_onboarding::save(conn, "onboard_completed", "true"))
+}
+
+/// Loads the full onboarding profile for the system prompt.
+#[tauri::command]
+pub async fn get_user_profile(
+    db: State<'_, DbState>,
+) -> Result<db_onboarding::UserProfile, String> {
+    db.with_conn(|conn| db_onboarding::load(conn))
 }
 
 #[derive(Debug, Serialize)]
@@ -641,4 +752,23 @@ pub async fn get_debug_snapshot(
             llm_configured: state.llm.lock().map(|g| g.is_some()).unwrap_or(false),
         })
     })
+}
+
+/// Opens the webview developer tools window (used by the context-menu entry).
+#[tauri::command]
+pub fn open_devtools(app_handle: tauri::AppHandle) {
+    if let Some(win) = app_handle.get_webview_window("main") {
+        win.open_devtools();
+        log::info!("devtools opened via context menu");
+    } else {
+        log::warn!("open_devtools: main webview window not found");
+    }
+}
+
+/// Quit the whole application. Used by the right-click menu item.
+/// `app.exit(0)` terminates the process deterministically.
+#[tauri::command]
+pub fn quit_app(app_handle: tauri::AppHandle) {
+    log::info!("quit_app invoked, exiting process");
+    app_handle.exit(0);
 }

@@ -105,7 +105,7 @@ pub async fn run_reflection(
 
     // 3. Call LLM with reflection model.
     let messages = vec![ChatMessage { role: "system".to_string(), content: system_prompt }];
-    let result = llm.chat_reflection(&messages, Some(0.7), Some(800)).await
+    let result = llm.chat_reflection(&messages, Some(0.7), Some(4096)).await
         .map_err(|e| format!("Reflection LLM call failed: {}", e))?;
 
     // 4. Parse LLM output.
@@ -130,6 +130,19 @@ pub async fn run_reflection(
                 updated_at: now.clone(),
             })?;
         }
+        // Order matters under PRAGMA foreign_keys = ON: insert the reflection
+        // PARENT record first, then the thoughts that reference it via
+        // source_reflection (FK -> reflections.id). The previous order (thoughts
+        // before reflection) raised "FOREIGN KEY constraint failed" at runtime.
+        let persona_json = serde_json::to_string(&parsed.new_traits).ok();
+        crate::db::reflections::insert_reflection(conn, &Reflection {
+            id: reflection_id.clone(),
+            trigger_type: trigger.as_str().to_string(),
+            trigger_reason: Some(parsed.reflection.clone()),
+            thought: parsed.reflection.clone(),
+            persona_updates: persona_json,
+            created_at: now.clone(),
+        })?;
         for th in &parsed.internal_thoughts {
             crate::db::reflections::insert_thought(conn, &InternalThought {
                 id: format!("thought_{}", uuid::Uuid::new_v4()),
@@ -141,15 +154,8 @@ pub async fn run_reflection(
                 surfaced_at: None,
             })?;
         }
-        let persona_json = serde_json::to_string(&parsed.new_traits).ok();
-        crate::db::reflections::insert_reflection(conn, &Reflection {
-            id: reflection_id.clone(),
-            trigger_type: trigger.as_str().to_string(),
-            trigger_reason: Some(parsed.reflection.clone()),
-            thought: parsed.reflection.clone(),
-            persona_updates: persona_json,
-            created_at: now,
-        })?;
+        // `now` consumed by the last insert above; no further use.
+        drop(now);
         Ok::<_, String>(())
     })?;
 

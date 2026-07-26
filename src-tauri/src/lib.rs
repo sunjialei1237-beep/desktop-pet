@@ -92,6 +92,7 @@ pub fn run() {
             llm: std::sync::Mutex::new(llm_client),
             embedding: embedding_service,
             working_memory,
+            question_pacing: Default::default(),
         })
         .manage(db_state)
         .setup(|app| {
@@ -111,6 +112,9 @@ pub fn run() {
             // Start the life loop (background timers).
             lifecycle::start_life_loop(handle.clone());
 
+            // Start the global cursor poll thread for click-through (ADR Phase 2).
+            let _cursor_stop = perception::cursor::start(handle.clone());
+
             // Welcome bubble after a short delay.
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(2));
@@ -123,12 +127,14 @@ pub fn run() {
             commands::send_message,
             commands::get_emotion_state,
             commands::get_perception,
-            commands::trigger_reflection_if_due,
-            commands::get_pending_thoughts,
+            commands::trigger_reflection_if_due, 
+            commands::get_pending_thoughts,       
+            commands::force_reflection,
            commands::get_debug_data,
             commands::pet_head,
             commands::poke,
             commands::check_proactive,
+            commands::proactive_bubble,
             commands::get_llm_status,
             commands::resolve_pending_event,
             commands::get_llm_config,
@@ -136,7 +142,13 @@ pub fn run() {
             commands::get_debug_snapshot,
             commands::get_embedding_status,
             commands::download_embedding_model,
-            commands::check_cold_start,
+           commands::check_cold_start,
+           commands::needs_onboarding,
+           commands::save_onboarding_answer,
+           commands::complete_onboarding,
+           commands::get_user_profile,
+           commands::open_devtools,
+           commands::quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

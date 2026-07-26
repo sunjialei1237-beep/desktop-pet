@@ -58,7 +58,7 @@ If the correction is unclear or does not match any known fact, respond with: {{\
     }];
 
     let result = llm
-        .chat_reflection(&messages, Some(0.2), Some(256))
+        .chat_reflection(&messages, Some(0.2), Some(2048))
         .await
         .map_err(|e| format!("Correction LLM call failed: {}", e))?;
 

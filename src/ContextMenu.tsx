@@ -7,9 +7,10 @@ interface ContextMenuProps {
     onExportMemory: () => void;
     onAwayMode: () => void;
     onQuit: () => void;
+    onDevTools: () => void;
 }
 
-export function ContextMenu({ x, y, onClose, onExportMemory, onAwayMode, onQuit }: ContextMenuProps) {
+export function ContextMenu({ x, y, onClose, onExportMemory, onAwayMode, onQuit, onDevTools }: ContextMenuProps) {
     const ref = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -52,6 +53,12 @@ export function ContextMenu({ x, y, onClose, onExportMemory, onAwayMode, onQuit 
                 <span>暂时离开</span>
             </button>
             <div className="context-menu-divider" />
+            <button className="context-menu-item" onClick={() => { onDevTools(); onClose(); }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M16 18l6-6-6-6M8 6l-6 6 6 6" />
+                </svg>
+                <span>开发者工具</span>
+            </button>
             <button className="context-menu-item context-menu-danger" onClick={() => { onQuit(); onClose(); }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M18 6L6 18M6 6l12 12" />
