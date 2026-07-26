@@ -15,14 +15,14 @@
 | 闭环1 说→记住→跨会话召回 | ✅ | `cargo test --test memory_recall` |
 | 闭环2 到期主动提起 | ✅ | `cargo test --test closed_loop2_harness` |
 | Soul 反思→念头外显 | ✅ | `cargo test --test soul_harness` |
-| 闭环3 "她记得我"体感 | ⏳ | 主观，实跑 `npm run tauri dev` 验收 |
+| 闭环3 "她记得我"体感 | ✅ | 实跑：重启后问"我最近忙啥"→recall 出"找实习" |
 | 库单测 | ✅ 184 passed | `cargo test --lib` |
 | Body 视线 360°（上下） | ✅ | 实跑验收通过（autoFocus:false + ny 取反） |
 
 **阶段**：Soul 层（P13）刚激活并通过端到端验证。按 Kill List，闭环 1+2 已稳，可推进闭环 3（体感）或收尾项。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。
 
 ## §当前任务（接手者先看这）
-**P1 视线修复已验收通过并清理（2026-07-26）。** 用户实跑 `npm run tauri dev` 确认 360° 正常；已删 `[gaze]`/`[ct]` 诊断日志 + `mode` 孤儿变量；`tsc` 零错误。本轮提交中。等选下一步（见 §下一步候选）。
+**MVP 三闭环全通（2026-07-26）。** P1 视线修复已提交 `86ca465`；闭环3 体感验收通过——用户实跑 `npm run tauri dev`，**重启**后问"我最近忙啥"，她从持久记忆 recall 出"找实习"（闭环1 真实运行 ✅ + 闭环3 体感 ✅）。闭环2 真实运行待 pending 自然到期触发（harness 已 ✅）。无进行中任务，工作区干净。等选下一步（见 §下一步候选）。
 
 ## §最近一轮 (2026-07-26)：P1 视线修复（autoFocus + y 翻转）
 **起因**：用户选 P1 视线修复方向。`known-issues-2026-07-18.md` 自 07-18 起卡住，诊断了 A/B/C 三假设但未坐实。
@@ -44,7 +44,7 @@
 - **物理简化**：拖拽松手停原地 + 30s 回巢；完整桌面物理（碰撞、空间 Episode）未做，MVP 够用。
 
 ## §下一步候选（按优先级，等用户定）
-1. **闭环3 体感验收**（用户做）— 实跑 `npm run tauri dev`，主观感受"她记得我"。MVP 最终验收，三闭环临门一脚。（P1 视线已修，可一并感受生命感。）
-2. **清技术债**（agent 做，小快）— `tests/proactive_harness.rs` 简化为调 `proactive::generate`，消除逻辑重复。
-3. **docs 治理**（agent 做）— 去 `superpowers/` 嵌套 + 归档过期 `bug-audit`/`fix-plan`/`feature-checklist` 到 `archive/`，更新 CLAUDE.md/HANDOFF.md 导航路径。
-4. **P16 Debug Panel 补全** — Prompt token 预算 / Retrieved score breakdown / Reflect 分区（核心状态面板已在）。
+1. **清技术债**（agent 做，小快）— `tests/proactive_harness.rs` 简化为调 `proactive::generate`，消除逻辑重复。
+2. **docs 治理**（agent 做）— 去 `superpowers/` 嵌套 + 归档过期 `bug-audit`/`fix-plan`/`feature-checklist` 到 `archive/`，更新 CLAUDE.md/HANDOFF.md 导航路径。
+3. **P16 Debug Panel 补全** — Prompt token 预算 / Retrieved score breakdown / Reflect 分区（核心状态面板已在）。
+4. **闭环2 真实运行验证**（可选，用户做）— 设一个近期 pending（如"明天提醒我 X"），等自然到期看她是否主动冒泡提起；harness 已 ✅，此项是真实运行补验。
