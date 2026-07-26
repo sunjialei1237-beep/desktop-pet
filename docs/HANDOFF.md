@@ -17,40 +17,34 @@
 | Soul 反思→念头外显 | ✅ | `cargo test --test soul_harness` |
 | 闭环3 "她记得我"体感 | ⏳ | 主观，实跑 `npm run tauri dev` 验收 |
 | 库单测 | ✅ 184 passed | `cargo test --lib` |
-| Body 视线 360°（上下） | ❌ P1 | 见 `known-issues-2026-07-18.md` |
+| Body 视线 360°（上下） | ✅ | 实跑验收通过（autoFocus:false + ny 取反） |
 
 **阶段**：Soul 层（P13）刚激活并通过端到端验证。按 Kill List，闭环 1+2 已稳，可推进闭环 3（体感）或收尾项。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。
 
 ## §当前任务（接手者先看这）
-**无进行中任务，工作区干净。** 上一轮（2026-07-26）的交接验证 + 修复已提交：`24bcc75`（55 files, +3298/-426）。等用户选下一步方向（见 §下一步候选）。
+**P1 视线修复已验收通过并清理（2026-07-26）。** 用户实跑 `npm run tauri dev` 确认 360° 正常；已删 `[gaze]`/`[ct]` 诊断日志 + `mode` 孤儿变量；`tsc` 零错误。本轮提交中。等选下一步（见 §下一步候选）。
 
-## §最近一轮 (2026-07-26)：交接验证 + DeepSeek v4 兼容
-**起因**：审查 Codex 交接汇报，发现"闭环1已验证"**不实**——模型名 `deepseek-chat` 已失效 + v4 reasoning 爆预算，对话管道近期根本没跑通过真实 LLM。
+## §最近一轮 (2026-07-26)：P1 视线修复（autoFocus + y 翻转）
+**起因**：用户选 P1 视线修复方向。`known-issues-2026-07-18.md` 自 07-18 起卡住，诊断了 A/B/C 三假设但未坐实。
 
-做了：
-- 新增 `soul_harness` / `closed_loop2_harness`（可重复验证 Soul + 闭环2，内存 DB + 真实 LLM）
-- 修模型名 `deepseek-chat`→`v4-pro/flash`：`config.rs` 默认值+单测 / 项目根 `config.toml` / `config.example.toml` / AppData 运行时
-- 修 v4 reasoning 爆预算：7 处 `max_tokens` 增大（gate/correction/consolidation→2048；extractor/reflection/converse/proactive→4096）
-- 重构 `pending::proactive::generate`（从 `proactive_bubble` 命令层抽出，闭环2 可测，原则 #1 命令薄）
-- 修 `memory_recall` harness（Codex 加 pacing 时漏更新，编译挂）
-- `llm/client.rs` 加 `[llm-empty-content]` warn 监控（content 空→reasoning 爆预算的永久告警）
-- 确认 `config.toml` gitignore，API key 未泄入 git
+做了（读库 `pixi-live2d-display-lipsyncpatch/dist/cubism4.es.js` 源码定位）：
+- **坐实 A（主因）**：`_Automator` 默认 `autoFocus=true`（:10149）→ 绑 `globalpointermove` → `model.focus`（:10272）→ atan2 耦合（:10495）把 target 锁单位圆 → 鼠标在右时 `targetY≈0` → 永不上下看 = "卡死"。每次指针移动覆盖我们 `focusTickerFn` 写的独立 x/y。
+- **坐实 C（次要）**：库 `model.focus` 的 y 用 `-sin(radian)`（:10496）翻转（PIXI y 向下、`ParamAngleY` 正=看上），我们裸 `ny` 没翻 → 解锁后上下会颠倒。
+- **排除 B**：`focusController` 结构正确（`FocusController` :7992，`focus()` 设 target / `update()` 加速度平滑）。但 `autoFocus` setter 在 **Automator**（:10244）不在 Live2DModel，`model.autoFocus=false` 会静默失败 → 必须 `from(url,{autoFocus:false})`。
 
-**改动文件**：`tests/soul_harness.rs`、`tests/closed_loop2_harness.rs`（新）；`tests/memory_recall.rs`、`mind/{gate,correction,extractor,converse}.rs`、`soul/{reflection,consolidation}.rs`、`pending/{proactive,mod}.rs`、`commands.rs`、`llm/client.rs`、`config.rs`、`config.toml`、`config.example.toml`（改）。
+修复 `src/Live2DCanvas.tsx` 两处（最小改动）：
+1. `Live2DModel.from(modelUrl)` → `from(modelUrl, { autoFocus: false })`（治卡死；`autoHitTest` 默认 true 保留 Head/Body 点击）
+2. `ny` 归一化处取反 `const ny = -Math.max(-1, Math.min(1, ...))`（治 y 反；与库 `-sin` 对齐，`focus(nx,ny)` 不变）
 
-**审查纠错**：Codex 说"P16 Debug Panel 未实现"实际已部分在（`DebugPanel.tsx` 六分区可用）；"闭环1已验证"此前是假的。
-
-**已提交**：`24bcc75` "feat: MVP 三闭环跑通 + Soul 层激活 + 跨会话开发文档"。工作区干净（临时文件已 gitignore：`.codegraph/`、`*.log`、`_*` 脚本等）。
+**验证**：`tsc --noEmit` 零错误；`cargo test --lib` 184 passed（未动后端）。用户实跑 `npm run tauri dev` 确认 360° 通过；遂删 `[gaze]`/`[ct]` 诊断日志 + `mode` 孤儿变量。详见 `docs/known-issues-2026-07-18.md` 🔧 修复小节。
 
 ## §未解决问题
-- **P1 视线 360°（上下卡死）**：库 `pixi-live2d-display-lipsyncpatch` 的 `focus()` 用 atan2 耦合 x/y。已绕过仍不全通。诊断日志 `[gaze]`/`[ct]` 留在 `Live2DCanvas.tsx`/`App.tsx` 待 revisit。详见 `known-issues-2026-07-18.md`。
 - **Codex 技术债**：`tests/proactive_harness.rs`（Codex 写的）复刻了 `generate` 的旧逻辑，现可简化为调 `proactive::generate`。
 - **P16 Debug Panel 部分缺**：Prompt token 预算 / Retrieved score breakdown / Reflect 分区未实现（核心状态面板已在）。
 - **物理简化**：拖拽松手停原地 + 30s 回巢；完整桌面物理（碰撞、空间 Episode）未做，MVP 够用。
 
 ## §下一步候选（按优先级，等用户定）
-1. **闭环3 体感验收**（用户做）— 实跑 `npm run tauri dev`，主观感受"她记得我"。MVP 最终验收，三闭环的临门一脚。
-2. **P1 视线修复**（agent 做，难）— Body 层硬伤（库 `pixi-live2d-display-lipsyncpatch` 的 `focus()` atan2 耦合 x/y），原则 #10 生命感优先。诊断日志 `[gaze]`/`[ct]` 在 `Live2DCanvas.tsx`/`App.tsx`。
-3. **清技术债**（agent 做，小快）— `tests/proactive_harness.rs` 简化为调 `proactive::generate`，消除逻辑重复。
-4. **docs 治理**（agent 做）— 去 `superpowers/` 嵌套 + 归档过期 `bug-audit`/`fix-plan`/`feature-checklist` 到 `archive/`，更新 CLAUDE.md/HANDOFF.md 导航路径。
-5. **P16 Debug Panel 补全** — Prompt token 预算 / Retrieved score breakdown / Reflect 分区（核心状态面板已在）。
+1. **闭环3 体感验收**（用户做）— 实跑 `npm run tauri dev`，主观感受"她记得我"。MVP 最终验收，三闭环临门一脚。（P1 视线已修，可一并感受生命感。）
+2. **清技术债**（agent 做，小快）— `tests/proactive_harness.rs` 简化为调 `proactive::generate`，消除逻辑重复。
+3. **docs 治理**（agent 做）— 去 `superpowers/` 嵌套 + 归档过期 `bug-audit`/`fix-plan`/`feature-checklist` 到 `archive/`，更新 CLAUDE.md/HANDOFF.md 导航路径。
+4. **P16 Debug Panel 补全** — Prompt token 预算 / Retrieved score breakdown / Reflect 分区（核心状态面板已在）。

@@ -137,7 +137,16 @@ export function Live2DCanvas({ moodLabel, behavior, attention, pointerRef, isThi
 
       try {
         const modelUrl = "/live2d/models/haru/haru_greeter_t03.model3.json";
-        const model = await Live2DModel.from(modelUrl);
+        // autoFocus defaults to true (lib _Automator ctor, cubism4.es.js:10149).
+        // When enabled, the library binds globalpointermove -> model.focus(),
+        // and model.focus normalizes via atan2 (cubism4.es.js:10495), coupling
+        // x/y onto a unit circle. That suppresses the y target (cursor to the
+        // right => cos~1 => sin~0 => targetY~0 => she never looks up/down) and
+        // races our per-frame focusTickerFn for the focusController target.
+        // Disabling it makes our ticker the sole writer with independent x/y.
+        // autoHitTest stays at its default true so "hit" events still fire for
+        // Head/Body clicks.
+        const model = await Live2DModel.from(modelUrl, { autoFocus: false });
         if (destroyed) {
           model.destroy();
           return;
@@ -201,19 +210,15 @@ export function Live2DCanvas({ moodLabel, behavior, attention, pointerRef, isThi
           if (!m || !canvas) return;
           let focusX: number;
           let focusY: number;
-          let mode: string;
           if (propsRef.current.attention === AttentionState.Ignored) {
             focusX = HEAD_FOCUS.x;
             focusY = HEAD_FOCUS.y;
-            mode = "Ignored(head)";
           } else {
             const rect = canvas.getBoundingClientRect();
             const p = pointerRef.current;
             focusX = p.x - rect.left;
             focusY = p.y - rect.top;
-            mode = "tracking";
           }
-          // 临时诊断：每 500ms 打一次焦点目标和指针来源（纯日志，无逻辑改动）
           // Bypass model.focus(): it normalizes via atan2, coupling x/y onto a
           // unit circle so independent 360-degree tracking is impossible. Instead
           // drive internalModel.focusController directly with independent x/y in
@@ -228,28 +233,12 @@ export function Live2DCanvas({ moodLabel, behavior, attention, pointerRef, isThi
           // (200,300) -> (0,0) front; top -> ny=-1 (max look up); edges -> +/-1.
           // x and y are independent (no atan2 coupling), enabling true 360 tracking.
           const nx = Math.max(-1, Math.min(1, (focusX / app.screen.width) * 2 - 1));
-          const ny = Math.max(-1, Math.min(1, (focusY / app.screen.height) * 2 - 1));
-          // Temporary diagnostic: log focus target + normalized values every 500ms.
-          const now = performance.now();
-          const fn = focusTickerFn as unknown as { _lastLog?: number };
-          if (fn._lastLog === undefined || now - fn._lastLog > 500) {
-            fn._lastLog = now;
-            const rect = canvas.getBoundingClientRect();
-            console.log("[gaze]", {
-              mode,
-              focusX: Math.round(focusX),
-              focusY: Math.round(focusY),
-              canvasW: app.screen.width,
-              canvasH: app.screen.height,
-              canvasRectTop: Math.round(rect.top),
-              canvasRectLeft: Math.round(rect.left),
-              pointerX: Math.round(pointerRef.current.x),
-              pointerY: Math.round(pointerRef.current.y),
-              attention: propsRef.current.attention,
-              nx: nx.toFixed(2),
-              ny: ny.toFixed(2),
-            });
-          }
+          // Canvas-local y grows downward (cursor above => focusY small => raw
+          // value ~ -1), but Cubism ParamAngleY positive = look up. Invert y so
+          // ny is already in "look direction" space (cursor above => ny > 0 =>
+          // she looks up), mirroring the lib's own -sin(radian) flip in
+          // model.focus (cubism4.es.js:10496). x needs no flip.
+          const ny = -Math.max(-1, Math.min(1, (focusY / app.screen.height) * 2 - 1));
           im.focusController.focus(nx, ny);
         };
         app.ticker.add(focusTickerFn);

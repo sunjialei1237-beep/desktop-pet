@@ -428,19 +428,6 @@ const transientTimerRef = useRef<number | null>(null);
       // 与 Live2DCanvas focusTickerFn 里 p.x-rect.left 一致）。
       const clientX = (sx - origin.x) / scale;
       const clientY = (sy - origin.y) / scale;
-      // Temporary diagnostic: log the loose rect vs cursor every 500ms.
-      const nowLog = performance.now();
-      if (!(window as any).__ctLastLog || nowLog - (window as any).__ctLastLog > 500) {
-        (window as any).__ctLastLog = nowLog;
-        console.log("[ct]", {
-          cursorScreen: { x: sx, y: sy },
-          modelBoundsCanvasLocal: mb,
-          modelScreenRect: { left: Math.round(left), top: Math.round(top), right: Math.round(right), bottom: Math.round(bottom) },
-          inside,
-          origin,
-          scale,
-        });
-      }
       pointerRef.current = { x: clientX, y: clientY };
      applyIgnore(!inside);
       if (!inside) setAttention(AttentionState.Ignored);
