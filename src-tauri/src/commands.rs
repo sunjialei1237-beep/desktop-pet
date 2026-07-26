@@ -404,8 +404,12 @@ pub async fn proactive_bubble(
 
     // Business logic lives in pending::proactive::generate so the closed-loop-2
     // path is testable without AppState (Architecture Principle 1: thin command
-    // layer; logic in modules).
-    crate::pending::proactive::generate(&db, &llm, Some(&state.embedding), &wm_context).await
+    // layer; logic in modules). The command's IPC contract stays Option<String>
+    // (the reply); the anchor is dropped here — it is consumed only by tests and
+    // (eventually) the Debug Panel, not the frontend bubble.
+    let outcome =
+        crate::pending::proactive::generate(&db, &llm, Some(&state.embedding), &wm_context).await?;
+    Ok(outcome.map(|o| o.reply))
 }
 /// Checks for due cold-start interview questions (first 3 days).
 /// These bypass the closeness gate to help build the relationship early on.

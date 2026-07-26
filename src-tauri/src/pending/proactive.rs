@@ -80,6 +80,20 @@ pub fn trigger_proactive(
     None
 }
 
+/// The outcome of a proactive bubble: the voiced reply plus the memory anchor
+/// it was grounded on. Exposing the anchor (not just the reply) lets tests
+/// verify the reply is actually anchored (proactive-recall standard S1) and,
+/// per Principle 11 (Explainability), lets the Debug Panel show *what* she
+/// anchored on — not just *that* she spoke.
+#[derive(Debug, Clone, Serialize)]
+pub struct BubbleOutcome {
+    /// The LLM's voiced reply (trimmed, non-empty).
+    pub reply: String,
+    /// The memory anchor the reply is grounded on — a due pending event title,
+    /// an anchorable fact ("key: value"), or a recent episode summary.
+    pub anchor: String,
+}
+
 /// Generates a proactive bubble by picking a memory anchor — a due pending
 /// event first, then an anchorable fact, then a recent episode — and running it
 /// through the same retrieval + budget + LLM pipeline as a normal turn, with
@@ -98,7 +112,7 @@ pub async fn generate(
     llm: &LlmClient,
     embedding: Option<&EmbeddingService>,
     wm_context: &[ChatMessage],
-) -> Result<Option<String>, String> {
+) -> Result<Option<BubbleOutcome>, String> {
     let now = chrono::Utc::now().to_rfc3339();
 
     let db_emotion = db.with_conn(crate::db::emotion::get)?;
@@ -179,7 +193,10 @@ pub async fn generate(
     if reply.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(reply))
+        Ok(Some(BubbleOutcome {
+            reply,
+            anchor: memory_anchor,
+        }))
     }
 }
 

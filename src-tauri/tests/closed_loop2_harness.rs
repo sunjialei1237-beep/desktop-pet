@@ -63,8 +63,10 @@ async fn proactive_bubble_brings_up_due_pending() {
         .expect("proactive::generate errored — closed-loop-2 chain broken");
 
     // (1) A bubble was produced (not silent).
-    let reply = bubble.expect("proactive::generate returned None — no bubble for a due pending");
+    let outcome = bubble.expect("proactive::generate returned None — no bubble for a due pending");
+    let reply = outcome.reply;
     println!("proactive bubble: {:?}", reply);
+    println!("anchored on: {:?}", outcome.anchor);
 
     // (2) Not assistant-speak (proactive-recall-standard S3).
     let assistant_speak = ["有什么事吗", "需要帮忙", "我能帮你", "有什么可以帮", "我能做些什么"];

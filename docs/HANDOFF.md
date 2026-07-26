@@ -22,9 +22,22 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
-**提醒功能修复完成并实跑验收（2026-07-26）。** "提醒我X在Y分钟后"全链路通：gate 路由 → extractor 提 `offset_minutes` → Rust 算 `remind_date` → converse 确认"好的" → 到期主动冒泡。闭环2 真实运行 ✅（harness + 实跑）。lib 185 + 闭环2 harness 过。已提交 `32d11c6`，工作区干净。等选下一步（见 §下一步候选）。
+**技术债清理完成（2026-07-26）：`proactive_harness` 不再复刻 `generate` 旧逻辑，改为直接调 `proactive::generate`。** 顺带把 `generate` 返回值从 `Option<String>` 升级为 `Option<BubbleOutcome{reply, anchor}>`——暴露 anchor 让 harness 的 S1 锚定检查能复用，且满足原则 #11（Debug Panel 可显示"她锚定在哪条记忆"）。3 个调用方同步改（commands.rs / closed_loop2_harness / proactive_harness）。lib 185 passed + 全 tests 编译通过。未提交，工作区脏（4 文件改 + HANDOFF）。等用户决定是否提交 + 选下一步。
 
-## §最近一轮 (2026-07-26)：提醒功能修复（闭环2 真实运行打通）
+## §最近一轮 (2026-07-26)：清技术债 — proactive_harness 简化
+**起因**：用户选 HANDOFF §下一步候选 #1（清 Codex 技术债）。`tests/proactive_harness.rs`（Codex 写）复刻了 `generate` 的 emotion/retrieval/anchor-pick/budget/LLM 管道，与 `pending/proactive.rs::generate` 逻辑重复。
+
+**关键障碍**：harness 的 `check_standards` S1（锚定）需要 `keyword`，而 `generate` 只返回 reply、丢弃 anchor。分析 S1 逻辑后发现：用完整 `memory_anchor` 当 keyword 语义不变——fact 走 synonym_hit（anchor 是 "key: value" 仍含英文 value），episode 走字符重叠（中文摘要天然重叠）。"前 4 字"技巧对 overlap≥2 判断无实质影响。
+
+**修复（4 文件，原则 #1/#11）**：
+- `proactive.rs`：加 `BubbleOutcome{reply, anchor}` 结构体；`generate` 返回 `Result<Option<BubbleOutcome>, String>`；构造处填 `anchor: memory_anchor`
+- `commands.rs`：`proactive_bubble` 命令把 `BubbleOutcome` 映射回 `.reply`，**IPC 契约 `Option<String>` 不变，前端无感**
+- `closed_loop2_harness.rs`：`outcome.reply` + 多打一行 anchor（可解释性）
+- `proactive_harness.rs`：删复刻管道（emotion/retrieval/Intent/budget/LLM 全去），改调 `proactive::generate`，用 `outcome.anchor` 跑 `check_standards`；imports 瘦身（去掉 budget/Intent/retrieval/ChatMessage）
+
+**验证**：`cargo test --lib` 185 passed；`cargo test --no-run` 全 8 个 test crate 编译通过（含两个 harness）。未跑真实 LLM harness（慢、需关 dev server）——编译通过即证明调用链正确。
+
+## §历史：提醒功能修复（2026-07-26 早些）
 **起因**：用户实测"3分钟后提醒喝水"失败——她说"没办法定闹钟，只能现在提醒"。读 5 处源码诊断出断点链。
 
 根因链（"提醒我X在Y分钟后"为什么失败）：
@@ -44,11 +57,9 @@
 **验证**：`cargo test --lib` 185 passed、闭环2 harness 1 passed；**用户实跑"3分钟后提醒喝水"全链路通过**——她回"好的"+ Pending 区有记录 + 3分钟后主动冒泡。闭环2 真实运行 ✅。
 
 ## §未解决问题
-- **Codex 技术债**：`tests/proactive_harness.rs`（Codex 写的）复刻了 `generate` 的旧逻辑，现可简化为调 `proactive::generate`。
-- **P16 Debug Panel 部分缺**：Prompt token 预算 / Retrieved score breakdown / Reflect 分区未实现（核心状态面板已在）。
+- **P16 Debug Panel 部分缺**：Prompt token 预算 / Retrieved score breakdown / Reflect 分区未实现（核心状态面板已在）。现在 `BubbleOutcome.anchor` 已暴露，Debug Panel 可顺手显示"当前冒泡锚定的记忆"。
 - **物理简化**：拖拽松手停原地 + 30s 回巢；完整桌面物理（碰撞、空间 Episode）未做，MVP 够用。
 
 ## §下一步候选（按优先级，等用户定）
-1. **清技术债**（agent 做，小快）— `tests/proactive_harness.rs` 简化为调 `proactive::generate`，消除逻辑重复。
-2. **docs 治理**（agent 做）— 去 `superpowers/` 嵌套 + 归档过期 `bug-audit`/`fix-plan`/`feature-checklist` 到 `archive/`，更新 CLAUDE.md/HANDOFF.md 导航路径。
-3. **P16 Debug Panel 补全** — Prompt token 预算 / Retrieved score breakdown / Reflect 分区（核心状态面板已在）。
+1. **docs 治理**（agent 做）— 去 `superpowers/` 嵌套 + 归档过期 `bug-audit`/`fix-plan`/`feature-checklist` 到 `archive/`，更新 CLAUDE.md/HANDOFF.md 导航路径。
+2. **P16 Debug Panel 补全** — Prompt token 预算 / Retrieved score breakdown / Reflect 分区（核心状态面板已在；`BubbleOutcome.anchor` 可补"冒泡锚定"展示）。
