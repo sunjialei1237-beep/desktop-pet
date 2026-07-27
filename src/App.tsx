@@ -213,21 +213,26 @@ const transientTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
+    // StrictMode (dev) mounts effects twice (mount -> cleanup -> remount). Since
+    // listen() is async, the first mount's listener can resolve *after* cleanup
+    // ran — leaking a duplicate listener that fires on every event. `cancelled`
+    // lets a late-resolving listener unlisten itself instead of leaking.
+    let cancelled = false;
 
    listen<string>("bubble-show", (event) => {
       // 访谈进行中：只允许访谈气泡，忽略后端 welcome 等其它气泡以免覆盖当前问题。
       if (onboardingActiveRef.current) return;
       if (welcomeTimerRef.current) { clearTimeout(welcomeTimerRef.current); welcomeTimerRef.current = null; }
       showBubble(event.payload, 8000, "bubble-calm");
-   }).then((un) => unlisteners.push(un));
+   }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
     listen("bubble-hide", () => {
       setBubbleVisible(false);
-    }).then((un) => unlisteners.push(un));
+    }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
     listen<EmotionData>("emotion-update", (event) => {
       setMoodLabel(event.payload.mood_label);
-    }).then((un) => unlisteners.push(un));
+    }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
     listen<{ title: string; event_id: string }>("proactive-prompt", (event) => {
       // Backend emitted a due pending event; route through the memory-grounded
@@ -238,7 +243,21 @@ const transientTimerRef = useRef<number | null>(null);
         })
         .catch((e) => console.warn("[proactive-prompt] proactive_bubble failed", e));
       void event;
-    }).then((un) => unlisteners.push(un));
+    }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
+
+    // User returned after >5min away (presence LongAway -> Active). Generate a
+    // memory-grounded welcome via the LLM (falls back to a rule line backend-side).
+    // Suppressed during the onboarding interview and while the pet is resting.
+    listen<{ away_secs: number }>("welcome-back", (event) => {
+      if (onboardingActiveRef.current) return;
+      if (awayMode) return;
+      if (welcomeTimerRef.current) { clearTimeout(welcomeTimerRef.current); welcomeTimerRef.current = null; }
+      invoke<string | null>("welcome_back_bubble", { awaySecs: event.payload.away_secs })
+        .then((reply) => {
+          if (reply) showBubble(reply, 10000, bubbleClassForMood(moodLabel));
+        })
+        .catch((e) => console.warn("[welcome-back] welcome_back_bubble failed", e));
+    }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
     listen<{ status: string; elapsed_secs: number }>("app-status", (event) => {
       if (event.payload.status === "resumed") {
@@ -246,7 +265,7 @@ const transientTimerRef = useRef<number | null>(null);
         const msg = hours > 1 ? `我睡了${hours}个小时……你回来啦~` : "你回来啦~";
         showBubble(msg, 8000, "bubble-calm");
       }
-    }).then((un) => unlisteners.push(un));
+    }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
     const emotionTimer = setInterval(async () => {
       try {
@@ -286,6 +305,7 @@ const transientTimerRef = useRef<number | null>(null);
     }, 5 * 60 * 1000);
 
     return () => {
+      cancelled = true;
       unlisteners.forEach((un) => un());
       clearInterval(emotionTimer);
       clearInterval(proactiveTimer);

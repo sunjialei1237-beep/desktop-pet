@@ -75,6 +75,36 @@ pub fn current_presence() -> PresenceState {
     classify(idle_seconds())
 }
 
+/// An actionable presence transition — a state change the system should react to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Transition {
+    /// User returned after being away; `away_secs` is how long they were idle.
+    ReturnedBack { away_secs: u64 },
+}
+
+/// Pure: classify the transition between two consecutive presence samples.
+///
+/// The only actionable transition is `LongAway -> Active` — the user was away
+/// for >5 minutes and just came back. `BriefAway -> Active` (back from the
+/// bathroom) intentionally does NOT trigger, to avoid nagging (Principle 10:
+/// life-feel, not a notification firehose).
+///
+/// `away_secs` is provided by the caller (which tracks when the away period
+/// began) and carried through so the welcome generator can scale its tone.
+pub fn classify_transition(
+    prev: PresenceState,
+    now: PresenceState,
+    away_secs: u64,
+) -> Option<Transition> {
+    match (prev, now) {
+        (PresenceState::LongAway, PresenceState::Active) => {
+            Some(Transition::ReturnedBack { away_secs })
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +125,46 @@ mod tests {
     fn test_classify_long_away() {
         assert_eq!(classify(300), PresenceState::LongAway);
         assert_eq!(classify(3600), PresenceState::LongAway);
+    }
+
+    #[test]
+    fn test_transition_long_away_to_active() {
+        // LongAway -> Active fires, carrying the away duration through.
+        let t = classify_transition(PresenceState::LongAway, PresenceState::Active, 600);
+        assert_eq!(t, Some(Transition::ReturnedBack { away_secs: 600 }));
+    }
+
+    #[test]
+    fn test_transition_brief_away_to_active_no_fire() {
+        // BriefAway -> Active (back from the bathroom) must NOT fire.
+        assert_eq!(
+            classify_transition(PresenceState::BriefAway, PresenceState::Active, 120),
+            None
+        );
+    }
+
+    #[test]
+    fn test_transition_still_active_no_fire() {
+        assert_eq!(
+            classify_transition(PresenceState::Active, PresenceState::Active, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn test_transition_long_away_to_brief_away_no_fire() {
+        // Still away (mouse nudged but not really back) must not fire.
+        assert_eq!(
+            classify_transition(PresenceState::LongAway, PresenceState::BriefAway, 400),
+            None
+        );
+    }
+
+    #[test]
+    fn test_transition_still_long_away_no_fire() {
+        assert_eq!(
+            classify_transition(PresenceState::LongAway, PresenceState::LongAway, 700),
+            None
+        );
     }
 }

@@ -200,6 +200,121 @@ pub async fn generate(
     }
 }
 
+/// Generates a welcome-back bubble when the user returns after being away
+/// (>5min, detected via the presence loop). Unlike `generate` — which voices a
+/// *recalled* memory ("I just thought of X") — this voices a *return* ("you're
+/// back"), so it is a connection moment, not a task follow-up.
+///
+/// Differences from `generate`:
+///   - Does NOT consult pending events. Surfacing "did you drink water?" the
+///     instant someone sits down reads as a nag, not a greeting (Principle 10).
+///   - The memory anchor is *optional*. A durable fact / recent episode, when
+///     retrieved, is offered as a gentle follow-up ("how did that interview
+///     go?"); otherwise the bubble is a pure emotional greeting. Unlike
+///     `generate`, no anchor → still speak (a welcome is always worth saying).
+///   - Never fabricates: the anchor comes only from retrieval (Principle 3).
+///
+/// `away_secs` scales the prompt ("gone for 2 hours" vs "5 minutes") so the
+/// tone fits the absence. Principle 1 (Rust picks anchor + assembles prompt;
+/// LLM only voices), Principle 8 (at most one LLM call).
+pub async fn generate_welcome_back(
+    db: &DbState,
+    llm: &LlmClient,
+    embedding: Option<&EmbeddingService>,
+    wm_context: &[ChatMessage],
+    away_secs: u64,
+) -> Result<Option<BubbleOutcome>, String> {
+    let db_emotion = db.with_conn(crate::db::emotion::get)?;
+    let emotion = EmotionState {
+        mood: db_emotion.mood,
+        physical_energy: db_emotion.physical_energy,
+        social_battery: db_emotion.social_battery,
+        stress: db_emotion.stress,
+        loneliness: db_emotion.loneliness,
+        rest_need: db_emotion.rest_need,
+    };
+
+    let retrieval = crate::mind::retrieval::retrieve(
+        "user's life recent events preferences",
+        &emotion,
+        embedding,
+        db,
+        3,
+    )?;
+
+    // Optional anchor: a durable fact, else a recent episode. Empty if neither.
+    let (memory_anchor, has_anchor): (String, bool) =
+        if let Some(f) = retrieval.facts.iter().find(|f| is_anchorable_fact(f)) {
+            (format!("{}: {}", f.key, f.value), true)
+        } else if let Some(ep) = retrieval.episodes.first() {
+            (ep.episode.summary.clone(), true)
+        } else {
+            (String::new(), false)
+        };
+
+    // Tone tracks mood: a high-mood pet greets playfully, otherwise gentle.
+    let tone: &str = if emotion.mood >= 0.65 { "playful" } else { "gentle" };
+
+    let intent = crate::mind::planner::Intent {
+        goal: "welcome".to_string(),
+        memory_anchor: memory_anchor.clone(),
+        tone: tone.to_string(),
+        proactive: true,
+        action: "welcome_back".to_string(),
+    };
+
+    let mut messages =
+        crate::mind::budget::allocate_and_compress(&retrieval, wm_context, &emotion, &intent);
+
+    let mins = away_secs / 60;
+    let absence_phrase = if mins >= 60 {
+        format!("{} 个小时", mins / 60)
+    } else {
+        format!("{} 分钟", mins.max(1))
+    };
+    let anchor_clause = if has_anchor {
+        format!("你想起 ta 之前跟你提过的事：{memory_anchor}。可以顺便轻轻关心一句，但别生硬、别像在完成任务。")
+    } else {
+        String::new()
+    };
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: format!(
+            "（用户离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}简短自然，1-2 句，像个真的在等 ta 回来的人。按规则回复。）"
+        ),
+    });
+
+    log::info!(
+        "[welcome_back] away_secs={} has_anchor={} tone={} facts={} episodes={} msgs={}",
+        away_secs,
+        has_anchor,
+        tone,
+        retrieval.facts.len(),
+        retrieval.episodes.len(),
+        messages.len(),
+    );
+
+    let chat_result = llm
+        .chat(&messages, Some(0.8), Some(4096))
+        .await
+        .map_err(|e| format!("LLM error: {:?}", e))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = db.with_conn(|conn| {
+        crate::db::relationship::record_interaction(conn, "welcome_back", &now)
+    });
+
+    let reply = chat_result.content.trim().to_string();
+    if reply.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(BubbleOutcome {
+            reply,
+            anchor: memory_anchor,
+        }))
+    }
+}
+
 /// Whether a fact is worth proactively bringing up. Excludes pseudo-facts
 /// (questions the user asked, phrased as facts by an over-eager extractor) and
 /// requires reasonable confidence. Durable preferences/relationships/goals pass.

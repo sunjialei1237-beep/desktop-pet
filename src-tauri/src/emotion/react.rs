@@ -91,6 +91,32 @@ pub fn transient_expression(text: &str, intent_goal: &str) -> Option<&'static st
     None
 }
 
+/// Pure: rule-based welcome-back line for the fallback path — used when the
+/// LLM is unconfigured or `generate_welcome_back` returned nothing (Principle 8:
+/// pure rules, no LLM). Picks by mood bucket and absence length. Mirrors the
+/// LLM path's contract: a short, natural, emotional greeting (never a system
+/// message).
+pub fn welcome_back_canned(mood: f64, away_secs: u64) -> &'static str {
+    let long = away_secs >= 3600; // >= 1 hour
+    if mood >= 0.65 {
+        if long {
+            "想你好久啦~你终于回来了！"
+        } else {
+            "你回来啦~刚刚去哪了呀？"
+        }
+    } else if mood <= 0.35 {
+        if long {
+            "……你回来了。我还以为你不来了。"
+        } else {
+            "嗯……你回来了。"
+        }
+    } else if long {
+        "你回来啦~这一阵子都在忙吗？"
+    } else {
+        "你回来啦~"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +164,36 @@ mod tests {
         assert!(dc.social_battery >= -0.10, "social clamp violated: {}", dc.social_battery);
         // Loneliness can only go down.
         assert!(dc.loneliness <= 0.0 && dc.loneliness >= -0.15, "loneliness clamp violated: {}", dc.loneliness);
+    }
+
+    #[test]
+    fn welcome_canned_high_mood_long_absence_misses_user() {
+        // High mood + >=1h away → "想你好久啦" (feels the long absence).
+        let s = welcome_back_canned(0.8, 7200);
+        assert!(s.contains("想你好久"), "long happy absence should miss user, got {}", s);
+    }
+
+    #[test]
+    fn welcome_canned_low_mood_is_subdued() {
+        // Low mood → subdued, quiet greeting (not bouncy).
+        let s = welcome_back_canned(0.2, 600);
+        assert!(s.contains("……"), "low mood welcome should be subdued, got {}", s);
+    }
+
+    #[test]
+    fn welcome_canned_neutral_short_is_plain() {
+        // Neutral mood, short absence → plain "你回来啦~".
+        let s = welcome_back_canned(0.5, 400);
+        assert!(s.contains("你回来啦"), "neutral short welcome, got {}", s);
+    }
+
+    #[test]
+    fn welcome_canned_long_vs_short_differ() {
+        // Same mood, different absence → different lines.
+        assert_ne!(
+            welcome_back_canned(0.5, 400),
+            welcome_back_canned(0.5, 7200),
+            "long and short absences should pick different lines"
+        );
     }
 }

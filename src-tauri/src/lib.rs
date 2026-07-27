@@ -135,6 +135,7 @@ pub fn run() {
             commands::poke,
             commands::check_proactive,
             commands::proactive_bubble,
+            commands::welcome_back_bubble,
             commands::get_llm_status,
             commands::resolve_pending_event,
             commands::get_llm_config,

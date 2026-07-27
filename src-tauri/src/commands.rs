@@ -411,6 +411,59 @@ pub async fn proactive_bubble(
         crate::pending::proactive::generate(&db, &llm, Some(&state.embedding), &wm_context).await?;
     Ok(outcome.map(|o| o.reply))
 }
+
+/// Generates a welcome-back bubble after the user returns from >5min away
+/// (detected via the presence loop). Tries the memory-grounded LLM path first;
+/// falls back to a rule-based line when the LLM is unconfigured or returns
+/// nothing (Architecture Principle 8: degrade gracefully, never break).
+#[tauri::command]
+pub async fn welcome_back_bubble(
+    away_secs: u64,
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<Option<String>, String> {
+    let wm_context = {
+        let wm = state
+            .working_memory
+            .lock()
+            .map_err(|e| format!("WM lock error: {}", e))?;
+        wm.get_context()
+    };
+
+    // Try the memory-grounded LLM path if configured.
+    // NOTE: bind the cloned Option to its own `let` so the MutexGuard is dropped
+    // at the end of the statement — keeping it alive across `.await` below would
+    // make the future non-Send (same pattern as `proactive_bubble`).
+    let llm = state
+        .llm
+        .lock()
+        .map_err(|e| format!("LLM lock error: {}", e))?
+        .as_ref()
+        .cloned();
+    if let Some(llm) = llm {
+        let outcome = crate::pending::proactive::generate_welcome_back(
+            &db,
+            &llm,
+            Some(&state.embedding),
+            &wm_context,
+            away_secs,
+        )
+        .await?;
+        if let Some(o) = outcome {
+            return Ok(Some(o.reply));
+        }
+        // LLM returned nothing (empty reply) → fall through to canned rule line.
+    }
+
+    // Fallback: rule-based canned line, mood-scaled. Never fails.
+    let mood = db
+        .with_conn(crate::db::emotion::get)
+        .map(|e| e.mood)
+        .unwrap_or(0.5);
+    Ok(Some(
+        crate::emotion::react::welcome_back_canned(mood, away_secs).to_string(),
+    ))
+}
 /// Checks for due cold-start interview questions (first 3 days).
 /// These bypass the closeness gate to help build the relationship early on.
 /// Returns the next due interview question, or None if none are due.

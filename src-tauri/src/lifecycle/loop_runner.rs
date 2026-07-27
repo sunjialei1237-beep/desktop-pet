@@ -12,9 +12,20 @@ pub fn start_life_loop(app: AppHandle) {
     // Medium loop: every 30 seconds.
     {
         let app = app.clone();
+        // Presence tracking is thread-local: no lock needed, no shared state.
+        // Seeded as Active: in production the user just launched the app (a
+        // click), so they are present. In dev the launcher process may start
+        // while the user is already idle (idle>300s = LongAway) — seeding with
+        // current_presence() there makes the first tick fire a bogus
+        // LongAway->Active "return" with away_secs=0 (away_since never set).
+        // Treating startup as Active means we only react to a real
+        // Active -> away -> Active cycle.
+        let mut last_presence = crate::perception::presence::PresenceState::Active;
+        let mut away_since: Option<std::time::Instant> = None;
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(30));
             medium_tick(&app);
+            check_presence_transition(&app, &mut last_presence, &mut away_since);
         });
     }
 
@@ -97,6 +108,70 @@ fn medium_tick(app: &AppHandle) {
         }
         Err(e) => log::warn!("Emotion push failed: {}", e),
     }
+}
+
+/// Checks for an actionable presence transition (LongAway -> Active = the user
+/// came back after >5min away) and emits "welcome-back" when it happens.
+///
+/// State (`last_presence`, `away_since`) is thread-local and owned by the
+/// caller — no lock, no shared mutation. `away_since` is set the moment the user
+/// leaves (Active -> away) and consumed when they return, so `away_secs` reflects
+/// the real absence length rather than the coarse idle bucket.
+///
+/// Guard: skips if the user interacted within the last 30s, so a return-greeting
+/// never collides with an ongoing conversation (Architecture Principle 10).
+fn check_presence_transition(
+    app: &AppHandle,
+    last_presence: &mut crate::perception::presence::PresenceState,
+    away_since: &mut Option<std::time::Instant>,
+) {
+    use crate::perception::presence::{
+        classify_transition, current_presence, PresenceState, Transition,
+    };
+
+    let now_presence = current_presence();
+
+    // Mark the start of an away period (Active -> any away).
+    if *last_presence == PresenceState::Active && now_presence != PresenceState::Active {
+        *away_since = Some(std::time::Instant::now());
+    }
+
+    let away_secs = away_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+
+    if let Some(Transition::ReturnedBack { away_secs }) =
+        classify_transition(*last_presence, now_presence, away_secs)
+    {
+        let just_talked = recent_interaction_secs(app).map(|s| s < 30).unwrap_or(false);
+        if !just_talked {
+            log::info!(
+                "Life loop: user returned after {}s away — emitting welcome-back",
+                away_secs
+            );
+            let _ = app.emit(
+                "welcome-back",
+                serde_json::json!({ "away_secs": away_secs }),
+            );
+        }
+        // Reset: the return has been acted on (or skipped). Next away starts fresh.
+        *away_since = None;
+    }
+
+    *last_presence = now_presence;
+}
+
+/// Seconds since the last recorded interaction, or None if unavailable.
+fn recent_interaction_secs(app: &AppHandle) -> Option<i64> {
+    let db = get_db(app)?;
+    db.with_conn(|conn| {
+        let rel = crate::db::relationship::get(conn)?;
+        let s = rel
+            .last_interaction_at
+            .ok_or_else(|| "no last_interaction_at".to_string())?;
+        let dt = chrono::DateTime::parse_from_rfc3339(&s)
+            .map_err(|e| format!("parse last_interaction_at: {}", e))?;
+        Ok((chrono::Utc::now() - dt.with_timezone(&chrono::Utc)).num_seconds())
+    })
+    .ok()
 }
 
 /// Slow tick: memory decay, relationship drift, lifecycle cleanup.
