@@ -143,6 +143,9 @@ pub async fn send_message(
 }
 
 /// Triggers a reflection cycle if due (> 20 hours since last).
+/// Thin wrapper over `soul::reflection::maybe_run_if_due` (Architecture
+/// Principle 1: logic lives in modules, the command layer stays thin). Swallows
+/// errors to keep the frontend contract — returns bool, never errors to JS.
 #[tauri::command]
 pub async fn trigger_reflection_if_due(
     state: State<'_, AppState>,
@@ -152,35 +155,8 @@ pub async fn trigger_reflection_if_due(
         Some(l) => l,
         None => return Ok(false),
     };
-
-    // Check if reflection should run (> 20 hours since last).
-    let last_reflection: Option<String> = db.with_conn(|conn| {
-        Ok(conn.query_row(
-            "SELECT MAX(created_at) FROM reflections",
-            [],
-            |row| row.get::<_, Option<String>>(0),
-        ).unwrap_or(None))
-    }).unwrap_or(None);
-
-    let should_run = match last_reflection {
-        None => true,
-        Some(last) => chrono::DateTime::parse_from_rfc3339(&last)
-            .map(|dt| (chrono::Utc::now() - dt.with_timezone(&chrono::Utc)).num_hours() > 20)
-            .unwrap_or(true),
-    };
-
-    if !should_run {
-        return Ok(false);
-    }
-
-    match crate::soul::reflection::run_reflection(
-        crate::soul::reflection::ReflectionTrigger::Daily,
-        &db, &llm,
-    ).await {
-        Ok(r) => {
-            log::info!("Reflection triggered: {}", r.summary);
-            Ok(true)
-        }
+    match crate::soul::reflection::maybe_run_if_due(&db, &llm).await {
+        Ok(ran) => Ok(ran),
         Err(e) => {
             log::warn!("Reflection failed: {}", e);
             Ok(false)

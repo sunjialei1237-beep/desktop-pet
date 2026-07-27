@@ -163,6 +163,51 @@ pub async fn run_reflection(
     Ok(ReflectionResult { reflection_id, summary: parsed.reflection, new_trait_count, new_thought_count })
 }
 
+/// Whether enough time (>20h) has passed since the last reflection to run
+/// another Daily cycle. Returns true when there is no prior reflection.
+///
+/// Pure (sync, no LLM) so the cooldown logic is unit-testable independently of
+/// the LLM call. Architecture Principle 8: Reflection runs at most once daily.
+pub fn should_run_reflection(db: &DbState) -> bool {
+    let last: Option<String> = db
+        .with_conn(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT MAX(created_at) FROM reflections",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap_or(None))
+        })
+        .unwrap_or(None);
+
+    match last {
+        None => true,
+        Some(last) => chrono::DateTime::parse_from_rfc3339(&last)
+            .map(|dt| (chrono::Utc::now() - dt.with_timezone(&chrono::Utc)).num_hours() > 20)
+            .unwrap_or(true),
+    }
+}
+
+/// Runs a Daily reflection if `should_run_reflection` says it's due.
+/// Returns true when a reflection ran, false when skipped (too soon).
+/// Errors propagate so callers (IPC command, life loop) can decide how to
+/// handle them — the command layer swallows them to keep the frontend contract.
+///
+/// Pure signature (no AppState/Tauri State): callable from both the IPC
+/// command and the life-loop slow tick (Architecture Principle 1).
+pub async fn maybe_run_if_due(
+    db: &DbState,
+    llm: &LlmClient,
+) -> Result<bool, String> {
+    if !should_run_reflection(db) {
+        return Ok(false);
+    }
+    let r = run_reflection(ReflectionTrigger::Daily, db, llm).await?;
+    log::info!("Reflection ran (daily): {}", r.summary);
+    Ok(true)
+}
+
 /// Loads the reflection prompt template, trying multiple paths.
 fn load_prompt_template() -> String {
     for p in &["src-tauri/resources/prompts/reflection.txt", "resources/prompts/reflection.txt"] {
@@ -188,6 +233,8 @@ fn clean_json(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::reflections::{insert_reflection, Reflection};
+    use crate::db::test_utils::test_db;
 
     #[test]
     fn test_clean_json_plain() {
@@ -216,5 +263,43 @@ mod tests {
         let json = r#"{"new_traits":[],"internal_thoughts":[],"reflection":""}"#;
         let parsed: LlmReflectionOutput = serde_json::from_str(json).unwrap();
         assert!(parsed.new_traits.is_empty());
+    }
+
+    fn insert_ref_at(db: &DbState, id: &str, hours_ago: i64) {
+        let ts = (chrono::Utc::now() - chrono::Duration::hours(hours_ago)).to_rfc3339();
+        db.with_conn(|conn| {
+            insert_reflection(
+                conn,
+                &Reflection {
+                    id: id.to_string(),
+                    trigger_type: "daily".to_string(),
+                    trigger_reason: None,
+                    thought: "t".to_string(),
+                    persona_updates: None,
+                    created_at: ts,
+                },
+            )
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn should_run_when_no_prior_reflection() {
+        let db = test_db();
+        assert!(should_run_reflection(&db), "no prior reflection -> due");
+    }
+
+    #[test]
+    fn should_skip_when_within_cooldown() {
+        let db = test_db();
+        insert_ref_at(&db, "ref_recent", 1);
+        assert!(!should_run_reflection(&db), "1h ago -> within 20h cooldown");
+    }
+
+    #[test]
+    fn should_run_when_past_cooldown() {
+        let db = test_db();
+        insert_ref_at(&db, "ref_old", 25);
+        assert!(should_run_reflection(&db), "25h ago -> past 20h cooldown");
     }
 }

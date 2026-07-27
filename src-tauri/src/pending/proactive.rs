@@ -277,17 +277,37 @@ pub async fn generate_welcome_back(
     } else {
         String::new()
     };
+
+    // Surface any internal thought the last reflection left for "next time the
+    // user shows up" (Design 7.1 / P13.2: she really thought of it last night,
+    // timestamp proves it). Consumed: surface_thoughts marks them surfaced, so
+    // this fires once per thought. Folded into the same LLM turn — no extra
+    // call (Principle 8). Empty string when nothing is pending.
+    let thought_clause = match crate::soul::monologue::surface_thoughts(db) {
+        Ok(thoughts) => match thoughts.first() {
+            Some(t) => format!(
+                "你昨晚等 ta 的时候心里想过：「{}」。招呼里可以自然地带一点点这个念头，像真的惦记过 ta 一样，但别生硬、别像在复述。",
+                t.content
+            ),
+            None => String::new(),
+        },
+        Err(e) => {
+            log::warn!("[welcome_back] surface_thoughts failed: {}", e);
+            String::new()
+        }
+    };
     messages.push(ChatMessage {
         role: "user".to_string(),
         content: format!(
-            "（用户离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}简短自然，1-2 句，像个真的在等 ta 回来的人。按规则回复。）"
+            "（用户离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}{thought_clause}简短自然，1-2 句，像个真的在等 ta 回来的人。按规则回复。）"
         ),
     });
 
     log::info!(
-        "[welcome_back] away_secs={} has_anchor={} tone={} facts={} episodes={} msgs={}",
+        "[welcome_back] away_secs={} has_anchor={} has_thought={} tone={} facts={} episodes={} msgs={}",
         away_secs,
         has_anchor,
+        !thought_clause.is_empty(),
         tone,
         retrieval.facts.len(),
         retrieval.episodes.len(),

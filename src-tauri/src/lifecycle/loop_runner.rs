@@ -1,6 +1,7 @@
 //! Life Loop background timers.
 //! Started after app initialization; runs on background threads.
 
+use crate::commands::AppState;
 use crate::db::DbState;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -211,5 +212,29 @@ fn slow_tick(app: &AppHandle) {
         Ok(count) if count > 0 => log::info!("Life loop: cleaned up {} old episodes", count),
         Ok(_) => {}
         Err(e) => log::warn!("Lifecycle cleanup failed: {}", e),
+    }
+
+    // 4. Soul: reflection if due (>20h) + consolidation if threshold met.
+    //    Both are async LLM calls; slow_tick runs on a std::thread, so we enter
+    //    the runtime via block_on. The slow tick's cadence is 1h, so blocking
+    //    here is acceptable (Architecture Principle 5: never blocks Body, which
+    //    runs on its own medium loop). LLM unconfigured -> skip silently
+    //    (Principle 6: degrade gracefully).
+    let llm = app
+        .try_state::<AppState>()
+        .and_then(|s| s.llm.lock().ok().and_then(|g| g.clone()));
+    if let Some(llm) = llm {
+        let _ = tauri::async_runtime::block_on(async {
+            match crate::soul::reflection::maybe_run_if_due(&db, &llm).await {
+                Ok(true) => log::info!("Life loop: reflection ran (daily)"),
+                Ok(false) => {}
+                Err(e) => log::warn!("Life loop reflection failed: {}", e),
+            }
+            // Consolidation is a no-op below the 100-episode threshold
+            // (internal guard in consolidate()), so calling it hourly is cheap.
+            if let Err(e) = crate::soul::consolidation::consolidate(&db, &llm).await {
+                log::warn!("Life loop consolidation failed: {}", e);
+            }
+        });
     }
 }
