@@ -14,6 +14,7 @@ import { type PetPosition } from "./animation/physics";
 import { SpatialMemory } from "./animation/spatial";
 import { getCircadianState, deepNightMessages, TimeOfDay } from "./animation/circadian";
 import { DEFAULT_EMOTION, type EmotionVector } from "./animation/emotionDriver";
+import { typewriterPacing } from "./animation/bubblePacing";
 
 interface EmotionData {
   mood: number;
@@ -117,6 +118,13 @@ const transientTimerRef = useRef<number | null>(null);
  const shownLenRef = useRef(0);
  const streamEndedRef = useRef(false);
  const typewriterRef = useRef<number | null>(null);
+ // Ref mirrors of bubble/thinking visibility, so the long-lived emotionTimer
+ // setInterval reads fresh values instead of a stale mount-time closure
+ // (used by the idle-sigh guard below).
+ const bubbleVisibleRef = useRef(false);
+ const isThinkingRef = useRef(false);
+ useEffect(() => { bubbleVisibleRef.current = bubbleVisible; }, [bubbleVisible]);
+ useEffect(() => { isThinkingRef.current = isThinking; }, [isThinking]);
   // Click-through state (ADR Phase 2).
   const ignoreRef = useRef(false);
   const windowOriginRef = useRef<{ x: number; y: number } | null>(null); // physical px
@@ -296,6 +304,21 @@ const transientTimerRef = useRef<number | null>(null);
         const emo = await invoke<EmotionData>("get_emotion_state");
         setMoodLabel(emo.mood_label);
         setEmotionVector(toEmotionVector(emo));
+        // Idle sigh (architecture #12 silence-is-expression, #10 liveliness):
+        // when she's worn down and not busy, occasionally let out a wordless
+        // "呼…" glyph bubble. Guards keep it from interrupting an active
+        // conversation / interview / away mode. Uses the just-fetched label
+        // (fresh) and ref mirrors (fresh), not the stale closure state.
+        if (
+          (emo.mood_label === "疲惫" || emo.mood_label === "难过") &&
+          !bubbleVisibleRef.current &&
+          !isThinkingRef.current &&
+          !onboardingActiveRef.current &&
+          !awayMode &&
+          Math.random() < 0.08
+        ) {
+          showBubble("呼…", 2500, "bubble-glyph");
+        }
       } catch { /* ignore */ }
     }, 5000);
 
@@ -644,6 +667,10 @@ const transientTimerRef = useRef<number | null>(null);
        streamBufRef.current += delta; // buffer only — no setState here (defeats batching)
        if (firstChunk) {
          firstChunk = false;
+         // Typewriter cadence follows her mood (#10): happy replies flow fast,
+         // sad/worried ones drag with pauses. Same moodLabel as the bubble
+         // shape, so tone and face stay consistent.
+         const pacing = typewriterPacing(moodLabel);
          setIsThinking(false);
          fsmRef.current?.forceState(BehaviorState.Talking);
          setBubbleStyle(bubbleClassForMood(moodLabel));
@@ -652,9 +679,13 @@ const transientTimerRef = useRef<number | null>(null);
          setBubbleVisible(true);
          if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current); // no auto-hide mid-stream
          typewriterRef.current = window.setInterval(() => {
+           // Hesitate: while still streaming, skip a tick now and then = a
+           // pause (hesitation / breath). Never hesitate once ended — the
+           // final reveal must complete.
+           if (!streamEndedRef.current && pacing.hesitate > 0 && Math.random() < pacing.hesitate) return;
            const buf = streamBufRef.current;
            if (shownLenRef.current < buf.length) {
-             const step = Math.max(1, Math.ceil((buf.length - shownLenRef.current) / 5));
+             const step = Math.max(1, Math.ceil((buf.length - shownLenRef.current) / pacing.catchDiv));
              shownLenRef.current += step;
              setBubbleText(buf.slice(0, shownLenRef.current));
            } else if (streamEndedRef.current) {
@@ -662,7 +693,7 @@ const transientTimerRef = useRef<number | null>(null);
              bubbleTimerRef.current = setTimeout(() => setBubbleVisible(false), 10000);
              setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 2000);
            }
-         }, 30);
+         }, pacing.intervalMs);
        }
      };
      const res = await invoke<{ reply: string; transient_expression: string | null }>(
@@ -683,7 +714,7 @@ const transientTimerRef = useRef<number | null>(null);
        setIsThinking(false);
        fsmRef.current?.forceState(BehaviorState.Talking);
        if (res.reply) showBubble(res.reply, 10000, bubbleClassForMood(moodLabel));
-       else showBubble("（……）", 3000, "bubble-calm");
+       else showBubble("…", 2500, "bubble-glyph");
        setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 2000);
      }
      if (res.transient_expression) {
