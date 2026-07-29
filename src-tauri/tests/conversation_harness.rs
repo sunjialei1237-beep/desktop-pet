@@ -110,6 +110,7 @@ async fn run_50_turn_conversation() {
             &db,
             None,
             &pacing,
+            |_|{},
         )
         .await
         {

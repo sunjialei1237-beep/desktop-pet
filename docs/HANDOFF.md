@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-07-27**
+> 最后更新：**2026-07-28**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -19,13 +19,49 @@
 | 库单测 | ✅ 194 passed | `cargo test --lib` |
 | Body 视线 360°（上下） | ✅ | 实跑验收通过（autoFocus:false + ny 取反） |
 | 生命感 回来主动招呼 | ✅ 实跑通过 | loop_runner presence 转换 → welcome_back_bubble |
+| 生命感 情绪连续外显 | ✅ build 过 / 待实跑 | emotionDriver → Live2DCanvas 连续参数插值（P10 emotionBridge）|
+| 对话 流式回复 | ✅ 实跑确认 | ipc::Channel 逐字（emit/listen 命令体内投递延迟+listener 立即 unlisten 全丢→Channel 正解）；用户长回复实跑确认逐字 |
 
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
-**P13/P15 Soul 慢循环闭环（2026-07-27）。** 补 Soul 三块调度断链：①Reflection 接 `slow_tick` 自动调度（抽 `should_run_reflection`+`maybe_run_if_due` 纯函数，>20h 冷却；commands 瘦身 wrapper，IPC 签名不变）②Consolidation 接 `slow_tick`（同 `block_on` 块，内部 100-episode 阈值守护）③welcome-back 消费 surfaced thought（`generate_welcome_back` 调 `surface_thoughts`，注入招呼 prompt——隔夜回来她说出昨晚反思的念头）。验证：cargo test --lib **197 passed**（+3 新）/ --no-run 全 harness 编译 ✅ / tsc ✅ / **`soul_loop_harness` 2 passed（真实 LLM 端到端）**——核心两条新路径已自主验证通过（详见 §最近一轮）。仅 slow_tick periodic 接线待常开 >1h 实跑确认。下一步候选见文末。
+**流式回复已闭环确认（2026-07-28，Tier 1 #1 ✅）。** ipc::Channel 逐字渲染，用户长回复实跑确认气泡逐字浮现（短回复因 DeepSeek-v4 reasoning content 占比小、瞬间发完看不出逐字，非 bug）。流式代码已清理（探针删除），编译全绿。**叠加未提交**（建议一并 commit）：流式 Channel（commands.rs / llm/client.rs / App.tsx）+ 情绪外显 emotionDriver（待实跑）+ 桌面快捷方式（§部署）。**下一步**：Tier 1 #2 气泡生命力 / #3 Foley 音效，或用户指定。
 
-## §最近一轮 (2026-07-27)：Soul 慢循环闭环（Reflection 自动调度 + thought 融入回来招呼 + Consolidation 调度）
+## §最近一轮 (2026-07-28)：流式回复 — emit/listen → ipc::Channel（根因定位 + 修复）
+
+**根因（对比定位，非瞎改）**：`download_embedding_model` 命令体内 `app.emit("download-progress")` **工作正常**（SettingsPanel listen 收到进度），因其 listener 在 `useEffect` 里**组件挂载时注册、长期存活**（命令返回后不立即 unlisten）→ 即使命令体内 emit 投递有延迟，listener 仍在 → 收到。而 chat-chunk 的 listener 在事件处理函数里**紧贴 invoke 注册**，`finally { unlisten() }` 在 invoke resolve 后**立即移除** → 命令体内 emit 的事件投递延迟到命令返回附近、被抢先 unlisten → **全部丢失** → `firstChunk` 恒 true → 走 `showBubble(res.reply)` 一次性 fallback。Tauri 官方文档明确：emit/listen「不适合低延迟/高吞吐」，`ipc::Channel` 才是命令体内流式正解（内部用于 download progress，命令期间实时投递、有序、不经全局事件总线）。上一轮 Channel「用法对但 onmessage 不触发」≈ 踩 v2 经典坑：后端 `on_event`（snake_case）要前端传 **camelCase `onEvent`**，传错则 Channel 不注入、onmessage 静默不触发。
+
+**修复**（2 文件，原则 #1/#5/#10/#11）：
+- `commands.rs`：`send_message` 去 `app: AppHandle`，加 `on_chunk: tauri::ipc::Channel<String>`；闭包 `move |delta| on_chunk.send(delta.to_string())`（Channel move 进 FnMut）。诊断：首 chunk 一次 `[chat-stream] first content chunk forwarded to channel` + send 失败 warn（不刷屏）。`send_message` 无 Rust 测试调用方，改签名不触发踩坑#4。
+- `App.tsx`：去 `listen("chat-chunk")`/`unlisten`/try-finally；`const onChunk = new Channel<string>(); onChunk.onmessage = (delta)=>{...}; invoke("send_message",{text, onChunk})`（**camelCase 严格**）。打字机（`streamBufRef` buffer + 30ms interval reveal）保留——仍需绕开 React 同 tick 批处理。`firstChunk` fallback 逻辑保留（沉默/空回复走 showBubble）。
+
+**验证（端到端确认 ✅）**：`npx tsc --noEmit` ✅ / `npm run build` ✅ / `cargo check` ✅。**① Channel 投递探针**（临时 `stream_test` 命令 send 10 chunk + 前端 `pong` 回调，验证后删）：`sent 0..9 ↔ received 0..9` 一一对应、同秒 → Channel 投递实时工作（隔离 LLM，不受 DeepSeek 速率干扰）。**② 真实 send_message**：dev.log 见 `[chat-stream] first content chunk forwarded to channel`（Step 9 + Channel.send 被调）+ chat_stream 7s 流式（长回复）。**③ 用户实跑确认**：长回复（"讲个稍微长一点的"）气泡逐字浮现 ✅。短回复（"你好啊"）content 仅 1-2 chunk 瞬间发完看不出逐字（DeepSeek v4 reasoning content 占比小，非 bug）。
+
+**清理**：删 `tests/stream_debug.rs`、删 client.rs `[stream]` SSE 调试 log（start/DONE/ended，保留 `[llm-stream-empty]`/`[llm-stream] skip malformed` warn）、删 App.tsx 自动触发 effect、`[send-token]` 改为首 chunk + warn。
+
+**踩坑总结（写入避免重复）**：
+- **emit/listen 不适合命令体内流式**：命令体内 emit 的事件投递延迟到命令返回；若 listener 紧贴 invoke 生命周期（invoke 后立即 unlisten），全部丢失。对比：listener 长期存活（useEffect 注册）的命令体内 emit 能工作（download-progress）。**命令体内流式一律用 `ipc::Channel`**。
+- **Tauri v2 Channel 参数 camelCase**：后端 `on_event` ↔ 前端 `onEvent`，传 snake_case 则 Channel 不注入、onmessage 不触发（静默）——上一轮 Channel 失败的疑似根因。
+- **dev 实跑验证流式受 DeepSeek 速率制约**：reasoning 模型 gate/extractor 分类慢（接近 60s timeout），叠加 catch-up（系统睡眠触发 reflection+consolidate）多路并发易 rate-limit/超时，send_message 卡 Step 1 不到流式。验证流式前确保 DeepSeek 可用 + 无 catch-up 干扰。
+- DeepSeek-v4-pro 是 reasoning 模型：短回复（"你好"）content 仅 1 个 chunk（一次性发完，看不出逐字），**测试流式必须用长回复**（如"讲个故事"→83 chunk）；reasoning_content 占 ~70% completion token（content 只剩 30%）
+- **React StrictMode 双 mount 陷阱（诊断坑，曾误导整轮）**：dev 下 effect mount→cleanup→mount。自动触发 effect 若加 `flag` 守卫防重复，第一次 mount 设 flag+timer → cleanup 清 timer → 第二次 mount 见 flag 跳过 → **timer 永不执行**。上一轮自主 dev 实跑 dev.log 总无 `[stream]`/`[chat-stream]` 的真因即此（自动触发没跑，非后端问题）。教训：dev 一次性自动触发 effect **别加 flag 守卫**，让 React cleanup 天然去重（第二次 mount 的 timer 触发）。
+
+## §历史 (2026-07-28)：情绪外显·连续表情插值（P10 emotionBridge）
+
+**起因**：用户选 §下一步候选 #2（北极星 #10 生命感）。codegraph 调研发现 `emotion/state.rs` 注释明写"continuous vector for Live2D parameter interpolation"、设计文档（implementation-plan.md:809-810）点名 eye_open/mouth_form/motion_speed——但实际链路断裂：emotion 向量被 `label_for_mood` 压成 6 桶离散表情（f00-f05）经 `model.expression` 硬跳，energy/stress/loneliness 几乎不影响视觉。后端 `emotion-update` 事件早 emit 完整向量（loop_runner.rs:96-108），前端 App.tsx 监听却只取 mood_label。顺带发现离散映射疑似语义错位（`MOOD_EXPRESSION_NAME.happy="f00"`→F01.exp3 的 `ParamMouthForm=-1.76` 哭脸）。
+
+**实现**（3 文件，纯前端零后端改动，原则 #1/#5/#9/#10/#11）：
+- 新增 `src/animation/emotionDriver.ts`：`EmotionVector` 接口 + `DEFAULT_EMOTION`（对齐 Rust `EmotionState::default`）+ `getEmotionParams(e)` 纯函数（eye_open=energy/rest_need 疲惫半眯 / mouth_form=mood↗+stress↘ / eye_form=mood 笑眼 / brow=mood 下垂）+ `boostForTransientExpression(expr,base)`（f00→mood↑ / f04→stress↑mood↓，让对话强情绪也走连续路径）。参数 id 全部经 Haru expression 文件（F01.exp3）验证存在；brow 方向经 F01（难过 -0.56）确认。常量集中可调 + JSDoc。
+- `Live2DCanvas.tsx`：props moodLabel→emotionVector；移除 `MOOD_EXPRESSION_NAME`/`moodToExpressionName` 离散映射 + 移除 mood→expression useEffect；`beforeModelUpdateFn` 里 `{...getEmotionParams(emoVector), ...getBehaviorParams(beh,elapsed)}`（emotion 基线叠 behavior overlay 之下，behavior 优先）；transient 用 boost 而非 `model.expression`（避免预设表情残留 brow/form 参数）。
+- `App.tsx`：emotionVector state（DEFAULT_EMOTION）+ `toEmotionVector` 辅助；4 处填充（emotion-update 事件 / 5s emotionTimer / 启动 / send_message 后）；传 Live2DCanvas。moodLabel 保留给 `bubbleClassForMood`。rest_need 后端未暴露→0（energy 已覆盖疲惫，follow-up）。
+
+**架构契合**：#1 参数纯函数无 LLM / #5 连续参数每帧写不依赖 LLM（断网仍跑）/ #9 MVP 4 维刚好够用（browForm/Angle 等细分残留留 follow-up）/ #10 表情连续流动=生命感 / #11 每维映射有 JSDoc + 参数来源可追溯。Talking 时 lipsync 管 `ParamMouthOpenY`、emotion 管 `ParamMouthForm`（嘴角随心情）不冲突。
+
+**验证**：`npx tsc --noEmit` ✅ / `npm run build` ✅（479 modules）。**待实跑**：npm run tauri dev 观察情绪变化（戳身体 stress↑→嘴角下垂、心情好→微笑+笑眼、累→半眯）。
+
+**Scope 边界**（follow-up）：rest_need 后端暴露（EmotionResponse + emit 加字段）/ `applyBehaviorToModel` 的 `model.expression`（Yawn→f05 等）仍走预设，其 browForm/Angle 细分参数残留未被 emotion 覆盖（主干 browLY/RY 已 cover）/ ParamAngleY 头部俯仰未映射（loneliness/energy 表达）。
+
+## §历史 (2026-07-27)：Soul 慢循环闭环（Reflection 自动调度 + thought 融入回来招呼 + Consolidation 调度）
 
 **起因**：用户"严格按 plan 执行"。对照 `implementation-plan.md` 验证标准逐项核对，P13 #1（Reflection 自动触发）/ #3（thought 融入下次交互）+ P15.1 慢循环清单**未达成**——Soul 三块逻辑（Reflection / Monologue / Consolidation）实现完整但**调度链断**：Reflection 仅启动 IPC 触发（常开不重启 → 永不跑）、thought 仅 `App.tsx` 启动独立气泡（没融入招呼）、Consolidation 未被 `slow_tick` 调用（只有 `lifecycle_cleanup` 被调）。
 
@@ -93,11 +129,72 @@
 
 **验证**：`cargo test --lib` 185 passed、闭环2 harness 1 passed；**用户实跑"3分钟后提醒喝水"全链路通过**——她回"好的"+ Pending 区有记录 + 3分钟后主动冒泡。闭环2 真实运行 ✅。
 
+## §部署：桌面启动方式（2026-07-28）
+release exe 构建一次，桌面快捷方式双击启动（无需终端 / `npm run tauri dev`）。
+- 构建：`npx tauri build --no-bundle`（**勿用** `cargo build --release`——后者产物 embed 不全、webview 加载异常）。`--no-bundle` 跳过 msi 打包（wix 可能失败，非必需），只出 exe。
+- 产物：`D:\cargo-target\desktop-pet\release\desktop-pet.exe`（CARGO_TARGET_DIR 重定向到 D 盘，**非** `src-tauri/target/`；bin 名 `desktop-pet`，非 productName `DesktopPet`）。
+- 桌面快捷方式：`C:\Users\SunJialei\Desktop\DesktopPet.lnk`（Target=exe, Icon=src-tauri/icons/icon.ico）。
+- 踩坑1（已修）：`open_devtools` 是 Tauri **debug-only** API（release 下该方法不存在 → E0599）。commands.rs 已加 `cfg(debug_assertions)` 守卫，release no-op。
+- 踩坑2（已修，release-only 隐蔽）：PIXI ShaderSystem 需 CSP `unsafe-eval`，但 tauri.conf.json CSP 原本只有 `wasm-unsafe-eval`（给 Live2D Core）→ PIXI Application 创建即崩 → 桌宠空白不显示。dev 模式 tauri 自动放宽 CSP（dev 正常），release 用配置 CSP 才暴露。诊断法：WebView2 设 `--remote-debugging-port=9222` + CDP `Runtime.evaluate` 抓异常。已加 `'unsafe-eval'` 到 `script-src`。
+- 重建：改 Rust/tauri.conf.json → `npx tauri build --no-bundle`；改前端 → 先 `npm run build`。快捷方式自动指向新 exe（同路径覆盖）。
+
+## §审计：P0-P17 + 架构原则完成度（2026-07-28，对照 implementation-plan v1.1 + design v2 + Architecture-Principles）
+
+Kill List 三闭环全部端到端跑通（Body→Memory→Soul）。逐项审计（✅ 完整 / ⚠️ 有缺口 / ❌ 未做）：
+
+| 阶段 | 状态 | 说明 / 缺口 |
+|---|---|---|
+| P0 脚手架/配置 | ✅ | AppData config（踩坑#1）|
+| P1 数据库 | ✅ | schema v2，8 层记忆全 |
+| P2 Embedding | ✅ | BGE-M3，AppData 引导下载 |
+| P3 LLM 客户端 | ⚠️ | 非流式；**流式 chat_stream 未做**（client `stream:false`）|
+| P4 Emotion | ✅ | state/homeostasis/needs/pace 全 |
+| P5 摄入管道 | ✅ | gate/extractor/store/correction/working |
+| P6 检索管道 | ✅ | trigger/retrieval/budget/grounding，score breakdown |
+| P7 Planner | ⚠️ | director+actor 闭环；**流式逐字渲染未做** |
+| P8 Pending | ✅ | 闭环2 实跑 |
+| P9 Body 窗口 | ✅ | Live2D/透明/点击穿透 |
+| P10 FSM | ⚠️ | fsm+emotionDriver(连续表情)+microBehavior ✅；**circadian 未接入微行为选择**；idle_weights 硬编码(非 JSON) |
+| P11 交互 | ⚠️ | 摸头/戳/注意力三态 ✅；**气泡生命力简化(无形态/节奏)、Foley 音效未做、Alt+Space 全局键未做** |
+| P12 物理 | ⚠️ | 空间(窝/回巢)/昼夜 ✅；**自由落体/任务栏弹跳简化(松手停原地)** |
+| P13 Soul | ⚠️ | reflection/monologue/consolidation+慢循环闭环 ✅；**TurnThreshold/MajorEvent 触发器、Consolidation 反向更新 Facts 未做** |
+| P14 感知 | ✅ | time/presence/window 模块全 |
+| P15 Life Loop | ✅ | 三循环+recovery(前端catch)+firstrun 访谈 |
+| P16 Debug Panel | ⚠️ | Brain/Counts/Facts/Episodes/Pending/Timeline ✅；**Prompt token/Retrieved score/Reflect/AnimFSM/Cost 分区缺** |
+| P17 Golden | ⚠️ | golden_conversations 测试数据有；**evaluation 框架+人格漂移 score+CI 未完整** |
+| A1 BrainState 快照 | ❌ | converse 多参数，未统一 BrainState（架构债）|
+| A2 统一 Scheduler | ❌ | loop_runner 线程+sleep，非 Scheduler trait（架构债）|
+| A3-A6 | ✅ | 直接调用+事件 / Change Log / Suspend-Resume / schema_version |
+
 ## §未解决问题
 - **P16 Debug Panel 部分缺**：Prompt token 预算 / Retrieved score breakdown / Reflect 分区未实现（核心状态面板已在）。现在 `BubbleOutcome.anchor` 已暴露，Debug Panel 可顺手显示"当前冒泡锚定的记忆"。
 - **物理简化**：拖拽松手停原地 + 30s 回巢；完整桌面物理（碰撞、空间 Episode）未做，MVP 够用。
 
-## §下一步候选（按优先级，等用户定）
-1. **P16 Debug Panel 补全** — Prompt token 预算 / Retrieved score breakdown / Reflect 分区（核心状态面板已在；`BubbleOutcome.anchor` 可补"冒泡锚定"展示；本轮 `has_thought` + unsurfaced_count 可顺手接入 Reflect 分区）。
-2. **新增生命感**（原则 #10 北极星）— 情绪外显（Emotion→Live2D 视觉映射 P10 emotionBridge）/ 更自然的呼吸眨眼 / 更多 idle 微行为，而非工具性功能。（回来主动招呼 + 隔夜念头已由近两轮完成）
-3. **Soul follow-up** — TurnThreshold/MajorEvent 触发器（每 30 轮自动反思）/ Consolidation 反向更新 Facts（原则 #9 V2）/ converse 注入 surfaced thought（正常对话也带出昨晚念头）。
+## §下一步候选（按优先级重排，基于 §审计 + 北极星 #10 + Kill List 已完成）
+
+Kill List 三闭环已完成，现按"提升体验/生命感"→"闭环深度"→"Body 完善"→"开发者基建"→"架构债"→"二期"排序。
+
+**Tier 1 — 生命感/体验（#10 北极星，对话是核心交互）**
+1. ✅ **流式回复**（已完成并实跑确认）：ipc::Channel 逐字渲染（短回复看不出逐字是 DeepSeek-v4 reasoning content 占比小，非 bug）。详见 §最近一轮。
+2. **气泡生命力**（P11.3）：形态(圆润弹跳/害羞慢现/颤抖/泄气) + 打字节奏(快=开朗/慢断=害羞) + 无文字气泡(叹气/省略号)。当前仅简单 CSS class。
+3. **Foley 音效**（P11.5）：pet/poke/drag/walk/sit/sleep/land/click wav。几十 KB 音效对生命感提升 >> 文字。
+
+**Tier 2 — Soul/对话深度（闭环增强）**
+4. **converse 注入 surfaced thought**：正常对话也带出昨晚念头（现只 welcome-back）。
+5. **Reflection TurnThreshold/MajorEvent 触发器**：每 30 轮 / importance>0.85 自动反思（现只 Daily）。
+6. **Consolidation 反向更新 Facts**（#9 V2）：压缩总结中的事实回写 Facts。
+
+**Tier 3 — Body 完善**
+7. **circadian 接入微行为**：DeepNight sleepy 权重（现 fsm.tick 不接收 circadian）。
+8. **完整物理**（P12.1）：自由落体 + 任务栏弹跳（现简化松手停原地）。
+
+**Tier 4 — 开发者基建（#11 Explainability）**
+9. **P16 Debug Panel 补全**：Prompt token / Retrieved score breakdown / Reflect(has_thought/unsurfaced) / Cost 分区。
+10. **P17 Golden 评估框架**：人格漂移 score + CI 自动跑（现 golden 数据有，框架不完整）。
+
+**Tier 5 — 架构债务（重构，功能已在跑）**
+11. **A1 BrainState 统一快照**：converse 等改 `fn(brain: &BrainState)`，消除多参数列表。
+12. **A2 统一 Scheduler**：loop_runner 线程+sleep → Scheduler trait（ticks_1s/30s/daily）。
+
+**Tier 6 — 二期愿景（design §14 二期清单）**
+13. Shared World（桌面元素认知）/ Rituals / Landmarks / Adaptive Traits V2 / 混合检索 V2。

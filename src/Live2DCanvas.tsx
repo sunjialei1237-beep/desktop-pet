@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { BehaviorState } from "./animation/fsm";
 import { AttentionState } from "./animation/attention";
 import { getBehaviorParams } from "./animation/behaviorDriver";
+import { boostForTransientExpression, getEmotionParams, type EmotionVector } from "./animation/emotionDriver";
 
 // PixiJS + Live2D integration for the desktop pet rendering layer.
 // The Cubism Core library is loaded via a script tag in index.html.
@@ -18,7 +19,7 @@ export interface PointerXY {
 const HEAD_FOCUS = { x: 200, y: 0 };
 
 interface Live2DCanvasProps {
-  moodLabel: string;
+  emotionVector: EmotionVector;
   transientExpression: string | null;
   behavior: BehaviorState;
   attention: AttentionState;
@@ -33,26 +34,11 @@ interface Live2DCanvasProps {
   onModelHitBounds?: (b: { x: number; y: number; width: number; height: number }) => void;
 }
 
-// Map internal mood labels to Haru model expression names.
-// The model defines f00..f07 in model3.json.
-const MOOD_EXPRESSION_NAME: Record<string, string> = {
-  happy: "f00",
-  playful: "f01",
-  calm: "f02",
-  sad: "f03",
-  worried: "f04",
-  tired: "f05",
-};
-
-function moodToExpressionName(label: string): string {
-  if (label === "\u5f00\u5fc3") return MOOD_EXPRESSION_NAME.happy;       // happy
-  if (label === "\u8c03\u76ae") return MOOD_EXPRESSION_NAME.playful;    // playful
-  if (label === "\u5e73\u9759") return MOOD_EXPRESSION_NAME.calm;       // calm
-  if (label === "\u96be\u8fc7" || label === "\u7b2e\u96be") return MOOD_EXPRESSION_NAME.sad;
-  if (label === "\u62c5\u5fc3") return MOOD_EXPRESSION_NAME.worried;    // worried
-  if (label === "\u75b2\u60eb") return MOOD_EXPRESSION_NAME.tired;      // tired
-  return MOOD_EXPRESSION_NAME.calm;
-}
+// NOTE: the discrete mood->expression map (f00..f05) was removed in favor of
+// continuous parameter interpolation (emotionDriver.getEmotionParams). The
+// baseline mood now drives eye/mouth/eye-form params every frame instead of
+// switching expression files. The per-turn *transient* expression (strong
+// emotion from a reply) still uses model.expression() via `transientExpression`.
 
 // FIX-B: Haru only exposes Idle x3 + Tap x2 motions (see model3.json).
 // Map FSM microbehaviors onto Tap motion + expression overlays.
@@ -89,7 +75,7 @@ function applyBehaviorToModel(model: any, behavior: BehaviorState) {
   }
 }
 
-export function Live2DCanvas({ moodLabel, behavior, attention, pointerRef, isThinking, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, transientExpression }: Live2DCanvasProps) {
+export function Live2DCanvas({ emotionVector, behavior, attention, pointerRef, isThinking, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, transientExpression }: Live2DCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const modelRef = useRef<any>(null);
@@ -101,8 +87,8 @@ export function Live2DCanvas({ moodLabel, behavior, attention, pointerRef, isThi
 
   // FIX-A / FIX-B: mirror the latest props into a ref read each ticker frame,
   // so focus/motion react instantly without re-running the heavy load effect.
-  const propsRef = useRef({ attention, behavior, isThinking, moodLabel, transientExpression });
-  propsRef.current = { attention, behavior, isThinking, moodLabel, transientExpression };
+  const propsRef = useRef({ attention, behavior, isThinking, emotionVector, transientExpression });
+  propsRef.current = { attention, behavior, isThinking, emotionVector, transientExpression };
 
   useEffect(() => {
     let destroyed = false;
@@ -266,7 +252,20 @@ export function Live2DCanvas({ moodLabel, behavior, attention, pointerRef, isThi
             behaviorStartRef.current = performance.now();
           }
           const elapsed = performance.now() - behaviorStartRef.current;
-          const params = getBehaviorParams(beh, elapsed);
+          // Emotion baseline, layered UNDER the behavior overlay so active
+          // microbehaviors (Sleeping/Blink/Yawn...) still win the params they
+          // touch. When a transient per-turn expression is active, step back
+          // ({}) and let the preset expression own the face -- otherwise our
+          // continuous writes would overwrite its parameters every frame
+          // (Architecture Principle #10: continuous emotion -> liveliness).
+          // Transient per-turn emotion (strong signal from the reply) nudges
+          // the SAME continuous vector instead of switching to a preset
+          // expression file -- one unified path, no residual params when it
+          // ends (Architecture Principle #10).
+          const emoVector = propsRef.current.transientExpression
+            ? boostForTransientExpression(propsRef.current.transientExpression, propsRef.current.emotionVector)
+            : propsRef.current.emotionVector;
+          const params = { ...getEmotionParams(emoVector), ...getBehaviorParams(beh, elapsed) };
           const core = im.coreModel;
           for (const id in params) {
             try {
@@ -320,17 +319,6 @@ export function Live2DCanvas({ moodLabel, behavior, attention, pointerRef, isThi
     lastBehaviorRef.current = behavior;
     applyBehaviorToModel(model, behavior);
   }, [behavior]);
-
-  useEffect(() => {
-    const model = modelRef.current;
-    if (!model) return;
-    const activeExpr = transientExpression ?? moodToExpressionName(moodLabel);
-    try {
-      model.expression(activeExpr);
-    } catch {
-      // expression may not be ready yet
-    }
-  }, [moodLabel, transientExpression]);
 
   useEffect(() => {
     const model = modelRef.current;

@@ -34,6 +34,7 @@ pub async fn converse(
     db: &DbState,
     embedding: Option<&EmbeddingService>,
     pacing: &std::sync::Mutex<crate::mind::pacing::QuestionPacing>,
+    on_token: impl FnMut(&str),
 ) -> Result<ConversationResult, String> {
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -205,9 +206,11 @@ pub async fn converse(
         wm_context.len(),
     );
 
-    // Step 9: LLM — generate response.
+    // Step 9: LLM — generate response. Streaming: each content token is
+    // forwarded to `on_token` for live bubble rendering (architecture #10),
+    // while the fully accumulated text is returned for grounding / emotion.
     let chat_result = llm
-        .chat(&messages, Some(0.8), Some(4096))
+        .chat_stream(&messages, Some(0.8), Some(4096), on_token)
         .await
         .map_err(|e| format!("LLM error: {:?}", e))?;
     let response = chat_result.content;

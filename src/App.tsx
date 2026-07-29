@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
@@ -13,6 +13,7 @@ import { AttentionState, computeAttention, type PetRect } from "./animation/atte
 import { type PetPosition } from "./animation/physics";
 import { SpatialMemory } from "./animation/spatial";
 import { getCircadianState, deepNightMessages, TimeOfDay } from "./animation/circadian";
+import { DEFAULT_EMOTION, type EmotionVector } from "./animation/emotionDriver";
 
 interface EmotionData {
   mood: number;
@@ -47,6 +48,20 @@ function bubbleClassForMood(label: string): string {
   return "bubble-calm";
 }
 
+// Project the backend emotion snapshot to the continuous vector the Live2D
+// layer interpolates. `rest_need` is not yet exposed by the backend (energy
+// already covers fatigue); defaulted to 0 here -- tracked as a follow-up.
+function toEmotionVector(e: EmotionData): EmotionVector {
+  return {
+    mood: e.mood,
+    physical_energy: e.physical_energy,
+    social_battery: e.social_battery,
+    stress: e.stress,
+    loneliness: e.loneliness,
+    rest_need: 0,
+  };
+}
+
 export default function App() {
 // 方案 B: window dimensions match tauri.conf.json. petPos = window top-left.
 const WINDOW_W = 400;
@@ -61,6 +76,7 @@ const WINDOW_H = 760;
   const [isThinking, setIsThinking] = useState(false);
   const [transientExpression, setTransientExpression] = useState<string | null>(null);
   const [moodLabel, setMoodLabel] = useState("平静");
+  const [emotionVector, setEmotionVector] = useState<EmotionVector>(DEFAULT_EMOTION);
   const [showSettings, setShowSettings] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
  const [attention, setAttention] = useState(AttentionState.Ignored);
@@ -94,6 +110,13 @@ const transientTimerRef = useRef<number | null>(null);
  const circadianRef = useRef(getCircadianState());
  const pointerRef = useRef({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
  const thinkStartRef = useRef(0);
+ // Streaming-typewriter state: chunks arrive faster than the eye can follow
+ // and React batches same-tick setState, so buffer in refs and reveal on an
+ // interval for a smooth typewriter effect (#10).
+ const streamBufRef = useRef("");
+ const shownLenRef = useRef(0);
+ const streamEndedRef = useRef(false);
+ const typewriterRef = useRef<number | null>(null);
   // Click-through state (ADR Phase 2).
   const ignoreRef = useRef(false);
   const windowOriginRef = useRef<{ x: number; y: number } | null>(null); // physical px
@@ -232,6 +255,7 @@ const transientTimerRef = useRef<number | null>(null);
 
     listen<EmotionData>("emotion-update", (event) => {
       setMoodLabel(event.payload.mood_label);
+      setEmotionVector(toEmotionVector(event.payload));
     }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
     listen<{ title: string; event_id: string }>("proactive-prompt", (event) => {
@@ -271,11 +295,15 @@ const transientTimerRef = useRef<number | null>(null);
       try {
         const emo = await invoke<EmotionData>("get_emotion_state");
         setMoodLabel(emo.mood_label);
+        setEmotionVector(toEmotionVector(emo));
       } catch { /* ignore */ }
     }, 5000);
 
     invoke<EmotionData>("get_emotion_state")
-      .then((emo) => setMoodLabel(emo.mood_label))
+      .then((emo) => {
+        setMoodLabel(emo.mood_label);
+        setEmotionVector(toEmotionVector(emo));
+      })
       .catch(() => {});
 
     // FIX-J: frontend welcome fallback (2s) if backend bubble-show not received.
@@ -596,19 +624,68 @@ const transientTimerRef = useRef<number | null>(null);
     thinkStartRef.current = Date.now();
 
    try {
-     const res = await invoke<{ reply: string; transient_expression: string | null }>("send_message", { text });
-     const reply = res.reply;
-      // FIX-G: guarantee the thinking dots stay visible >= 500ms even on fast replies.
-      const elapsed = Date.now() - thinkStartRef.current;
-      if (elapsed < 500) await new Promise((r) => setTimeout(r, 500 - elapsed));
-     setIsThinking(false);
-      fsmRef.current?.forceState(BehaviorState.Talking);
-     if (reply) {
-       showBubble(reply, 10000, bubbleClassForMood(moodLabel));
-     } else {
-        showBubble("（……）", 3000, "bubble-calm");
+     // Stream tokens live: the first content chunk means she starts speaking
+     // (drop dots, switch to Talking, open the bubble); later chunks accumulate
+     // into the bubble text. DeepSeek emits reasoning before content, so dots
+     // stay up while she "thinks" (architecture #10, 踩坑#3).
+     // Stream tokens via a Tauri event. Chunks arrive faster than the eye can
+     // follow (DeepSeek emits ~80 tokens/s) and React batches same-tick
+     // setState into one render — so direct accumulation visibly "jumps". We
+     // buffer into a ref and reveal on a 30ms interval => smooth typewriter
+     // (architecture #10).
+     streamBufRef.current = "";
+     shownLenRef.current = 0;
+     streamEndedRef.current = false;
+     if (typewriterRef.current) { window.clearInterval(typewriterRef.current); typewriterRef.current = null; }
+
+     let firstChunk = true;
+     const onChunk = new Channel<string>();
+     onChunk.onmessage = (delta: string) => {
+       streamBufRef.current += delta; // buffer only — no setState here (defeats batching)
+       if (firstChunk) {
+         firstChunk = false;
+         setIsThinking(false);
+         fsmRef.current?.forceState(BehaviorState.Talking);
+         setBubbleStyle(bubbleClassForMood(moodLabel));
+         setBubblePos("");
+         setBubbleText("");
+         setBubbleVisible(true);
+         if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current); // no auto-hide mid-stream
+         typewriterRef.current = window.setInterval(() => {
+           const buf = streamBufRef.current;
+           if (shownLenRef.current < buf.length) {
+             const step = Math.max(1, Math.ceil((buf.length - shownLenRef.current) / 5));
+             shownLenRef.current += step;
+             setBubbleText(buf.slice(0, shownLenRef.current));
+           } else if (streamEndedRef.current) {
+             if (typewriterRef.current) { window.clearInterval(typewriterRef.current); typewriterRef.current = null; }
+             bubbleTimerRef.current = setTimeout(() => setBubbleVisible(false), 10000);
+             setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 2000);
+           }
+         }, 30);
+       }
+     };
+     const res = await invoke<{ reply: string; transient_expression: string | null }>(
+       "send_message",
+       { text, onChunk },
+     );
+     // Stream done: correct the buffer to the authoritative full reply (in
+     // case the last chunks raced the unlisten), then let the typewriter
+     // finish revealing it.
+     streamBufRef.current = res.reply;
+     streamEndedRef.current = true;
+
+     if (firstChunk) {
+       // No content tokens arrived (silence / empty reply): the typewriter
+       // never started — fall back to the original thinking→reply path.
+       const elapsed = Date.now() - thinkStartRef.current;
+       if (elapsed < 500) await new Promise((r) => setTimeout(r, 500 - elapsed));
+       setIsThinking(false);
+       fsmRef.current?.forceState(BehaviorState.Talking);
+       if (res.reply) showBubble(res.reply, 10000, bubbleClassForMood(moodLabel));
+       else showBubble("（……）", 3000, "bubble-calm");
+       setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 2000);
      }
-     setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 2000);
      if (res.transient_expression) {
        if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
        setTransientExpression(res.transient_expression);
@@ -617,7 +694,10 @@ const transientTimerRef = useRef<number | null>(null);
       // Refresh emotion immediately so the expression changes right after the
       // reply, instead of waiting up to 5s for the next poll.
       invoke<EmotionData>("get_emotion_state")
-        .then((emo) => setMoodLabel(emo.mood_label))
+        .then((emo) => {
+          setMoodLabel(emo.mood_label);
+          setEmotionVector(toEmotionVector(emo));
+        })
         .catch(() => {});
    } catch (e) {
       // FIX-G: keep the dots up for >= 500ms even when it fails fast.
@@ -768,7 +848,7 @@ const handleBodyClick = useCallback(() => {
       onMouseDown={handleDragStart}
    >
     <Live2DCanvas
-      moodLabel={moodLabel}
+      emotionVector={emotionVector}
        behavior={behavior}
        attention={attention}
        pointerRef={pointerRef}

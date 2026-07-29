@@ -66,6 +66,7 @@ pub struct DebugData {
 #[tauri::command]
 pub async fn send_message(
     text: String,
+    on_chunk: tauri::ipc::Channel<String>,
     state: State<'_, AppState>,
     db: State<'_, DbState>,
 ) -> Result<SendMessageResult, String> {
@@ -100,6 +101,27 @@ pub async fn send_message(
         &db,
         Some(&state.embedding),
         &state.question_pacing,
+        // Forward each streamed content token to the frontend through an
+        // ipc::Channel for live bubble rendering (architecture #10). Channel
+        // is Tauri's intended path for streaming data *during* a command:
+        // unlike emit/listen (whose events fired inside an async command are
+        // only delivered after the command returns — by which point a
+        // tightly-scoped listener has already unlistened, so chat-chunk was
+        // silently lost), Channel is a direct command-parameter pipe that
+        // delivers in real time. The fully accumulated reply also comes back
+        // in `result.response`.
+        {
+            let mut logged = false;
+            move |delta: &str| {
+                if !logged {
+                    logged = true;
+                    log::info!("[chat-stream] first content chunk forwarded to channel");
+                }
+                if let Err(e) = on_chunk.send(delta.to_string()) {
+                    log::warn!("[chat-stream] channel send failed: {}", e);
+                }
+            }
+        },
     )
     .await?;
 
@@ -788,11 +810,17 @@ pub async fn get_debug_snapshot(
 }
 
 /// Opens the webview developer tools window (used by the context-menu entry).
+/// `WebviewWindow::open_devtools()` is a debug-only API in Tauri (the method
+/// does not exist in release builds), so this command is a no-op outside debug
+/// — it stays registered so the context-menu invoke never errors in release.
 #[tauri::command]
 pub fn open_devtools(app_handle: tauri::AppHandle) {
     if let Some(win) = app_handle.get_webview_window("main") {
+        #[cfg(debug_assertions)]
         win.open_devtools();
-        log::info!("devtools opened via context menu");
+        #[cfg(not(debug_assertions))]
+        let _ = win; // release: devtools API unavailable, no-op
+        log::info!("devtools invoked via context menu");
     } else {
         log::warn!("open_devtools: main webview window not found");
     }

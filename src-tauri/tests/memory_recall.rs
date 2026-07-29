@@ -61,7 +61,7 @@ async fn cross_session_recall_works() {
     let seed_wm = WorkingMemory::new();
     let conv_id = format!("mem_seed_{}", chrono::Utc::now().timestamp());
     let seed = converse::converse(
-        SEED_MSG, &conv_id, 0, &seed_wm.get_context(), &llm, &db, None, &pacing,
+        SEED_MSG, &conv_id, 0, &seed_wm.get_context(), &llm, &db, None, &pacing, |_|{},
     ).await.expect("seed converse");
     println!("SEED reply: {:?}", seed.response);
     println!("SEED route: {:?}, trigger: {}", seed.route, seed.trigger_reason);
@@ -81,7 +81,7 @@ async fn cross_session_recall_works() {
     let noise_wm = WorkingMemory::new();
     let noise = converse::converse(
         NOISE_QUESTION, &format!("mem_noise_{}", chrono::Utc::now().timestamp()),
-        0, &noise_wm.get_context(), &llm, &db, None, &pacing,
+        0, &noise_wm.get_context(), &llm, &db, None, &pacing, |_|{},
     ).await.expect("noise converse");
     let facts_after_noise = snapshot_fact_keys(&db);
     let new_noise_facts: Vec<&String> = facts_after_noise
@@ -96,7 +96,7 @@ async fn cross_session_recall_works() {
     let recall_wm = WorkingMemory::new();
     let recall = converse::converse(
         RECALL_MSG, &format!("mem_recall_{}", chrono::Utc::now().timestamp()),
-        0, &recall_wm.get_context(), &llm, &db, None, &pacing,
+        0, &recall_wm.get_context(), &llm, &db, None, &pacing, |_|{},
     ).await.expect("recall converse");
     println!("RECALL reply: {:?}", recall.response);
     let recalled = recall.response.contains(EXPECTED_TOKEN);
