@@ -35,7 +35,7 @@ const PACING_BY_MOOD: Record<string, TypewriterPacing> = {
     "调皮": { intervalMs: 26, catchDiv: 3, hesitate: 0 },    // 快、活泼
     "平静": PACING_CALM,                                     // baseline
     "担心": { intervalMs: 42, catchDiv: 7, hesitate: 0.20 }, // 慢、常停顿（犹豫）
-    "难过": { intervalMs: 50, catchDiv: 8, hesitate: 0.10 }, // 慢、一字一顿
+    "难过": { intervalMs: 72, catchDiv: 10, hesitate: 0.20 }, // 慢、一字一顿（v2 调慢）
     "疲惫": { intervalMs: 55, catchDiv: 9, hesitate: 0.15 }, // 很慢、带喘
 };
 
