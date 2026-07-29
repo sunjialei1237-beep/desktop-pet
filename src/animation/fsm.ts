@@ -83,11 +83,13 @@ export class AnimationFSM {
         emotionMood: number,
         emotionEnergy: number,
         closeness: number,
+        sleepiness: number,
         now: number,
         pickBehavior: (opts: {
             emotionMood: number;
             emotionEnergy: number;
             closeness: number;
+            sleepiness: number;
             recentHistory: string[];
             cooldowns: Map<string, number>;
             now: number;
@@ -113,6 +115,7 @@ export class AnimationFSM {
                 emotionMood,
                 emotionEnergy,
                 closeness,
+                sleepiness,
                 recentHistory: this.history,
                 cooldowns: this.cooldowns,
                 now,

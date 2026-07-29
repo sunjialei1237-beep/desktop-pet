@@ -196,7 +196,7 @@ const transientTimerRef = useRef<number | null>(null);
       const fsm = fsmRef.current;
       if (!fsm || awayMode) return;
       if (isThinking || behavior === BehaviorState.Talking) return;
-      fsm.tick(moodRef.current, energyRef.current, closenessRef.current, Date.now(), pickNextBehavior);
+      fsm.tick(moodRef.current, energyRef.current, closenessRef.current, circadianRef.current.sleepiness, Date.now(), pickNextBehavior);
     }, 2500);
     return () => clearInterval(timer);
  }, [isThinking, behavior, awayMode]);
