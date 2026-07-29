@@ -18,7 +18,7 @@
 3. **DeepSeek v4 是 reasoning 模型**：新增 LLM 调用 `max_tokens` 至少 2048（分类）/ 4096（生成），否则 reasoning 独占预算、`content` 空、JSON 解析崩。诊断细节见 `docs/HANDOFF.md` §最近一轮。
 4. **harness 随签名更新**：改 `converse`/`run_reflection` 等签名，同步更新 `src-tauri/tests/*` 所有调用方（memory_recall 曾因漏传 pacing 编译挂）。
 5. **`config.toml` 已 gitignore**，API key 不入库。
-6. **release 构建（桌面快捷方式）**：用 `npx tauri build --no-bundle`（**勿用** `cargo build --release`——后者 embed 不全、webview 加载异常）。产物在 `D:\cargo-target\desktop-pet\release\desktop-pet.exe`（CARGO_TARGET_DIR 重定向 D 盘，**非** `src-tauri/target/`；bin 名 `desktop-pet` 非 productName）。桌面快捷方式 `DesktopPet.lnk` 指向它。`open_devtools` 是 debug-only API，`commands.rs` 已加 `cfg(debug_assertions)` 守卫。
+6. **release 构建（桌面快捷方式）**：用 `npx tauri build --no-bundle`（**勿用** `cargo build --release`——后者 embed 不全、webview 加载异常）。产物在 `D:\cargo-target\desktop-pet\release\desktop-pet.exe`（CARGO_TARGET_DIR 重定向 D 盘，**非** `src-tauri/target/`；bin 名 `desktop-pet` 非 productName）。桌面快捷方式 `DesktopPet.lnk` 指向它。`open_devtools` 是 debug-only API，`commands.rs` 已加 `cfg(debug_assertions)` 守卫。**构建前必须关闭桌宠**：运行中的 exe 锁文件，cargo 覆盖报 `failed to remove file ... 拒绝访问 (os error 5)`；先 `taskkill //IM desktop-pet.exe //F`，等 ~3s 释放句柄，且 build 完成前勿重开快捷方式。
 7. **release CSP（PIXI 崩，隐蔽）**：PIXI ShaderSystem 需 `unsafe-eval`，但 `tauri.conf.json` CSP 原本只有 `wasm-unsafe-eval`（给 Live2D Core）。**dev 模式 tauri 自动放宽 CSP（dev 永远正常），release 用配置 CSP 才暴露** → PIXI Application 创建即崩 → 桌宠空白不显示（后端/React 都正常，极难排查）。已加 `'unsafe-eval'` 到 `script-src`。`@pixi/unsafe-eval` 是更严格的 follow-up。
 
 ## 关键命令

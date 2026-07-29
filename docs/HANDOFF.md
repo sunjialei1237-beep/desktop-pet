@@ -20,13 +20,13 @@
 | Body 视线 360°（上下） | ✅ | 实跑验收通过（autoFocus:false + ny 取反） |
 | 生命感 回来主动招呼 | ✅ 实跑通过 | loop_runner presence 转换 → welcome_back_bubble |
 | 生命感 情绪连续外显 | ✅ build 过 / 待实跑 | emotionDriver → Live2DCanvas 连续参数插值（P10 emotionBridge）|
-| 生命感 气泡生命力(节奏+glyph) | ✅ build 过 / 待实跑 | bubblePacing 打字节奏随情绪 + bubble-glyph 无文字气泡（#12）|
+| 生命感 气泡生命力(节奏+glyph) | ✅ 实跑通过 | bubblePacing 打字节奏随情绪(关键词驱动) + bubble-glyph 无文字气泡（#12）|
 | 对话 流式回复 | ✅ 实跑确认 | ipc::Channel 逐字（emit/listen 命令体内投递延迟+listener 立即 unlisten 全丢→Channel 正解）；用户长回复实跑确认逐字 |
 
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
-**气泡生命力已完成（2026-07-29，Tier 1 #2 ✅，待实跑）。** 打字节奏随情绪（`bubblePacing` 6 档：开心快流畅 / 难过担心慢且带停顿）+ 无文字气泡（glyph 省略号/叹气，#12）。已提交 `abb9d49`，tsc+build 绿。前一轮「流式+情绪外显+release 部署」也已提交 `62f730d`（工作区已干净）。**待实跑**（`npm run tauri dev`）：①说开心事→打得快流畅、难过事→一字一顿带停顿 ②断网/空回复→"…"glyph 气泡(无尾巴) ③情绪调疲惫/难过挂机→偶发"呼…"叹气(不打扰对话中)。**下一步**：Tier 1 #3 Foley 音效 / Tier 2 Soul 深度（converse 注入 thought），或用户指定。
+**气泡生命力已完成并实跑通过（2026-07-29，Tier 1 #2 ✅）。** 打字节奏随情绪（`bubblePacing` + `inferPacingMood` 关键词驱动，见 §最近一轮 pacing 修复）+ 无文字气泡（glyph 省略号/叹气，#12）。提交 `abb9d49`（特性）+ `ebc1082`（pacing 修复）。release exe 已重建至 `ebc1082`（09:43）。**下一步**：Tier 1 #3 Foley 音效 / Tier 2 Soul 深度（converse 注入 thought），或用户指定。
 
 ## §最近一轮 (2026-07-29)：气泡生命力 — 打字节奏随情绪 + 无文字气泡（Tier1 #2）
 
@@ -42,7 +42,11 @@
 
 **范围边界**（follow-up）：「害羞慢现」形态未做——后端 `label_for_mood_full`（emotion/state.rs:39）只产 6 标签无「害羞」，强加需改后端标签逻辑（破坏性）。叹气只接前端 emotionTimer（未接后端 life_loop 事件源）。
 
-**验证**：`tsc --noEmit` ✅ / `npm run build` ✅（480 modules）。**待实跑**：dev 观察节奏对比 / glyph / 叹气（需用户交互，见 §当前任务）。
+**验证（实跑通过 ✅）**：`tsc --noEmit` ✅ / `npm run build` ✅（480 modules）/ release exe 重建 / 用户实跑确认节奏差 + glyph + 叹气。
+
+**后续修复（同日，`ebc1082`）：pacing 改用本轮输入关键词驱动。** 实跑发现「难过」与「讲故事」同速——根因 moodLabel 是**慢变量**双重滞后：①前端 `onChunk` 闭包 moodLabel 是 invoke 时捕获的旧值（stale closure）②后端 emotion 在 converse Step 12（LLM 之后）才更新，首 chunk 时后端 emotion 仍是旧的。改 `inferPacingMood(text, fallback)` 前端关键词启发式（难过/去世/哭→难过档），首 chunk 即时生效；moodLabel 降为无情绪词时的 fallback。零后端、即时。follow-up：后端流式前传统一情绪节奏信号，消除与 react.rs 的重复。
+
+**release 重建踩坑（写入避免重复）**：`npx tauri build --no-bundle` 覆盖 exe 时，若桌宠**正在运行**，exe 文件被 Windows 锁 → cargo `failed to remove file ... 拒绝访问 (os error 5)`。**构建前必须 `taskkill //IM desktop-pet.exe //F`**，杀后 sleep ~3s 等 OS 释放句柄再 build，且**构建完成前不要重开快捷方式**（一次因构建中重开 → 新进程锁 exe → 失败）。
 
 ## §历史 (2026-07-28)：流式回复 — emit/listen → ipc::Channel（根因定位 + 修复）
 
