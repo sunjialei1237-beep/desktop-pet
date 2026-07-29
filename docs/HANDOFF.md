@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-07-28**
+> 最后更新：**2026-07-29**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -20,14 +20,31 @@
 | Body 视线 360°（上下） | ✅ | 实跑验收通过（autoFocus:false + ny 取反） |
 | 生命感 回来主动招呼 | ✅ 实跑通过 | loop_runner presence 转换 → welcome_back_bubble |
 | 生命感 情绪连续外显 | ✅ build 过 / 待实跑 | emotionDriver → Live2DCanvas 连续参数插值（P10 emotionBridge）|
+| 生命感 气泡生命力(节奏+glyph) | ✅ build 过 / 待实跑 | bubblePacing 打字节奏随情绪 + bubble-glyph 无文字气泡（#12）|
 | 对话 流式回复 | ✅ 实跑确认 | ipc::Channel 逐字（emit/listen 命令体内投递延迟+listener 立即 unlisten 全丢→Channel 正解）；用户长回复实跑确认逐字 |
 
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
-**流式回复已闭环确认（2026-07-28，Tier 1 #1 ✅）。** ipc::Channel 逐字渲染，用户长回复实跑确认气泡逐字浮现（短回复因 DeepSeek-v4 reasoning content 占比小、瞬间发完看不出逐字，非 bug）。流式代码已清理（探针删除），编译全绿。**叠加未提交**（建议一并 commit）：流式 Channel（commands.rs / llm/client.rs / App.tsx）+ 情绪外显 emotionDriver（待实跑）+ 桌面快捷方式（§部署）。**下一步**：Tier 1 #2 气泡生命力 / #3 Foley 音效，或用户指定。
+**气泡生命力已完成（2026-07-29，Tier 1 #2 ✅，待实跑）。** 打字节奏随情绪（`bubblePacing` 6 档：开心快流畅 / 难过担心慢且带停顿）+ 无文字气泡（glyph 省略号/叹气，#12）。已提交 `abb9d49`，tsc+build 绿。前一轮「流式+情绪外显+release 部署」也已提交 `62f730d`（工作区已干净）。**待实跑**（`npm run tauri dev`）：①说开心事→打得快流畅、难过事→一字一顿带停顿 ②断网/空回复→"…"glyph 气泡(无尾巴) ③情绪调疲惫/难过挂机→偶发"呼…"叹气(不打扰对话中)。**下一步**：Tier 1 #3 Foley 音效 / Tier 2 Soul 深度（converse 注入 thought），或用户指定。
 
-## §最近一轮 (2026-07-28)：流式回复 — emit/listen → ipc::Channel（根因定位 + 修复）
+## §最近一轮 (2026-07-29)：气泡生命力 — 打字节奏随情绪 + 无文字气泡（Tier1 #2）
+
+**起因**：用户选 §下一步 Tier1 #2（北极星 #10 生命感，对话是核心交互）。审计发现气泡形态动画已有 5 种 keyframes（styles.css:445-501），但缺两块：①打字节奏固定 30ms 无论情绪 ②无文字气泡完全缺（#12 沉默表达未落地）。
+
+**实现**（3 文件，纯前端零后端，原则 #1/#9/#10/#11/#12）：
+- 新增 `src/animation/bubblePacing.ts`：`typewriterPacing(moodLabel)->{intervalMs,catchDiv,hesitate}` 纯函数，6 档映射（开心 22ms 快流畅 / 调皮 26ms / 平静 32ms baseline / 担心 42ms+20%停顿 / 难过 50ms+10% / 疲惫 55ms+15%喘），未知标签 fallback 平静
+- `App.tsx` 流式打字机参数化：首 chunk 时按 `moodLabel` 取 pacing，interval/step/hesitate 全由 pacing 决定；hesitate 仅 `!streamEnded` 时生效（收尾必完成）。与气泡形态 class 用同一 moodLabel → 语气与表情一致
+- `App.tsx` 无文字气泡两触发：①空回复 fallback「（……）」→ glyph「…」②`emotionTimer` idle 叹气（疲惫/难过 + 空闲 + 8% →「呼…」）。**stale-closure 守卫**：新增 `bubbleVisibleRef`/`isThinkingRef` + mirror effect（emotionTimer 是 setInterval，闭包捕获 stale state；ref-mirror 是现有 propsRef 模式），用刚获取的 `emo.mood_label`（实时）。已有 `onboardingActiveRef`/`awayMode` 守卫
+- `styles.css`：`.bubble-glyph`（大字号 / 无尾巴 `::after{display:none}` / 淡 opacity:0.8 / `bubble-glyph-soft` 轻动画）
+
+**架构契合**：#1 节奏纯规则不走 LLM / #9 MVP 6 档节奏+glyph 刚够用 / #10 说话语气+叹气=生命感 / #11 pacing 纯函数可测+JSDoc / #12 沉默省略号/叹气是表达。
+
+**范围边界**（follow-up）：「害羞慢现」形态未做——后端 `label_for_mood_full`（emotion/state.rs:39）只产 6 标签无「害羞」，强加需改后端标签逻辑（破坏性）。叹气只接前端 emotionTimer（未接后端 life_loop 事件源）。
+
+**验证**：`tsc --noEmit` ✅ / `npm run build` ✅（480 modules）。**待实跑**：dev 观察节奏对比 / glyph / 叹气（需用户交互，见 §当前任务）。
+
+## §历史 (2026-07-28)：流式回复 — emit/listen → ipc::Channel（根因定位 + 修复）
 
 **根因（对比定位，非瞎改）**：`download_embedding_model` 命令体内 `app.emit("download-progress")` **工作正常**（SettingsPanel listen 收到进度），因其 listener 在 `useEffect` 里**组件挂载时注册、长期存活**（命令返回后不立即 unlisten）→ 即使命令体内 emit 投递有延迟，listener 仍在 → 收到。而 chat-chunk 的 listener 在事件处理函数里**紧贴 invoke 注册**，`finally { unlisten() }` 在 invoke resolve 后**立即移除** → 命令体内 emit 的事件投递延迟到命令返回附近、被抢先 unlisten → **全部丢失** → `firstChunk` 恒 true → 走 `showBubble(res.reply)` 一次性 fallback。Tauri 官方文档明确：emit/listen「不适合低延迟/高吞吐」，`ipc::Channel` 才是命令体内流式正解（内部用于 download progress，命令期间实时投递、有序、不经全局事件总线）。上一轮 Channel「用法对但 onmessage 不触发」≈ 踩 v2 经典坑：后端 `on_event`（snake_case）要前端传 **camelCase `onEvent`**，传错则 Channel 不注入、onmessage 静默不触发。
 
@@ -176,7 +193,7 @@ Kill List 三闭环已完成，现按"提升体验/生命感"→"闭环深度"�
 
 **Tier 1 — 生命感/体验（#10 北极星，对话是核心交互）**
 1. ✅ **流式回复**（已完成并实跑确认）：ipc::Channel 逐字渲染（短回复看不出逐字是 DeepSeek-v4 reasoning content 占比小，非 bug）。详见 §最近一轮。
-2. **气泡生命力**（P11.3）：形态(圆润弹跳/害羞慢现/颤抖/泄气) + 打字节奏(快=开朗/慢断=害羞) + 无文字气泡(叹气/省略号)。当前仅简单 CSS class。
+2. ✅ **气泡生命力**（P11.3，已完成 `abb9d49`，待实跑）：打字节奏随情绪（`bubblePacing` 6 档）+ 无文字气泡（glyph 省略号/叹气，#12）。形态动画本就有 5 种 keyframes。「害羞慢现」缺后端 mood 标签未做（follow-up）。
 3. **Foley 音效**（P11.5）：pet/poke/drag/walk/sit/sleep/land/click wav。几十 KB 音效对生命感提升 >> 文字。
 
 **Tier 2 — Soul/对话深度（闭环增强）**
