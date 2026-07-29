@@ -14,7 +14,7 @@ import { type PetPosition } from "./animation/physics";
 import { SpatialMemory } from "./animation/spatial";
 import { getCircadianState, deepNightMessages, TimeOfDay } from "./animation/circadian";
 import { DEFAULT_EMOTION, type EmotionVector } from "./animation/emotionDriver";
-import { typewriterPacing } from "./animation/bubblePacing";
+import { typewriterPacing, inferPacingMood } from "./animation/bubblePacing";
 
 interface EmotionData {
   mood: number;
@@ -667,10 +667,12 @@ const transientTimerRef = useRef<number | null>(null);
        streamBufRef.current += delta; // buffer only — no setState here (defeats batching)
        if (firstChunk) {
          firstChunk = false;
-         // Typewriter cadence follows her mood (#10): happy replies flow fast,
-         // sad/worried ones drag with pauses. Same moodLabel as the bubble
-         // shape, so tone and face stay consistent.
-         const pacing = typewriterPacing(moodLabel);
+         // Typewriter cadence follows THIS turn's emotion (#10): happy input
+         // flows fast, sad/worried drags with pauses. The backend moodLabel is
+         // a slow variable (only re-derived after the reply), so we infer the
+         // pacing mood from the user's own words for immediacy; moodLabel is
+         // just the fallback when no emotion keyword is present.
+         const pacing = typewriterPacing(inferPacingMood(text, moodLabel));
          setIsThinking(false);
          fsmRef.current?.forceState(BehaviorState.Talking);
          setBubbleStyle(bubbleClassForMood(moodLabel));

@@ -44,3 +44,32 @@ const PACING_BY_MOOD: Record<string, TypewriterPacing> = {
 export function typewriterPacing(moodLabel: string): TypewriterPacing {
     return PACING_BY_MOOD[moodLabel] ?? PACING_CALM;
 }
+
+// Keyword -> pacing-mood inference from the user's input text.
+//
+// Why not just use the backend moodLabel? mood is a SLOW variable: the backend
+// only re-derives emotion in converse Step 12, AFTER the LLM streams (Step 9),
+// and one sad turn barely moves it. At first-chunk time moodLabel is still last
+// turn's value, so "I'm sad" never reaches this turn's cadence. The user's own
+// words are the only immediate signal available when the first chunk arrives.
+//
+// This is a UI-rhythm heuristic only — no LLM, no state written (architecture
+// #1 respected). Follow-up: have the backend send a single pacing/emotion hint
+// before the stream starts, so this stops duplicating react.rs's job.
+const PACING_KEYWORDS: Record<string, string[]> = {
+    "难过": ["难过", "难過", "伤心", "傷心", "难受", "難受", "哭", "去世", "走了", "没了", "失去", "逝世", "死了", "心痛", "低落", "郁闷", "崩溃"],
+    "担心": ["担心", "擔心", "焦虑", "害怕", "紧张", "不安", "心慌"],
+    "疲惫": ["好累", "很累", "太累", "疲惫", "犯困", "困了", "熬夜", "撑不住", "没力气", "精疲力尽"],
+    "开心": ["开心", "高興", "高兴", "哈哈", "嘻嘻", "嘿嘿", "好玩", "有趣", "太棒", "好棒", "谢谢", "謝謝", "快乐", "好耶"],
+    "调皮": ["调皮", "調皮", "逗你", "恶作剧", "捉弄"],
+};
+
+/// Infer the pacing mood from the user's input text, falling back to the
+/// backend mood label when no emotion keyword is present. Returns one of the
+/// keys understood by `typewriterPacing` (or the fallback verbatim).
+export function inferPacingMood(text: string, fallback: string): string {
+    for (const [mood, words] of Object.entries(PACING_KEYWORDS)) {
+        if (words.some((w) => text.includes(w))) return mood;
+    }
+    return fallback;
+}
