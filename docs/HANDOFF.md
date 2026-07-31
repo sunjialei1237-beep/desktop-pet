@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-07-29**
+> 最后更新：**2026-07-31**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -21,14 +21,114 @@
 | 生命感 回来主动招呼 | ✅ 实跑通过 | loop_runner presence 转换 → welcome_back_bubble |
 | 生命感 情绪连续外显 | ✅ build 过 / 待实跑 | emotionDriver → Live2DCanvas 连续参数插值（P10 emotionBridge）|
 | 生命感 气泡生命力(节奏+glyph) | ✅ 实跑通过 | bubblePacing 打字节奏随情绪(关键词驱动) + bubble-glyph 无文字气泡（#12）|
+| 生命感 昼夜节律接入 | ✅ build 过 / 待今晚实跑 | circadian sleepiness 接入微行为权重（深夜 yawn↑/look_around↓，Tier3 #7）— PID 95248 挂着过夜 |
+| 生命感 Foley 音效 | ✅ 实跑通过 | 真实 Foley 素材 10 接入 + 启动 hi + 权重静默优先 + cooldown + 亲密度分档；sleep 预留（Sleeping 未做）（Tier1 #3）|
 | 对话 流式回复 | ✅ 实跑确认 | ipc::Channel 逐字（emit/listen 命令体内投递延迟+listener 立即 unlisten 全丢→Channel 正解）；用户长回复实跑确认逐字 |
 
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
-**气泡生命力已完成并实跑通过（2026-07-29，Tier 1 #2 ✅）。** 打字节奏随情绪（`bubblePacing` + `inferPacingMood` 关键词驱动，见 §最近一轮 pacing 修复）+ 无文字气泡（glyph 省略号/叹气，#12）。提交 `abb9d49`（特性）+ `ebc1082`（pacing 修复）。release exe 已重建至 `ebc1082`（09:43）。**下一步**：Tier 1 #3 Foley 音效 / Tier 2 Soul 深度（converse 注入 thought），或用户指定。
+**Foley 音效接线补全 + 频率/手感调整 + 气泡位移修复（实跑通过 ✅ 2026-07-31）。** 实跑暴露 Foley 的 App.tsx 接线**从未落地**（soundManager 孤立单例→零声音；旧"Foley 实跑通过"记录错误）→ 补全 10 处接线 + 权重调整（UI 操作双击/右键/发送必响，活物音 +15-20%）+ poke cooldown 5000→2000（修戳身无声）+ 气泡位移（CSS translate 居中解耦动画）。详见 §最近一轮。**Tier2 #4 converse thought（build 过/待实跑）/ circadian（待今晚实跑）**。**下一步**：实跑 #4 / circadian 深夜 / Sleeping 入睡 / consolidation llm-empty bug（踩坑#3 复发）/ 多气泡堆叠 / Tier2 #5/#6。
 
-## §最近一轮 (2026-07-29)：气泡生命力 — 打字节奏随情绪 + 无文字气泡（Tier1 #2）
+## §最近一轮 (2026-07-31)：Foley 接线补全 + 频率调整 + 气泡位移（实跑通过 ✅）
+
+**起因**：用户实跑发现"音效完全没声"+"气泡启动偏右再跳变"+"戳身没声"。诊断：① Foley 的 **App.tsx 接线从未落地**（soundManager 孤立单例，无 import/调用；ContextMenu 要的 soundMuted/onToggleSound props 也没传，TS 报错被 vite esbuild 静默忽略）→ 旧 §历史"Foley 实跑通过 9 触发点"记录错误 ② 气泡 `bubble-*` 动画 keyframes 覆盖 transform 且不含 translateX(-50%)，动画期间丢居中→偏右，结束跳回居中 ③ 戳身无声 = HMR 后 sound 单例重建 buffers 空 + mount effect preload 不重跑 + poke cooldown 5000ms，首次现场加载无声后连戳全被 cooldown 拦。
+
+**实现**（4 文件 + 素材，原则 #6/#10/#11）：
+- `App.tsx`：补全 sound 接线——`import {sound, INTIMATE_THRESHOLD}` + `soundMuted` state + mount effect（`sound.preload()`+`sound.greet()`）+ mute sync + 8 触发点（摸头按 closeness 分档/戳按 pokeCount 分档 poke1-3/drag onMove/land onUp/send/dblclick）+ `handleContextMenu` 加 `sound.play("menu")` + ContextMenu 传 soundMuted/onToggleSound。
+- `soundManager.ts`：权重调整（UI 类 dblclick/menu/send 必响；活物音 pet/poke/drag/land 出声概率 +15-20%，仍保留随机）+ 新增 `menu` trigger + poke cooldown 5000→2000（修戳身）。
+- `ContextMenu.tsx`：soundMuted/onToggleSound props（此前 working tree 已改但 App.tsx 未接）。
+- `styles.css`：气泡居中改用 `translate: -50% 0` 属性（独立于 transform），动画 transform 不再覆盖居中——`.chat-bubble`/`.bubble-pet`/`.hidden` 三处。
+- `public/audio/`：11 素材（10 接入 + sleep 预留）。
+
+**验证（实跑通过 ✅ 2026-07-31）**：tsc ✅ / dev HMR ✅ / 音频文件 fetch 全 200 / 用户确认：摸头/戳/拖动/落地/双击/右键/发送均有声 + 频率手感 OK + 戳身 cooldown 降后响 + 气泡不再偏右跳变。
+
+**踩坑（写入避免重复）**：① **vite dev 用 esbuild 不做类型检查**——TS 错误（如缺 props）不阻断运行，运行时静默失败。改前端接线后必须 `tsc --noEmit` 验证，不能只看 dev 能跑 ② **HMR 后模块单例重建 + mount effect 不重跑**——sound 单例 buffers 清空、preload 不重新触发，首次交互现场加载。dev 下改音效代码后 F5 刷新；release 无 HMR 不受影响 ③ **CSS animation transform 覆盖元素 transform**——居中若靠 `transform: translateX(-50%)`，动画 keyframes 的 transform 会盖掉导致跳变。解法：居中用独立 `translate` 属性。
+
+---
+
+## §历史 (2026-07-31)：converse 注入 surfaced thought（Tier2 #4，build 过 / 待实跑）
+
+**起因**：用户"按执行计划进度继续开发"。HANDOFF §下一步候选 Tier2 #1（北极星 #10 + Soul 深度）。审计发现 `surface_thoughts`（monologue.rs:18）只在 `generate_welcome_back`（proactive.rs:286）消费——**只有用户离开回来才浮现昨晚念头；正常对话从不带出**，thought 若用户没离开/没触发 welcome-back 就永远积压。
+
+**实现**（1 文件 ~20 行，纯内联，原则 #1/#8/#10/#11）：
+- `converse.rs`：Step 8 reminder bridge 之后、user message 之前加 `thought_clause`——调 `surface_thoughts(db)` 取首个 next_interaction thought，拼 system message 注入。措辞**克制**（区别 welcome-back 的"招呼里带出"）：「话题自然关联才轻带，无关别强提，正常聊」——避免她每轮翻昨晚念头。Err 降级空串（不阻断对话）。
+- **不改签名**（踩坑 #4 规避，converse 内部加逻辑，send_message + 全 harness 零改动）/ **不增 LLM 调用**（#8 复用同一次 converse 的 LLM turn）/ **消费性**（surface_thoughts mark surfaced；welcome-back 与 converse 谁先触发谁消费，thought 只浮现一次，自洽）/ **#11 可追溯**（`[converse] surfaced thought` log）。
+
+**架构契合**：#1 Rust 拼 prompt（含克制措辞），LLM 只配音 / #8 零额外 LLM / #10 正常对话也"记得昨晚念头"=生命感 / #11 surfaced log 可追溯。
+
+**验证（build 过 ✅ / 待实跑）**：`cargo test --lib` **199 passed**（0 failed）/ `cargo check --tests` 全 harness 编译 ✅（17.99s）。**待实跑**：`npm run tauri dev`，等 reflection 产 thought（或手动插一条 next_interaction thought 到 DB）→ 对话观察她自然带出。
+
+**Scope 边界**（follow-up，避免过度）：① thought 浮现无频率门控（每次对话 surface_thoughts 取 1）——现 thought 产出稀疏（reflection 每日≤1），不构成问题，多了再加"每 N 轮最多 1 次"门控 ② converse 无 thought 专用 harness（需完整 AppState 构造，重），靠 surface_thoughts 既有单测 + 实跑覆盖 ③ ConversationResult 未加 has_thought 字段（log 已够 #11，减少改动面）。
+
+---
+
+## §历史 (2026-07-29)：Foley 音效 — 真实素材接入（实跑通过 ✅，Tier1 #3 完成）
+
+**起因**：用户提供 11 个真实 Foley 素材（桌面/新建文件夹，中文 mp3）。此前合成柔软占位在跑（见本节末历史）。
+
+**素材映射（原名 → public/audio 语义名 → 角色）**：
+- voice/surprise-soft（ow：轻微意外/疑惑）｜voice/startle-short（啊1 短促：戳受惊）｜voice/soft-ah（啊 稍长：摸头满足）
+- voice/annoyed（生气：连戳3+）｜voice/laugh（笑：开心/亲近摸头）
+- foley/cloth（布料声）｜foley/land（落地声）｜foley/lift（跳：抓起）｜ui/send（UI音效：发送）
+- voice/greeting（hi：启动打招呼）｜voice/sleep（睡觉声：**仍预留**，Sleeping 入睡机制未做）
+
+**核心设计（#10 宁少勿突兀 + #11 集中可调）**：
+- `soundManager.ts` 重写为**纯 wav 加载**（fetch public/audio + decodeAudioData + AudioBufferSourceNode），**移除原 Web Audio 合成**。
+- **权重随机 + 静默优先**：每 trigger 最大权重是"静默"（摸头陌生 静默70/布料20/ow10；亲近 静默45/啊25/笑15/布料15）。出声=惊喜非常态。
+- **cooldown 出声/静默都计时**：rapid tap 不能叠声。摸头3s / 戳5s / 拖动0.8s / 落地0.6s / 发送0.4s / 双击1s。
+- **亲密度分档**：摸头按 `closenessRef`（前端现成，15s 拉）≥ `INTIMATE_THRESHOLD`(40) 选 pet-intimate（啊/笑）vs pet-stranger（布料/ow）。声音=关系成长。
+- **戳递进**：复用已有 `pokeCountRef` n=1/2/3+，音效跟随（poke1 ow/啊1 → poke2 啊1 → poke3 生气）。
+- `preload()`：App 启动 mount effect 预热所有 buffer，首交无 fetch 延迟。
+
+**触发点（App.tsx 9 处）**：摸头(773 按 closeness 分档) / 戳(801 按 n 分档) / 拖动(596) / 落地(609) / 发送(649 click→send) / 双击开对话(888 新接 dblclick) / **启动招呼（preload effect 调 `sound.greet()`）**。drag/land id 不变。ContextMenu 静音项不变（#6）。
+
+**启动招呼 `greet()`（autoplay 处理）**：启动无用户手势 → AudioContext `suspended` 直接播不出。`greet()` 启动即尝试播 hi；若 ctx 挂起，挂一次性 `pointerdown` listener，首次互动 resume ctx 后补播（保证总能听到招呼）。`greeted`/`greetArmed` 双 flag 防 StrictMode 双 mount 重复。抽出 `playSample(key,ctx)` 给 play/greet 共用。**素材现状**：11 个接 10（含 greeting），仅 sleep 未接（Sleeping 未做）。
+
+**验证（实跑通过 ✅ 2026-07-29）**：tsc ✅ / build ✅（2.52s）/ dist/audio 11 文件全打包 ✅。**CSP 排查**：`connect-src 'self'` 含同源 → fetch public 资源 release 不拦（同 Live2DCanvas `/live2d/` 模式），无 release-only 坑。`npm run tauri dev` 实跑：用户确认 9 触发点 + 启动 hi + 亲密度档效果不错。
+
+**踩坑**：`import.meta.env.BASE_URL` 无类型（项目 tsconfig 无 vite/client），改硬编码 `/audio/`（同 Live2DCanvas 既有模式）。
+
+**follow-up**：hi/sleeping 预留未接；走路脚步声 loop、Sleeping 入睡机制同期待办；权重/cooldown/阈值全集中 `soundManager.ts` 的 `TRIGGERS`，实跑后按手感调。
+
+---
+
+### 历史（已被真实素材取代）：合成柔软占位
+
+**起因**：用户选 §下一步 Tier1 #3（北极星 #10）。审计 P11 标记"Foley 音效未做"，此前零音频代码。
+
+**素材试错（关键教训）**：
+1. 下载 CC0：从 [Kenney Interface Sounds](https://github.com/Calinou/kenney-interface-sounds)（GitHub raw 可 curl，避 Freesound 需登录）挑 5 个 UI 音（pluck/tick/maximize/drop/select）→ **实跑用户反馈"太难听、都很尖锐"**。根因：UI 音为界面反馈设计，高频瞬态、清脆冰冷，放柔软桌宠上刺耳。**下载素材风格不可控、无法预听筛选**——这正是当初推荐合成的核心理由。
+2. 改 Web Audio 合成：sine（几乎无谐波）+ 低频基音 + 低通滤波 + 慢 attack（无瞬态）+ 长 release = 物理上不可能尖锐。每音参数集中可调（`SPECS`）。
+3. 用户决定**自找真实 Foley 素材** → 本项 ⏸️ 列为待办。
+
+**已落地（保留，不再折腾）**：
+- `src/audio/soundManager.ts`：纯 Web Audio 合成版（`SPECS` 5 音参数 + `synth()` + `muted`/`toggleMuted`）。**已删 `public/sounds` wav**（不再用）。结构预留：未来加 wav 只需 `play` 里加"wav 优先 fallback 合成"分支，`synth` 已独立
+- `App.tsx`：5 触发点接线（`handleHeadClick`→pet / `handleBodyClick`→poke / `handleDragStart` onMove→drag + onUp→land / `handleSend`→click）+ `soundMuted` state + `toggleSound` + ContextMenu 传参
+- `ContextMenu.tsx`："静音/开启声音"项（#6）
+
+**架构契合**：#5 Body 层零 LLM 依赖（断网照响）/ #6 右键静音，muted 时 no-op / #8 本地 DSP 零成本 / #10 交互有声=活物感。
+
+**验证**：`tsc` ✅ / `build` ✅（481 modules）/ release exe 重建（PID 98956）。合成柔软占位在跑。
+
+**⏸️ 待办（用户自找素材后接入）**：用户提供 pet/poke/drag/land/click 真实 Foley wav → soundManager 加 wav 加载分支（play 优先 wav、fallback 合成）+ drop `public/sounds/` + 重建。走路脚步声 loop（需 isWalking 周期触发）同期待办。
+
+## §历史 (2026-07-29)：circadian 接入微行为（Tier3 #7）
+
+**起因**：用户选 §下一步 Tier3 #7（北极星 #10 生命感）。审计 P10 标记"circadian 未接入微行为选择"——`getCircadianState()` 每帧算出 `sleepiness`（Morning 0.1 / DeepNight 0.9）但 `fsm.tick(App.tsx:199)` 根本没接收；`microBehavior` 的 `IDLE_BEHAVIORS` 权重写死、与时段无关 → 深夜桌宠和白天一样精神。顺带发现 `Sleeping` 状态渲染/参数全就绪（behaviorDriver 闭眼慢呼吸 / Live2D f05 / PetCharacter Zz）但**从未被自动触发**（无人 forceState，微行为池无 sleep 项）。
+
+**实现**（3 文件，纯前端零后端，原则 #1/#9/#10/#11）：
+- `microBehavior.ts`：`IdleBehavior` 加可选 `sleepy?: number`（困倦权重倍数，JSDoc 固化公式语义 + 数学预期）；`IDLE_BEHAVIORS` 8 项填值；`PickOptions` 加 `sleepiness`；权重循环加 `w *= 1 + (sleepy-1)*sleepiness`（`Math.max(0.01,w)` 兜底非负）
+- `fsm.ts`：`tick` 签名加 `sleepiness: number`（closeness 后 now 前），透传进 `pickBehavior` 回调 opts
+- `App.tsx`：`fsm.tick(...)` 调用喂入 `circadianRef.current.sleepiness`（ref 每帧已在 :542 更新）
+
+**架构契合**：#1 纯规则无 LLM / #9 MVP 单标量 sleepiness 线性插值刚好够用 / #10 深夜她真的犯困=生命感 / #11 sleepy 字段 + 公式 JSDoc 可追溯。
+
+**验证（build 过 ✅ / 待实跑）**：`tsc --noEmit` ✅ / `npm run build` ✅（480 modules）。**数学验证**（全池可见、closeness 足够）：白天 sleepiness=0.1 → yawn 占比 ~10.7%、look_around ~17.8%；深夜 sleepiness=0.9 → yawn ~32.2%（3×↑）、look_around ~6.5%（↓）。sleepiness=0 乘子=1 白天不变。**待实跑**：改系统时间到 2-6 点（DeepNight）观察 yawn 频率上升。
+
+**Scope 边界**（follow-up，避免过度）：① `speedModifier`/`energyModifier` 未接动画速度/能量（circadian.ts 注释声称输出 speed，但 behaviorDriver 未消费）② **Sleeping 自动入睡/唤醒机制未做**——权重调制让深夜多 yawn，但不会真正 forceState(Sleeping)；Sleeping 是持续态（fsm tick 不自动退出），完整入睡需配"用户交互（戳/摸/对话）唤醒"机制，是更大设计 ③ idle_weights 仍硬编码（非 JSON 配置），可调但非数据驱动。
+
+## §历史 (2026-07-29)：气泡生命力 — 打字节奏随情绪 + 无文字气泡（Tier1 #2）
 
 **起因**：用户选 §下一步 Tier1 #2（北极星 #10 生命感，对话是核心交互）。审计发现气泡形态动画已有 5 种 keyframes（styles.css:445-501），但缺两块：①打字节奏固定 30ms 无论情绪 ②无文字气泡完全缺（#12 沉默表达未落地）。
 
@@ -175,8 +275,8 @@ Kill List 三闭环全部端到端跑通（Body→Memory→Soul）。逐项审�
 | P7 Planner | ⚠️ | director+actor 闭环；**流式逐字渲染未做** |
 | P8 Pending | ✅ | 闭环2 实跑 |
 | P9 Body 窗口 | ✅ | Live2D/透明/点击穿透 |
-| P10 FSM | ⚠️ | fsm+emotionDriver(连续表情)+microBehavior ✅；**circadian 未接入微行为选择**；idle_weights 硬编码(非 JSON) |
-| P11 交互 | ⚠️ | 摸头/戳/注意力三态 ✅；**气泡生命力简化(无形态/节奏)、Foley 音效未做、Alt+Space 全局键未做** |
+| P10 FSM | ⚠️→✅ circadian | fsm+emotionDriver(连续表情)+microBehavior+circadian sleepiness 接入 ✅；idle_weights 硬编码(非 JSON，可调) |
+| P11 交互 | ⚠️ | 摸头/戳/注意力三态 ✅；气泡生命力(节奏+glyph) ✅；Foley 音效 5 音 ✅；**走路脚步声 loop、Alt+Space 全局键未做** |
 | P12 物理 | ⚠️ | 空间(窝/回巢)/昼夜 ✅；**自由落体/任务栏弹跳简化(松手停原地)** |
 | P13 Soul | ⚠️ | reflection/monologue/consolidation+慢循环闭环 ✅；**TurnThreshold/MajorEvent 触发器、Consolidation 反向更新 Facts 未做** |
 | P14 感知 | ✅ | time/presence/window 模块全 |
@@ -198,15 +298,15 @@ Kill List 三闭环已完成，现按"提升体验/生命感"→"闭环深度"�
 **Tier 1 — 生命感/体验（#10 北极星，对话是核心交互）**
 1. ✅ **流式回复**（已完成并实跑确认）：ipc::Channel 逐字渲染（短回复看不出逐字是 DeepSeek-v4 reasoning content 占比小，非 bug）。详见 §最近一轮。
 2. ✅ **气泡生命力**（P11.3，已完成 `abb9d49`，待实跑）：打字节奏随情绪（`bubblePacing` 6 档）+ 无文字气泡（glyph 省略号/叹气，#12）。形态动画本就有 5 种 keyframes。「害羞慢现」缺后端 mood 标签未做（follow-up）。
-3. **Foley 音效**（P11.5）：pet/poke/drag/walk/sit/sleep/land/click wav。几十 KB 音效对生命感提升 >> 文字。
+3. ✅ **Foley 音效**（P11.5，已完成实跑通过）：真实素材 10 接入（ow/啊/啊1/生气/笑/布料/落地/跳/UI/hi）+ 权重静默优先 + cooldown + 亲密度分档 + 启动招呼(autoplay 补播)；sleep 预留（Sleeping 未做）。详见 §最近一轮。
 
 **Tier 2 — Soul/对话深度（闭环增强）**
-4. **converse 注入 surfaced thought**：正常对话也带出昨晚念头（现只 welcome-back）。
+4. ✅ **converse 注入 surfaced thought**（已完成，build 过 / 待实跑）：正常对话也带出昨晚念头。converse Step 8 后注入克制措辞的 thought_clause（#8 零额外 LLM、消费性与 welcome-back 自洽）。详见 §最近一轮。
 5. **Reflection TurnThreshold/MajorEvent 触发器**：每 30 轮 / importance>0.85 自动反思（现只 Daily）。
 6. **Consolidation 反向更新 Facts**（#9 V2）：压缩总结中的事实回写 Facts。
 
 **Tier 3 — Body 完善**
-7. **circadian 接入微行为**：DeepNight sleepy 权重（现 fsm.tick 不接收 circadian）。
+7. ✅ **circadian 接入微行为**（已完成，build 过 / 待实跑）：sleepiness 调制 idle 权重（深夜 yawn↑/look_around↓）。详见 §最近一轮。follow-up：speedModifier 未接动画速度；Sleeping 自动入睡/唤醒机制（现只调权重，未真正入睡）。
 8. **完整物理**（P12.1）：自由落体 + 任务栏弹跳（现简化松手停原地）。
 
 **Tier 4 — 开发者基建（#11 Explainability）**
