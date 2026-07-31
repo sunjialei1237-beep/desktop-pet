@@ -6,11 +6,13 @@ interface ContextMenuProps {
     onClose: () => void;
     onExportMemory: () => void;
     onAwayMode: () => void;
+    soundMuted: boolean;
+    onToggleSound: () => void;
     onQuit: () => void;
     onDevTools: () => void;
 }
 
-export function ContextMenu({ x, y, onClose, onExportMemory, onAwayMode, onQuit, onDevTools }: ContextMenuProps) {
+export function ContextMenu({ x, y, onClose, onExportMemory, onAwayMode, soundMuted, onToggleSound, onQuit, onDevTools }: ContextMenuProps) {
     const ref = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -51,6 +53,17 @@ export function ContextMenu({ x, y, onClose, onExportMemory, onAwayMode, onQuit,
                     <path d="M12 6v6l4 2" />
                 </svg>
                 <span>暂时离开</span>
+            </button>
+            <button className="context-menu-item" onClick={() => { onToggleSound(); onClose(); }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                    {soundMuted ? (
+                        <line x1="22" y1="9" x2="16" y2="15" />
+                    ) : (
+                        <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07" />
+                    )}
+                </svg>
+                <span>{soundMuted ? "开启声音" : "静音"}</span>
             </button>
             <div className="context-menu-divider" />
             <button className="context-menu-item" onClick={() => { onDevTools(); onClose(); }}>

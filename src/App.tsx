@@ -15,6 +15,7 @@ import { SpatialMemory } from "./animation/spatial";
 import { getCircadianState, deepNightMessages, TimeOfDay } from "./animation/circadian";
 import { DEFAULT_EMOTION, type EmotionVector } from "./animation/emotionDriver";
 import { typewriterPacing, inferPacingMood } from "./animation/bubblePacing";
+import { sound, INTIMATE_THRESHOLD } from "./audio/soundManager";
 
 interface EmotionData {
   mood: number;
@@ -108,6 +109,7 @@ const transientTimerRef = useRef<number | null>(null);
   const [petPos, setPetPos] = useState<PetPosition | null>(null);
  const [isWalking, setIsWalking] = useState(false);
  const [isBeingDragged, setIsBeingDragged] = useState(false);
+ const [soundMuted, setSoundMuted] = useState(false);
  const circadianRef = useRef(getCircadianState());
  const pointerRef = useRef({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
  const thinkStartRef = useRef(0);
@@ -125,6 +127,14 @@ const transientTimerRef = useRef<number | null>(null);
  const isThinkingRef = useRef(false);
  useEffect(() => { bubbleVisibleRef.current = bubbleVisible; }, [bubbleVisible]);
  useEffect(() => { isThinkingRef.current = isThinking; }, [isThinking]);
+ // Foley: preload all buffers + startup greeting on mount (greeting defers to
+ // the first pointerdown if AudioContext is suspended — autoplay policy). Mute
+ // mirrors the singleton so the menu toggle and play() agree (#6/#11).
+ useEffect(() => {
+   sound.preload();
+   sound.greet();
+ }, []);
+ useEffect(() => { sound.setMuted(soundMuted); }, [soundMuted]);
   // Click-through state (ADR Phase 2).
   const ignoreRef = useRef(false);
   const windowOriginRef = useRef<{ x: number; y: number } | null>(null); // physical px
@@ -591,6 +601,7 @@ const transientTimerRef = useRef<number | null>(null);
       // Real drag: hand off to OS compositor (in lockstep with pointer, no jitter).
       dragStarted = true;
       setIsBeingDragged(true);
+      sound.play("drag");
       const win = getCurrentWindow();
       win.startDragging().catch((err) => console.warn("[drag] startDragging failed", err));
       cleanup(); // stop watching; compositor drives movement from here
@@ -603,6 +614,7 @@ const transientTimerRef = useRef<number | null>(null);
         return;
       }
       setIsBeingDragged(false);
+      sound.play("land");
       const win = getCurrentWindow();
       win.scaleFactor()
         .then((f) => win.outerPosition().then((p) => ({ f, p })))
@@ -642,6 +654,7 @@ const transientTimerRef = useRef<number | null>(null);
     if (!text) { setInputVisible(false); return; }
     setInputText("");
     setInputVisible(false); // 轮次制：发送后立即收起输入框，让桌宠回复气泡独占显示
+    sound.play("send");
    setIsThinking(true);
    fsmRef.current?.forceState(BehaviorState.Thinking);
     thinkStartRef.current = Date.now();
@@ -764,6 +777,7 @@ const transientTimerRef = useRef<number | null>(null);
     if (pendingPokeRef.current) clearTimeout(pendingPokeRef.current);
     pendingPokeRef.current = setTimeout(() => {
       pendingPokeRef.current = null;
+      sound.play(closenessRef.current >= INTIMATE_THRESHOLD ? "pet-intimate" : "pet-stranger");
       invoke("pet_head").catch(() => {});
       fsmRef.current?.transition(BehaviorState.Embarrassed);
       const reactions = ["嘿嘿…", "谢谢你～", "抹抹~"];
@@ -785,6 +799,7 @@ const handleBodyClick = useCallback(() => {
     fsmRef.current?.transition(BehaviorState.Embarrassed);
     setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 1500);
     const n = pokeCountRef.current;
+    sound.play(n >= 3 ? "poke3" : n === 2 ? "poke2" : "poke1");
     if (n === 1) {
       showBubble("？", 2500, "bubble-worried");
     } else if (n === 2) {
@@ -798,6 +813,7 @@ const handleBodyClick = useCallback(() => {
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    sound.play("menu");
     setContextMenu({ x: e.clientX, y: e.clientY });
   }, []);
 
@@ -873,6 +889,7 @@ const handleBodyClick = useCallback(() => {
        ref={petRef}
       className={`pet-char-wrapper ${isWalking ? "walking" : ""} ${isBeingDragged ? "dragging" : ""}`}
       onDoubleClick={() => {
+        sound.play("dblclick");
         if (pendingPokeRef.current) { clearTimeout(pendingPokeRef.current); pendingPokeRef.current = null; }
         setBubbleVisible(false);
         if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current);
@@ -912,6 +929,8 @@ const handleBodyClick = useCallback(() => {
           onClose={() => setContextMenu(null)}
           onExportMemory={handleExportMemory}
           onAwayMode={handleAwayMode}
+          soundMuted={soundMuted}
+          onToggleSound={() => setSoundMuted(sound.toggleMuted())}
          onQuit={handleQuit}
           onDevTools={() => invoke("open_devtools")}
        />
