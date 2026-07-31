@@ -193,6 +193,38 @@ pub async fn converse(
         });
     }
 
+    // Surface any internal thought the last reflection left for "next time the
+    // user shows up" (Design 7.1 / P13.2: she really thought of it, timestamp
+    // proves it). Folded into THIS LLM turn — no extra call (Principle 8).
+    // Consumed once: surface_thoughts marks it surfaced, so it fires at most
+    // once whether voiced here or in a welcome-back bubble. Restrained: she
+    // only drops it in when the turn naturally relates; otherwise she just chats.
+    let thought_clause = match crate::soul::monologue::surface_thoughts(db) {
+        Ok(thoughts) => match thoughts.first() {
+            Some(t) => {
+                log::info!(
+                    "[converse] surfaced thought: {:?}",
+                    t.content.chars().take(40).collect::<String>()
+                );
+                Some(format!(
+                    "（系统提示：你之前独处时心里有过一个念头：「{}」。如果这轮聊天能自然关联到，可以轻轻带一点，像真的惦记过；但如果话题无关，就别强提，正常聊就好。）",
+                    t.content
+                ))
+            }
+            None => None,
+        },
+        Err(e) => {
+            log::warn!("[converse] surface_thoughts failed: {}", e);
+            None
+        }
+    };
+    if let Some(clause) = thought_clause {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: clause,
+        });
+    }
+
     messages.push(ChatMessage {
         role: "user".to_string(),
         content: text.to_string(),
