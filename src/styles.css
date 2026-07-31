@@ -64,7 +64,7 @@ html, body, #root {
   position: absolute;
   bottom: var(--bubble-bottom);
   left: 50%;
-  transform: translateX(-50%);
+  translate: -50% 0;
   max-width: 360px;
   min-width: 60px;
   background: var(--bubble-bg);
@@ -96,7 +96,7 @@ html, body, #root {
 .chat-bubble.bubble-pet {
   bottom: var(--bubble-bottom);
   left: 40%;
-  transform: translateX(-50%);
+  translate: -50% 0;
 }
 
 .chat-bubble.bubble-pet::after {
@@ -106,7 +106,7 @@ html, body, #root {
 .chat-bubble.hidden {
   opacity: 0;
   pointer-events: none;
-  transform: translateX(-50%) translateY(8px);
+  transform: translateY(8px);
 }
 
 .input-bubble {
