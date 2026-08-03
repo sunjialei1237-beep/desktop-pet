@@ -12,6 +12,17 @@ use crate::db::reflections::{InternalThought, Reflection};
 use crate::llm::client::{ChatMessage, LlmClient};
 use serde::{Deserialize, Serialize};
 
+/// Event-driven reflection cooldown (TurnThreshold/MajorEvent), independent of
+/// the 20h Daily cycle. Caps event-driven frequency (Architecture Principle 8).
+const EVENT_REFLECTION_COOLDOWN_HOURS: i64 = 1;
+/// Conversation episodes accumulated since the last reflection that trigger a
+/// TurnThreshold run (design 5.9 / Tier2 #5). Only episodes that actually became
+/// memories count — gate-blocked small talk does not.
+const TURN_THRESHOLD_EPISODES: i64 = 30;
+/// A single episode above this importance since the last reflection triggers a
+/// MajorEvent run (something significant happened, worth reflecting on now).
+const MAJOR_EVENT_IMPORTANCE: f64 = 0.85;
+
 /// What triggered this reflection run.
 #[derive(Debug, Clone)]
 pub enum ReflectionTrigger {
@@ -163,12 +174,8 @@ pub async fn run_reflection(
     Ok(ReflectionResult { reflection_id, summary: parsed.reflection, new_trait_count, new_thought_count })
 }
 
-/// Whether enough time (>20h) has passed since the last reflection to run
-/// another Daily cycle. Returns true when there is no prior reflection.
-///
-/// Pure (sync, no LLM) so the cooldown logic is unit-testable independently of
-/// the LLM call. Architecture Principle 8: Reflection runs at most once daily.
-pub fn should_run_reflection(db: &DbState) -> bool {
+/// Timestamp of the most recent reflection (None if none recorded). Pure.
+fn last_reflection_at(db: &DbState) -> Option<chrono::DateTime<chrono::Utc>> {
     let last: Option<String> = db
         .with_conn(|conn| {
             Ok(conn
@@ -180,17 +187,83 @@ pub fn should_run_reflection(db: &DbState) -> bool {
                 .unwrap_or(None))
         })
         .unwrap_or(None);
+    last.and_then(|s| {
+        chrono::DateTime::parse_from_rfc3339(&s)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+    })
+}
 
-    match last {
+/// Whether enough time (>20h) has passed since the last reflection to run
+/// another Daily cycle. Returns true when there is no prior reflection.
+///
+/// Pure (sync, no LLM) so the cooldown logic is unit-testable independently of
+/// the LLM call. Architecture Principle 8: Reflection runs at most once daily.
+pub fn should_run_reflection(db: &DbState) -> bool {
+    match last_reflection_at(db) {
         None => true,
-        Some(last) => chrono::DateTime::parse_from_rfc3339(&last)
-            .map(|dt| (chrono::Utc::now() - dt.with_timezone(&chrono::Utc)).num_hours() > 20)
-            .unwrap_or(true),
+        Some(last) => (chrono::Utc::now() - last).num_hours() > 20,
     }
 }
 
-/// Runs a Daily reflection if `should_run_reflection` says it's due.
-/// Returns true when a reflection ran, false when skipped (too soon).
+/// Whether a TurnThreshold reflection is due: at least `EVENT_REFLECTION_COOLDOWN_HOURS`
+/// since the last reflection AND >= `TURN_THRESHOLD_EPISODES` conversation episodes
+/// accumulated since. The 1h cooldown is independent of the 20h Daily cycle so a
+/// chatty day can trigger one extra reflection, while the ceiling caps cost (#8).
+/// Pure (sync, no LLM) for unit testing.
+pub fn should_run_turn_threshold(db: &DbState) -> bool {
+    let last = match last_reflection_at(db) {
+        None => return true, // never reflected -> eligible
+        Some(t) => t,
+    };
+    if (chrono::Utc::now() - last).num_hours() < EVENT_REFLECTION_COOLDOWN_HOURS {
+        return false;
+    }
+    let since = last.to_rfc3339();
+    let count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT COUNT(*) FROM episodes WHERE source_type='conversation' AND created_at > ?1",
+                    rusqlite::params![since],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0))
+        })
+        .unwrap_or(0);
+    count >= TURN_THRESHOLD_EPISODES
+}
+
+/// Whether a MajorEvent reflection is due: at least `EVENT_REFLECTION_COOLDOWN_HOURS`
+/// since the last reflection AND some episode above `MAJOR_EVENT_IMPORTANCE` has
+/// arrived since (something significant happened). Pure (sync, no LLM) for unit testing.
+pub fn should_run_major_event(db: &DbState) -> bool {
+    let last = match last_reflection_at(db) {
+        None => return true,
+        Some(t) => t,
+    };
+    if (chrono::Utc::now() - last).num_hours() < EVENT_REFLECTION_COOLDOWN_HOURS {
+        return false;
+    }
+    let since = last.to_rfc3339();
+    let count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT COUNT(*) FROM episodes WHERE importance > ?1 AND created_at > ?2",
+                    rusqlite::params![MAJOR_EVENT_IMPORTANCE, since],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0))
+        })
+        .unwrap_or(0);
+    count >= 1
+}
+
+/// Runs a reflection if any trigger is due — priority: Daily (>20h cooldown),
+/// then MajorEvent (>=1 high-importance episode, 1h cooldown), then TurnThreshold
+/// (>=30 conversation episodes, 1h cooldown). At most one runs per call.
+/// Returns true when a reflection ran, false when all skipped.
 /// Errors propagate so callers (IPC command, life loop) can decide how to
 /// handle them — the command layer swallows them to keep the frontend contract.
 ///
@@ -200,11 +273,18 @@ pub async fn maybe_run_if_due(
     db: &DbState,
     llm: &LlmClient,
 ) -> Result<bool, String> {
-    if !should_run_reflection(db) {
+    let trigger = if should_run_reflection(db) {
+        ReflectionTrigger::Daily
+    } else if should_run_major_event(db) {
+        ReflectionTrigger::MajorEvent
+    } else if should_run_turn_threshold(db) {
+        ReflectionTrigger::TurnThreshold
+    } else {
         return Ok(false);
-    }
-    let r = run_reflection(ReflectionTrigger::Daily, db, llm).await?;
-    log::info!("Reflection ran (daily): {}", r.summary);
+    };
+    let label = trigger.as_str();
+    let r = run_reflection(trigger, db, llm).await?;
+    log::info!("Reflection ran ({}): {}", label, r.summary);
     Ok(true)
 }
 
@@ -301,5 +381,101 @@ mod tests {
         let db = test_db();
         insert_ref_at(&db, "ref_old", 25);
         assert!(should_run_reflection(&db), "25h ago -> past 20h cooldown");
+    }
+
+    fn insert_episode_at(db: &DbState, id: &str, hours_ago: i64, importance: f64, source_type: &str) {
+        let ts = (chrono::Utc::now() - chrono::Duration::hours(hours_ago)).to_rfc3339();
+        db.with_conn(|conn| {
+            crate::db::episodes::insert(conn, &crate::db::episodes::Episode {
+                id: id.to_string(),
+                time: ts.clone(),
+                summary: "s".to_string(),
+                emotion: None,
+                importance,
+                is_landmark: false,
+                subject: "user".to_string(),
+                participants: None,
+                topics: None,
+                source_type: source_type.to_string(),
+                source_conversation_id: None,
+                source_turn: None,
+                memory_strength: 0.5,
+                recall_count: 0,
+                last_recalled_at: None,
+                consolidated: false,
+                created_at: ts,
+            })
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn turn_threshold_not_enough_episodes() {
+        let db = test_db();
+        insert_ref_at(&db, "ref_old", 2); // >1h cooldown elapsed
+        for i in 0..29 {
+            insert_episode_at(&db, &format!("ep{i}"), 1, 0.2, "conversation");
+        }
+        assert!(!should_run_turn_threshold(&db), "29 < 30 -> not due");
+    }
+
+    #[test]
+    fn turn_threshold_enough_episodes() {
+        let db = test_db();
+        insert_ref_at(&db, "ref_old", 2);
+        for i in 0..30 {
+            insert_episode_at(&db, &format!("ep{i}"), 1, 0.2, "conversation");
+        }
+        assert!(should_run_turn_threshold(&db), "30 conversation episodes -> due");
+    }
+
+    #[test]
+    fn turn_threshold_skips_non_conversation_episodes() {
+        let db = test_db();
+        insert_ref_at(&db, "ref_old", 2);
+        for i in 0..30 {
+            insert_episode_at(&db, &format!("ep{i}"), 1, 0.2, "consolidation");
+        }
+        assert!(!should_run_turn_threshold(&db), "non-conversation episodes don't count");
+    }
+
+    #[test]
+    fn turn_threshold_within_cooldown() {
+        let db = test_db();
+        insert_ref_at(&db, "ref_recent", 0); // <1h
+        for i in 0..30 {
+            insert_episode_at(&db, &format!("ep{i}"), 0, 0.2, "conversation");
+        }
+        assert!(!should_run_turn_threshold(&db), "within 1h cooldown -> skip");
+    }
+
+    #[test]
+    fn turn_threshold_no_prior_reflection() {
+        let db = test_db();
+        assert!(should_run_turn_threshold(&db), "never reflected -> eligible");
+    }
+
+    #[test]
+    fn major_event_high_importance() {
+        let db = test_db();
+        insert_ref_at(&db, "ref_old", 2);
+        insert_episode_at(&db, "ep_big", 1, 0.9, "conversation");
+        assert!(should_run_major_event(&db), "importance 0.9 > 0.85 -> due");
+    }
+
+    #[test]
+    fn major_event_low_importance() {
+        let db = test_db();
+        insert_ref_at(&db, "ref_old", 2);
+        insert_episode_at(&db, "ep_small", 1, 0.5, "conversation");
+        assert!(!should_run_major_event(&db), "0.5 < 0.85 -> not due");
+    }
+
+    #[test]
+    fn major_event_within_cooldown() {
+        let db = test_db();
+        insert_ref_at(&db, "ref_recent", 0);
+        insert_episode_at(&db, "ep_big", 0, 0.9, "conversation");
+        assert!(!should_run_major_event(&db), "within 1h cooldown -> skip");
     }
 }

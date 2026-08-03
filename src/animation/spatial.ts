@@ -4,7 +4,7 @@
 
 import type { PetPosition } from "./physics";
 
-const RETURN_DELAY = 30; // seconds before auto-return
+const RETURN_DELAY = 900; // seconds before auto-return (15 min, per user 08-01)
 const WALK_SPEED = 60; // px/s
 
 export class SpatialMemory {

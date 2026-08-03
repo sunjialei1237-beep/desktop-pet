@@ -19,7 +19,7 @@ pub struct Fact {
 /// Inserts a fact. If the exact (category, key, value) already exists,
 /// increments mention_count instead of creating a duplicate.
 pub fn dedup_insert(conn: &Connection, fact: &Fact) -> Result<(), String> {
-    // Check for existing identical fact
+    // Case 1: identical ACTIVE fact -> increment mention_count.
     let existing_id: Option<String> = conn
         .query_row(
             "SELECT id FROM facts WHERE category=?1 AND key=?2 AND value=?3
@@ -36,6 +36,30 @@ pub fn dedup_insert(conn: &Connection, fact: &Fact) -> Result<(), String> {
             params![fact.updated_at, id],
         )
         .map_err(|e| format!("Failed to update fact mention_count: {}", e))?;
+        return Ok(());
+    }
+
+    // Case 2: identical but EXPIRED fact -> revive it. A fresh INSERT would
+    // violate UNIQUE(category, key, value) because the expired row still
+    // exists; reviving keeps the row (and its mention history) while making
+    // it active again.
+    let expired_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM facts WHERE category=?1 AND key=?2 AND value=?3
+             AND valid_to IS NOT NULL",
+            params![fact.category, fact.key, fact.value],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+
+    if let Some(id) = expired_id {
+        conn.execute(
+            "UPDATE facts SET valid_to = NULL, confidence = ?1, source_episode = ?2,
+                mention_count = mention_count + 1, updated_at = ?3 WHERE id = ?4",
+            params![fact.confidence, fact.source_episode, fact.updated_at, id],
+        )
+        .map_err(|e| format!("Failed to revive expired fact: {}", e))?;
         return Ok(());
     }
 
@@ -182,6 +206,35 @@ mod tests {
             // Old fact should be expired
             let active = get_active(conn, "preference", "drink")?;
             assert_eq!(active.len(), 0, "expired fact should not be active");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_dedup_insert_revives_expired() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            dedup_insert(conn, &test_fact("f1", "preference", "drink", "coffee"))?;
+            expire_old(conn, "preference", "drink", "2026-07-20T00:00:00")?;
+
+            // Same (category, key, value) arrives again: must revive the row,
+            // not fail on UNIQUE(category, key, value).
+            let mut revived = test_fact("f2", "preference", "drink", "coffee");
+            revived.source_episode = Some("ep_new".to_string());
+            conn.execute(
+                "INSERT INTO episodes (id, time, summary, importance, subject, source_type, memory_strength, recall_count, consolidated, created_at)
+                 VALUES ('ep_new', '2026-07-20T00:00:00', 's', 0.5, 'user', 'conversation', 0.5, 0, 0, '2026-07-20T00:00:00')",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            dedup_insert(conn, &revived)?;
+
+            let active = get_active(conn, "preference", "drink")?;
+            assert_eq!(active.len(), 1, "expired fact should be revived as active");
+            assert_eq!(active[0].id, "f1", "revive keeps the original row id");
+            assert_eq!(active[0].mention_count, 2, "revive increments mention_count");
+            assert_eq!(active[0].source_episode.as_deref(), Some("ep_new"));
             Ok(())
         })
         .unwrap();

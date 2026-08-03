@@ -163,7 +163,7 @@ pub async fn generate(
     messages.push(ChatMessage {
         role: "user".to_string(),
         content: format!(
-            "（你刚刚突然想起了这件事，想主动跟用户说。提起的记忆：{}。按规则 8/8a/8b 回复。）",
+            "（你刚刚突然想起了这件事，想主动跟用户说。你想起来的只有这一件：{}。只能围绕它原意来聊，它是什么就说什么，绝不能换成别的项目、事件或名字，更不能编出记忆里没有的具体事；实在没什么好接的，就说句简单的招呼。按规则回复，尤其规则 8。）",
             memory_anchor
         ),
     });
@@ -273,7 +273,7 @@ pub async fn generate_welcome_back(
         format!("{} 分钟", mins.max(1))
     };
     let anchor_clause = if has_anchor {
-        format!("你想起 ta 之前跟你提过的事：{memory_anchor}。可以顺便轻轻关心一句，但别生硬、别像在完成任务。")
+        format!("你想起 ta 之前跟你提过的事：{memory_anchor}。可以顺便轻轻关心一句，但只能围绕这件事的原意，别把它换成别的话题、别编出没提过的项目或细节，别像在完成任务。")
     } else {
         String::new()
     };

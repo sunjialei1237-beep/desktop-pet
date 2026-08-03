@@ -12,6 +12,7 @@ import { pickNextBehavior } from "./animation/microBehavior";
 import { AttentionState, computeAttention, type PetRect } from "./animation/attention";
 import { type PetPosition } from "./animation/physics";
 import { SpatialMemory } from "./animation/spatial";
+import { createGravity, stepGravity, type GravityState } from "./animation/gravity";
 import { getCircadianState, deepNightMessages, TimeOfDay } from "./animation/circadian";
 import { DEFAULT_EMOTION, type EmotionVector } from "./animation/emotionDriver";
 import { typewriterPacing, inferPacingMood } from "./animation/bubblePacing";
@@ -68,6 +69,9 @@ export default function App() {
 // 方案 B: window dimensions match tauri.conf.json. petPos = window top-left.
 const WINDOW_W = 400;
 const WINDOW_H = 760;
+// Sleeping: in DeepNight (2-6) the pet drifts off after this long with no
+// interaction. Any interaction refreshes it -> natural awake cooldown (#10).
+const SLEEP_AFTER_IDLE_MS = 10 * 60 * 1000;
 
   const [bubbleText, setBubbleText] = useState("");
   const [bubbleVisible, setBubbleVisible] = useState(false);
@@ -102,11 +106,34 @@ const transientTimerRef = useRef<number | null>(null);
  const pokeResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingPokeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
  const lastPetTimeRef = useRef(0);
+  const lastInteractionRef = useRef(Date.now()); // drives DeepNight auto-sleep
   const closenessRef = useRef(0);
   const moodRef = useRef(0.5);
   const energyRef = useRef(0.7);
  const spatialRef = useRef<SpatialMemory | null>(null);
-  const [petPos, setPetPos] = useState<PetPosition | null>(null);
+  // B2 (P12.1): free-fall + taskbar bounce. gravityRef drives the rAF loop
+  // after a release mid-air; floorYRef/winSizeRef are refreshed on every
+  // release so monitor changes are picked up.
+  const gravityRef = useRef<GravityState>(createGravity());
+  const floorYRef = useRef(0);
+  const winSizeRef = useRef({ w: 0, h: 0 });
+  // B2 (P12.1): free-fall stops after a THIRD of the drop distance (user
+  // preference 08-01) — she floats to a hover instead of hitting the floor.
+  // Set when a fall starts, cleared when she stops (hover or land).
+  const fallLimitBottomRef = useRef(0);
+  // Native OS dragging (startDragging) swallows all webview mouse events, so
+  // drag-end is detected via window "moved" events + a quiet-period check in
+  // the rAF loop: after the window stops moving for ~300ms, if she was left
+  // mid-air, free-fall starts.
+  const wasDraggedRef = useRef(false);
+  const lastMovedRef = useRef(0);
+  // The physics loop reads/writes position via refs (not state) so moved events
+  // and setPosition calls never re-create the loop mid-motion — the previous
+  // state-driven deps re-created it every frame, resetting `lastTime` and
+  // making dt jitter (visible as stutter while walking/falling/bouncing).
+  const petPosRef = useRef<PetPosition | null>(null);
+  const isBeingDraggedRef = useRef(false);
+  const lastOriginRefreshRef = useRef(0);
  const [isWalking, setIsWalking] = useState(false);
  const [isBeingDragged, setIsBeingDragged] = useState(false);
  const [soundMuted, setSoundMuted] = useState(false);
@@ -205,6 +232,19 @@ const transientTimerRef = useRef<number | null>(null);
     const timer = setInterval(() => {
       const fsm = fsmRef.current;
       if (!fsm || awayMode) return;
+      // DeepNight (2-6) auto-sleep: left alone long enough + nothing happening ->
+      // drift off. markInteraction() refreshes lastInteractionRef on any poke/pet/
+      // drag/chat, so this won't re-fire until SLEEP_AFTER_IDLE_MS elapses again.
+      if (
+        circadianRef.current.period === TimeOfDay.DeepNight &&
+        fsm.state !== BehaviorState.Sleeping &&
+        !isThinking &&
+        behavior !== BehaviorState.Talking &&
+        Date.now() - lastInteractionRef.current > SLEEP_AFTER_IDLE_MS
+      ) {
+        fsm.forceState(BehaviorState.Sleeping);
+        return;
+      }
       if (isThinking || behavior === BehaviorState.Talking) return;
       fsm.tick(moodRef.current, energyRef.current, closenessRef.current, circadianRef.current.sleepiness, Date.now(), pickNextBehavior);
     }, 2500);
@@ -401,9 +441,10 @@ const transientTimerRef = useRef<number | null>(null);
     const win = getCurrentWindow();
     let screenW = 1920;
     let screenH = 1080;
+    let factor = 1;
     try {
       // Prefer the Tauri current-monitor size for accuracy across DPI.
-       const factor = await win.scaleFactor();
+       factor = await win.scaleFactor();
        let monitor = await currentMonitor();
        if (!monitor) {
          const { primaryMonitor } = await import("@tauri-apps/api/window");
@@ -420,7 +461,18 @@ const transientTimerRef = useRef<number | null>(null);
       try { await win.setPosition(new LogicalPosition(x, y)); } catch (e) { console.warn("[Init] setPosition failed", e); }
       console.log("[Init] window placed at", x, y, "screen:", screenW, screenH);
      spatialRef.current!.setNest(initPos);
-     setPetPos(initPos);
+     petPosRef.current = initPos;
+     // B2 (P12.1): cache window size + work-area bottom (taskbar top) once —
+     // the fall/land physics collide against this floor. Refreshed again on
+     // each drag release via currentMonitor.
+     try {
+       const size = await win.outerSize();
+       winSizeRef.current = { w: size.width / factor, h: size.height / factor };
+       const mon = await currentMonitor();
+       if (mon) {
+         floorYRef.current = mon.workArea.position.y / factor + mon.workArea.size.height / factor;
+       }
+     } catch { /* keep defaults; drag release re-measures */ }
     })();
 }, []);
 
@@ -479,7 +531,35 @@ const transientTimerRef = useRef<number | null>(null);
     };
     refreshOrigin();
     let unlistenMoved: UnlistenFn | undefined;
-    win.onMoved(() => { void refreshOrigin(); }).then((u) => { unlistenMoved = u; }).catch(() => {});
+    // B2 (P12.1): native startDragging swallows webview mouse events entirely
+    // (verified: no mouseup ever reaches the page), so drag-end is detected
+    // via movement quiescence: onMoved keeps lastMovedRef fresh; the rAF loop
+    // starts free-fall after ~300ms of stillness. onMoved also keeps petPos in
+    // sync with the real window position (previously stale after every drag).
+    win.onMoved(({ payload: pos }) => {
+      const f = scaleFactorRef.current || 1;
+      const logical = { x: pos.x / f, y: pos.y / f };
+      // While free-falling the rAF loop owns the position (it already writes
+      // the rounded value it setPosition'd), so skip the echo to avoid
+      // fighting the loop; when grounded, keep petPosRef in sync.
+      if (gravityRef.current.grounded) {
+        petPosRef.current = logical;
+      }
+      lastMovedRef.current = performance.now();
+      if (isBeingDraggedRef.current) {
+        wasDraggedRef.current = true;
+        isBeingDraggedRef.current = false;
+        setIsBeingDragged(false);
+      }
+      // Throttle the click-through origin refresh: it does an async
+      // outerPosition IPC per move, which floods during fast motion
+      // (drag/fall/walk) and causes visible stutter.
+      const now = performance.now();
+      if (now - lastOriginRefreshRef.current > 100) {
+        lastOriginRefreshRef.current = now;
+        void refreshOrigin();
+      }
+    }).then((u) => { unlistenMoved = u; }).catch(() => {});
 
     let unlisten: UnlistenFn | undefined;
     listen<{ x: number; y: number }>("global-cursor", (e) => {
@@ -529,24 +609,65 @@ const transientTimerRef = useRef<number | null>(null);
      const dt = Math.min(0.05, (now - lastTime) / 1000); // cap at 50ms
      lastTime = now;
 
-     const spatial = spatialRef.current!;
+      const spatial = spatialRef.current!;
+      const gravity = gravityRef.current;
+      const pos = petPosRef.current;
 
-     if (petPos && !isBeingDragged && !awayMode) {
-        // 方案 B: no in-window free-fall. Only spatial "return to nest" moves the
-        // OS window smoothly toward the nest position via setPosition.
-        const interacting = isThinking || attention === AttentionState.Focused || inputVisible;
-        const spatialResult = spatial.tick(petPos, dt, interacting, true);
-        if (spatialResult.isWalking) {
-          setPetPos(spatialResult.newPos);
-          setIsWalking(true);
-          // Move the actual window to match (fire-and-forget; batched by the browser).
-          getCurrentWindow()
-            .setPosition(new LogicalPosition(Math.round(spatialResult.newPos.x), Math.round(spatialResult.newPos.y)))
-            .catch(() => {});
+      if (pos && !isBeingDraggedRef.current && !awayMode) {
+        // B2 (P12.1): free-fall toward a hover point (1/3 of the way to the
+        // taskbar). Runs until grounded; spatial return-to-nest waits for
+        // grounding (isGrounded=false keeps the timer paused).
+        if (!gravity.grounded) {
+          const win = getCurrentWindow();
+          const bottom = pos.y + winSizeRef.current.h;
+          const newBottom = stepGravity(gravity, dt, bottom);
+          // 1/3-arc rule: she falls only a third of the way to the floor, then
+          // floats to a stop (hover). Reaching the hover point plays the
+          // settling sound.
+          let finalBottom = newBottom;
+          const limit = fallLimitBottomRef.current;
+          if (limit > 0 && newBottom >= limit) {
+            finalBottom = limit;
+            gravity.grounded = true;
+            gravity.vy = 0;
+            fallLimitBottomRef.current = 0;
+            sound.play("land"); // reached the hover point — soft settling sound
+          }
+          const newY = Math.round(finalBottom - winSizeRef.current.h);
+          petPosRef.current = { x: pos.x, y: newY };
+          win.setPosition(new LogicalPosition(pos.x, newY)).catch(() => {});
         } else {
-          setIsWalking(false);
+          // B2 (P12.1): drag-end detection. After a native drag the window
+          // goes still once the user releases; if she was left above the
+          // work-area bottom, start free-fall (spatial waits for grounding).
+          if (wasDraggedRef.current && now - lastMovedRef.current > 300) {
+            wasDraggedRef.current = false;
+            if (pos.y + winSizeRef.current.h < floorYRef.current - 2) {
+              gravity.grounded = false;
+              gravity.vy = 0;
+              // Only fall a third of the way to the floor (user preference).
+              fallLimitBottomRef.current =
+                pos.y + winSizeRef.current.h + (floorYRef.current - (pos.y + winSizeRef.current.h)) / 3;
+            } else {
+              sound.play("land"); // dropped right on the floor: thud now
+            }
+          }
+          // 方案 B: no in-window free-fall. Only spatial "return to nest" moves the
+          // OS window smoothly toward the nest position via setPosition.
+          const interacting = isThinking || attention === AttentionState.Focused || inputVisible;
+          const spatialResult = spatial.tick(pos, dt, interacting, gravity.grounded);
+          if (spatialResult.isWalking) {
+            petPosRef.current = spatialResult.newPos;
+            setIsWalking(true);
+            // Move the actual window to match (fire-and-forget; batched by the browser).
+            getCurrentWindow()
+              .setPosition(new LogicalPosition(Math.round(spatialResult.newPos.x), Math.round(spatialResult.newPos.y)))
+              .catch(() => {});
+          } else {
+            setIsWalking(false);
+          }
         }
-     }
+      }
 
      // Circadian update (every 30s is enough, but cheap to check each frame)
      circadianRef.current = getCircadianState();
@@ -556,7 +677,7 @@ const transientTimerRef = useRef<number | null>(null);
 
    raf = requestAnimationFrame(loop);
    return () => cancelAnimationFrame(raf);
-  }, [petPos, isBeingDragged, awayMode, isThinking, attention, inputVisible]);
+  }, [awayMode, isThinking, attention, inputVisible]);
 
   // P12: DeepNight proactive nudge (every 10 min check, fires once per period)
   useEffect(() => {
@@ -580,17 +701,27 @@ const transientTimerRef = useRef<number | null>(null);
   // Live2D hit-test clicks (head/body bubbles) still fire normally.
   const DRAG_THRESHOLD = 5;
 
+  // Any user interaction refreshes the DeepNight sleep-idle timer and wakes the
+  // pet if asleep. Stable (deps []): only touches refs, so callers may omit it
+  // from their own deps without stale-closure risk. forceState bypasses the
+  // transition priority lock so Sleeping can exit.
+  const markInteraction = useCallback(() => {
+    lastInteractionRef.current = Date.now();
+    if (fsmRef.current?.state === BehaviorState.Sleeping) {
+      fsmRef.current.forceState(BehaviorState.Idle);
+    }
+  }, []);
+
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return; // left click only
+    markInteraction();
     const startClientX = e.clientX;
     const startClientY = e.clientY;
     let dragStarted = false;
     let onMove: ((ev: MouseEvent) => void) | null = null;
-    let onUp: ((ev: MouseEvent) => void) | null = null;
 
     const cleanup = () => {
       if (onMove) window.removeEventListener("mousemove", onMove);
-      if (onUp) window.removeEventListener("mouseup", onUp);
     };
 
     onMove = (_ev: MouseEvent) => {
@@ -600,33 +731,24 @@ const transientTimerRef = useRef<number | null>(null);
       if (Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD) return;
       // Real drag: hand off to OS compositor (in lockstep with pointer, no jitter).
       dragStarted = true;
+      wasDraggedRef.current = true;
+      isBeingDraggedRef.current = true;
       setIsBeingDragged(true);
       sound.play("drag");
       const win = getCurrentWindow();
       win.startDragging().catch((err) => console.warn("[drag] startDragging failed", err));
-      cleanup(); // stop watching; compositor drives movement from here
+      cleanup(); // stop watching; compositor drives movement from here.
+      // NOTE: no mouseup listener — native dragging swallows webview mouse
+      // events entirely, so drag-end is detected via onMoved + quiet period
+      // (see the gravity effect below).
     };
 
-    onUp = () => {
-      cleanup();
-      if (!dragStarted) {
-        // pure click: nothing to sync, let click/hit-test events proceed.
-        return;
-      }
-      setIsBeingDragged(false);
-      sound.play("land");
-      const win = getCurrentWindow();
-      win.scaleFactor()
-        .then((f) => win.outerPosition().then((p) => ({ f, p })))
-        .then(({ f, p }) => setPetPos({ x: p.x / f, y: p.y / f }))
-        .catch(() => {});
-    };
-    window.addEventListener("mouseup", onUp);
     window.addEventListener("mousemove", onMove);
   }, []);
 
   // overrideText lets Escape submit an empty answer during onboarding (see onKeyDown).
   const handleSend = useCallback(async (overrideText?: string) => {
+    markInteraction();
     const text = (overrideText !== undefined ? overrideText : inputText).trim();
     // 访谈分流：存答案→推进→收尾，不走正常对话
     if (onboarding?.active) {
@@ -770,6 +892,7 @@ const transientTimerRef = useRef<number | null>(null);
 
  // Head pet: closeness + mood up, 3s cooldown
  const handleHeadClick = useCallback(() => {
+   markInteraction();
    const now = Date.now();
    if (now - lastPetTimeRef.current < 3000) return;
    lastPetTimeRef.current = now;
@@ -789,6 +912,7 @@ const transientTimerRef = useRef<number | null>(null);
 // Body poke: mood down after 3 pokes
 const handleBodyClick = useCallback(() => {
   if (inputVisible) return; // 输入框打开时不弹身体气泡
+  markInteraction();
   // 单/双击消歧：戳反应延迟 280ms，双击会在 dblclick 里取消它
   if (pendingPokeRef.current) clearTimeout(pendingPokeRef.current);
   pendingPokeRef.current = setTimeout(() => {
@@ -888,7 +1012,9 @@ const handleBodyClick = useCallback(() => {
      <div
        ref={petRef}
       className={`pet-char-wrapper ${isWalking ? "walking" : ""} ${isBeingDragged ? "dragging" : ""}`}
+      data-behavior={behavior}
       onDoubleClick={() => {
+        markInteraction();
         sound.play("dblclick");
         if (pendingPokeRef.current) { clearTimeout(pendingPokeRef.current); pendingPokeRef.current = null; }
         setBubbleVisible(false);

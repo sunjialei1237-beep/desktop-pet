@@ -388,6 +388,15 @@ mod tests {
     }
 
     #[test]
+    fn test_system_prompt_contains_chinese_grounding_ban() {
+        // The anti-fabrication rule must also reach Chinese generation (the pet
+        // replies in Chinese), so the ban is bilingual. Guards against the
+        // proactive-bubble hallucination regression (e.g. inventing a project).
+        let prompt = build_system_prompt(&empty_retrieval(), &EmotionState::default(), &Intent::default());
+        assert!(prompt.contains("严禁编造"), "Chinese anti-fabrication ban must appear in system prompt");
+    }
+
+    #[test]
     fn test_system_prompt_contains_memories() {
         let retrieval = retrieval_with_data();
         let prompt = build_system_prompt(&retrieval, &EmotionState::default(), &Intent::default());

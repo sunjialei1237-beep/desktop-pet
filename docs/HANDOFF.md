@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-07-31**
+> 最后更新：**2026-08-03**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,9 +28,81 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
-**Foley 音效接线补全 + 频率/手感调整 + 气泡位移修复（实跑通过 ✅ 2026-07-31）。** 实跑暴露 Foley 的 App.tsx 接线**从未落地**（soundManager 孤立单例→零声音；旧"Foley 实跑通过"记录错误）→ 补全 10 处接线 + 权重调整（UI 操作双击/右键/发送必响，活物音 +15-20%）+ poke cooldown 5000→2000（修戳身无声）+ 气泡位移（CSS translate 居中解耦动画）。详见 §最近一轮。**Tier2 #4 converse thought（build 过/待实跑）/ circadian（待今晚实跑）**。**下一步**：实跑 #4 / circadian 深夜 / Sleeping 入睡 / consolidation llm-empty bug（踩坑#3 复发）/ 多气泡堆叠 / Tier2 #5/#6。
 
-## §最近一轮 (2026-07-31)：Foley 接线补全 + 频率调整 + 气泡位移（实跑通过 ✅）
+> **2026-08-03 更新**：从 `D:\桌宠`（opencode 在本仓库副本上的工作）**合并** **B1 Consolidation 反向更新 Facts** + **B2 完整物理（自由落体/任务栏弹跳/1/3 飘落悬停）** + A4/A5 实跑方法论成果（CDP 自动化 + `Date.prototype.getHours` 重写模拟时段）。详见 §最近一轮 (2026-08-03)。两副本 base 完全一致（同 HEAD `50c45d2`，C/D 工作树在 grounding/reflection/Sleeping 等文件**逐字节相同**），故合并 = 纯增量复制 5 改文件 + 2 新文件（`gravity.ts`/`consolidation_harness.rs`），**零冲突**。验证：`cargo check --tests` ✅ / `cargo test --lib` **216 passed**（C 原 208 + B1 新增 8）/ `tsc --noEmit` ✅。清理了 harness 一处死变量（`ep_before`）。**当前无进行中任务**，下一会话按 B3（Sleeping 配套）→ B4（Debug Panel）→ B8 推进。
+> **2026-07-31 18:01 更新**：三闭环 + 生命感主轴完成。**① 待验收代码层已全部闭环**——`cargo test --lib` 207 passed / `cargo check --tests` ✅ / `tsc` ✅ / `build` ✅，已 rebuild 进 18:01 release exe（含 A1/A2/A4 工作树 Rust 改动）。A1-A6 代码层 ✅、A7 勘误降级（未实现，单气泡覆盖）。**余下仅 GUI 运行时实跑**（A4/A5/A6 可立即验证；A1/A2/A3 需攒状态）——见文末 [§下一步总清单](#下一步总清单2026-07-31-统一优先级--取代上方-下一步候选) ①。**当前无进行中任务**，下一会话按 B1→B8 推进或先实跑 A4-A6。**主动开口幻觉已 A 档修复（19:10 rebuild，详见 §最近一轮）；残余：prompt 软约束无运行时阻断，B 档待命。**
+**气泡 release rebuild 闭环（实跑确认 ✅ 2026-07-31）+ consolidation max_tokens 修复 + Reflection 触发器 Tier2 #5 + Sleeping 入睡机制（build 过 / 待实跑）。** 气泡：release exe 落后 dev 2 天，rebuild 后用户实跑确认居中。consolidation：生成任务 max_tokens 2048→4096（踩坑#3 复发）+ 空 content 防御。Tier2 #5：Reflection 事件驱动触发器（TurnThreshold 30 条对话记忆 / MajorEvent importance>0.85，1h 冷却，Daily→MajorEvent→TurnThreshold）。Sleeping：DeepNight(2-6) 无交互≥10min 自动入睡（forceState），交互（戳/摸/拖/对话/双击）markInteraction 唤醒 + 刷新 lastInteraction（天然 10min 清醒冷却）。后端 `cargo test --lib` 207 passed / 全 harness 编译 ✅；前端 `tsc`+`build` ✅。**下一步**：实跑 #4 converse thought / circadian 深夜 / 实跑 Sleeping（改系统时间 2-6 点+等 10min）/ 多气泡堆叠 / Tier2 #6。注：consolidation(≥100 episodes)/Reflection 触发器日常不易快速触发；Sleeping 需改系统时间到 DeepNight 验证。**全部已 rebuild 进 release exe（07-31 13:03），桌面快捷方式已含**；气泡已实跑确认，其余待择机实跑。
+
+## §最近一轮 (2026-08-03)：合并 opencode 副本（B1 + B2 + A4/A5 实跑方法论）
+
+**任务**：用户指出 `D:\桌宠` 是 opencode 在本仓库副本上做的改动（"主要落地与回位"），要求对比、打分、把不合适的部分修改后合并。
+
+**对比方法（关键）**：两副本同 HEAD（`50c45d2`），逐文件 diff C 盘工作树 vs D 盘工作树。结果——grounding.rs / proactive.rs / system.txt / reflection.rs 四文件**逐字节相同**（证明 opencode 完整继承了我 07-31 的工作，base 一致）。真正增量仅在 4 块：① B2 物理（gravity.ts 新 + spatial.ts + App.tsx）② B1 Consolidation 反向更新 Facts（consolidation.rs + facts.rs + harness）③ App.tsx `data-behavior` 插桩 ④ HANDOFF。故合并 = 纯增量复制，零冲突。
+
+**opencode 增量打分**：
+
+| 增量 | 分 | 评 |
+|---|---|---|
+| B1 Consolidation→Facts backfill | **8.5** | 架构契合极好（#1 LLM 只提议 JSON、Rust 验证 category 白名单+confidence clamp 写库 / #8 低频可接受 / #11 source_episode 可追溯+失败 log）。prompt 质量高（明确"不推断"、中文 key 利于合并、confidence 分档）。冲突检测=expire_old+dedup_insert 是 V2 合理 MVP。失败隔离（backfill 失败只 warn 不阻断已成功的压缩）。单测全面（parse/write/dedup/revive）。max_tokens 4096（踩坑#3 已规避）。**唯一点**：每批 consolidation 多 1 次 LLM 调用（prompt 复用 summary，可接受设计权衡）。 |
+| facts.rs dedup revive（B1 配套） | **8.5** | 修真实边缘 bug：过期同值事实"复活"撞 UNIQUE(category,key,value) → 改 UPDATE 复活原行保 mention 历史 + 测试。 |
+| B2 物理：bug 修复 + ref 重构 | **9** | **重要发现**：原生 `startDragging` 吞掉 webview 所有鼠标事件，旧 `onUp`(mouseup) 是**死代码**——拖拽后 petPos 从未同步、land 音效从未真正播过（HANDOFF 07-31"Foley 落地 onUp"记录不准）。改用 `onMoved` 事件同步位置 + rAF 静止检测（300ms 静止+半空→落体）。petPos useState→petPosRef 重构正确解决 state 依赖致 rAF 每帧重建/dt 抖动/视觉卡顿。onMoved 节流 100ms 修 refreshOrigin IPC 洪水。floorY=workArea 底部（任务栏上沿）。经 CDP+Win32 真实鼠标注入实测验证轨迹。 |
+| B2 物理：gravity.ts + 1/3 飘落 | **7.5** | 纯函数清晰、常量集中、#1/#5 契合。**待确认**：① gravity.ts 宣称"任务栏弹跳"（BOUNCE_DAMPING/BOUNCE_STOP_VY），但 App.tsx 的 `fallLimitBottomRef`（用户 08-01 偏好"飘落"）让她只落 1/3 距离就 grounded → 反弹分支永不触发 = **bounce 是配置下死代码**（逻辑健全但被覆盖）。② `GRAVITY = 1200/9` 魔法算式可读性弱（注释有 sqrt 推导，但不如直接 133）。③ `stepGravity` 原地 mutate g（违反全局 immutability 规范，但物理循环务实，可接受）。 |
+| spatial.ts RETURN_DELAY 30→900 | **10** | 1 行，用户明确要求（拖走 15min 才回巢，配合飘落悬停）。 |
+| A4/A5 实跑方法论 | **9** | `Date.prototype.getHours` 重写模拟 DeepNight（绕开改系统时间，无 UAC、秒级切换）+ CDP 自动化（WebView2 `--remote-debugging-port` + Node 原生 WebSocket）+ `data-behavior` DOM 插桩——**方法论资产**，后续所有"需改系统时间/需 GUI 实跑"的验证都能复用。 |
+| HANDOFF 更新 | 8.5 | 记录详实，但视角是 opencode（合并时已改成"合并自副本"）。 |
+
+**总评 ~8.3/10**：核心价值高（B2 修了一个隐蔽的死代码 bug + B1 架构干净），缺陷集中在 B2 的 1/3 配置遗留（bounce 死代码、魔法常量）——非阻断，记入 follow-up。
+
+**关键技术吸收（写入避免重复/复用）**：
+1. **`startDragging` 吞 webview 鼠标事件**（B2 踩坑）：Tauri 原生 `win.startDragging()` 把拖拽交给 OS 合成器，期间 webview 收不到任何 mouseup/mousemove → 拖拽结束**不能用** mouseup 检测，必须用 `win.onMoved()` + 静止期。旧 onUp 路径全是死代码。
+2. **`Date.prototype.getHours` 重写**（A4/A5 验证法）：模拟时段不需改系统时间。`circadian.ts` 是唯一 getHours 调用点，重写后 ~16ms 生效；`Date.now()` 不受影响（入睡计时仍走真实时钟）。验证后恢复原函数。
+3. **CDP 自动化**：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` 启动 release exe → Node 22 原生 WebSocket 查 DOM/截图/派发点击。脚本断线必须 `ws.onclose/onerror→exit(2)` 否则挂起。
+4. **物理循环必须 ref 驱动**：rAF 回调若依赖 React state（petPos），每次 setState 触发 effect 重建 → lastTime 重置 → dt 毛刺 → 卡顿。位置一律走 ref。
+
+**合并执行**：纯增量复制 6 文件（gravity.ts/spatial.ts/facts.rs/consolidation.rs/App.tsx + consolidation_harness.rs）D→C，C/D 逐字节校验一致。清理 harness `ep_before` 死变量（opencode 调试残留）。`cargo check --tests` ✅ / `cargo test --lib` **216 passed** / `tsc` ✅。
+
+**待确认（非阻断，入 follow-up）**：
+- **bounce 死代码**：gravity.ts 的弹跳逻辑在当前 1/3-飘落配置下永不触发。若用户确认"只要飘落不要弹跳"，可删 BOUNCE_* 常量+反弹分支；若两者都要，需让 1/3 规则可配置或仅对贴近 floor 的释放生效。
+- **B1 多 1 次 LLM**：已接受（#8 低频）。若要省，可让 consolidation 那次 LLM 同时输出 facts（prompt 合并），省一次往返。
+- **A6 弃测**：emotionBridge 连续表情 opencode 标"用户弃测（过渡角色）"——等最终 Live2D 角色交付后补测。
+
+---
+
+## §最近一轮 (2026-07-31 19:10)：主动开口幻觉 → grounding A 档收紧
+
+**症状**：用户报桌宠主动开口说「你那个小睡衣项目怎么样了？」——把一件从未发生的事当真实记忆来追问（闭环3「她记得我」的反面：记得假事）。
+
+**排查（三层 0 命中）**：代码/prompts 无"睡衣"；全数据库表（conversations 0、episodes 13、facts 35、reflections 6、internal_thoughts 12、pending 2）无"睡衣"。→ 纯幻觉。
+
+**根因（纠正一处误判）**：主动开口路径**并非没有 grounding 约束**——`proactive`/`welcome_back` 经 `budget::allocate_and_compress` 注入了 system.txt 规则 8 + `MEMORY_CONSTRAINT`。失效在于：① **任务压力压过禁令**：规则 12 + proactive user prompt 强压"必须带出一个记忆并提问"，当检索到的真实记忆（如 `[work/current_project] desktop pet project`）不够具体/不好聊时，LLM 为完成"主动关心"而编造细节 ② **输出端零兜底**：`check_groundedness` 只挂 `converse`（且只 `warn` 不阻断），`proactive`/`welcome_back` **完全没挂**——编造的输出直达用户、连日志都没有 ③ **约束力打折**：规则 8 / `MEMORY_CONSTRAINT` 是英文、生成是中文，跨语言约束力下降。
+
+**A 档修复（用户选 A：治本-prompt 收紧，3 处）**：
+- `system.txt` 规则 8：英文禁令后追加**中文强禁令**（不得把记忆改写成别的项目名/事件、不得虚构、没合适话题就只简单招呼、不硬找话题不猜）。
+- `proactive.rs::generate` user prompt：加运行时**锚点围栏**（只能围绕锚点原意、不得换成别的项目/编造），顺带修掉指向不存在的「规则 8/8a/8b」stale 引用 → 「尤其规则 8」。
+- `proactive.rs::generate_welcome_back` anchor_clause：加同样围栏。
+- `grounding.rs`：加 `test_system_prompt_contains_chinese_grounding_ban` 断言（防回归）。
+
+**验证**：`cargo test --lib` **208 passed**（+1）✅ / release exe rebuild 19:10 ✅。**残余风险**：prompt 是软约束、无运行时阻断（那是 B 档）；若实跑仍偶发幻觉 → 升级 A+B（`check_groundedness` 加中文 claim + 主动开口输出端阻断）。
+
+**附带发现（未修，入 backlog）**：① `conversations` 表生产路径 0 写入（`conversations::insert` 仅测试调用）= 死表，导致本次无法回溯她原话（#11 可追溯受损，C 档）② `check_groundedness` claim_patterns 全英文、中文漏检（B 档）。
+
+---
+
+## §最近一轮 (2026-07-31 续)：气泡 release rebuild + consolidation 修复 + Reflection 触发器 + Sleeping 入睡
+
+**起因**：用户报"启动打招呼气泡位移没修好"。诊断：release exe（07-29 16:58）落后 3329d85（07-31 CSS translate 居中修复）2 天——上一轮"气泡实跑通过"仅 dev HMR 验证（自动热更 CSS），release exe 从未 rebuild，快捷方式跑老代码（`transform: translateX(-50%)` 被 bubble-* 动画 transform 覆盖→偏右跳变）。CSS 层面 3329d85 正确（`translate` 属性独立于 `transform`、无冲突声明），**纯打包问题，代码不动**。taskkill（PID 108248，踩坑#6 释放 exe 锁）→ `npx tauri build --no-bundle` → exe 07-31 12:10。用户双击快捷方式实跑确认居中、不再跳变（Foley 接线/circadian/converse thought 5 commit 一并进 release）。
+
+**顺势修 consolidation llm-empty bug（踩坑#3 复发）**：`consolidation.rs:87` 生成任务（压缩总结）传 `max_tokens=2048`——reflection/extractor 同为生成都 4096，gate/correction 分类才 2048，consolidation 是**唯一**生成任务用 2048 的。DeepSeek-v4 reasoning 独占预算→content 空→静默写空白 episode（consolidation 返纯文本不解析 JSON，无 reflection 的 parse-fail 兜底）。修：① 2048→4096 ② 空 content 防御（warn + return Ok(0)，不写垃圾、下轮重试）。`cargo test --lib` **199 passed**。**待实跑**：触发需 episodes≥100，日常不易达；Rust 改动待下次 rebuild 进 release。
+
+**Reflection 触发器（Tier2 #5，单测过 ✅）**：`ReflectionTrigger` 枚举早预留 TurnThreshold/MajorEvent 变体但只 Daily 被触发。补事件驱动触发：① TurnThreshold——自上次 reflection 起 ≥30 条 conversation episode ② MajorEvent——自上次 reflection 起有 importance>0.85 的 episode。两者共用独立 1h 冷却（Daily 仍 20h），`maybe_run_if_due` 优先级 Daily→MajorEvent→TurnThreshold 取首个命中。轮次源用 episodes（`conversations` 表零调用是死表、`total_conversations` 无基准），只数 source_type='conversation' 的记忆（gate 拦掉的不算）。抽 `last_reflection_at` helper 复用、重构 `should_run_reflection`。**不改签名**（maybe_run_if_due/run_reflection/ReflectionTrigger 签名都不变，slow_tick/commands 零改动，规避踩坑#4）/ **#8 成本**：事件驱动最多 1次/h + Daily 1次/天。`cargo test --lib` **207 passed**（+8：5 turn_threshold + 3 major_event，覆盖不足/达阈值/非 conversation/冷却内/无历史 + 高/低 importance）/ 全 harness 编译 ✅。**待实跑**：需攒 30 条对话记忆或高 importance 事件；Rust 改动待下次 rebuild 进 release。
+
+**Sleeping 入睡机制（Tier3 续，build 过 ✅ / 待实跑）**：`Sleeping` 状态渲染全套早就绪（Live2D f05 / behaviorDriver 慢呼吸 / PetCharacter sleeping+Zz / styles sleeping 动画）但**从未被自动触发**——缺触发+唤醒。实现（纯前端 App.tsx）：① 入睡——FSM tick 定时器(2.5s)检查 `circadian.period===DeepNight(2-6) && state!==Sleeping && !isThinking && !Talking && Date.now()-lastInteractionRef>SLEEP_AFTER_IDLE_MS(10min)` → forceState(Sleeping) ② 唤醒——markInteraction()（摸/戳/拖/对话/双击 5 处入口）：刷新 lastInteractionRef + 若在睡 forceState(Idle)（forceState 绕过 transition 优先级锁——Sleeping 不可中断态只有 forceState 能出）③ 清醒冷却——唤醒刷新 lastInteraction 天然让 10min 内不再入睡。**不改 fsm/circadian/behaviorDriver**（渲染早就绪，只补 App.tsx 触发+唤醒）/ **#10 生命感**：她有睡眠周期 / **#1 纯规则无 LLM** / **#5 Body 层独立**。`tsc --noEmit` ✅ / `npm run build` ✅（1.96s）。**待实跑**：改系统时间到 2-6 点（DeepNight）+ 不交互等 10min → 观察入睡（闭眼慢呼吸+Zz）；戳/摸/对话 → 即时唤醒。follow-up：Sleeping 时抑制 DeepNight nudge 气泡（现睡着仍冒"早点睡"，像梦话）；LateNight(22-2) 不入睡只 yawn（现有）；Sleeping 音效（sleep 素材预留未接）。
+
+**踩坑（写入避免重复）**：**dev HMR 验证 ≠ release exe 已含修复**——前端/CSS 改动 dev 下热更"看着修好"，但桌面快捷方式（release exe）不自动更新，必须 `npx tauri build --no-bundle`。涉及前端/CSS 的"实跑通过"必须在 release exe 上确认（本次气泡 + 上次 Foley 同一坑）。诊断 release 行为先比对 exe LastWriteTime vs commit 时间。
+
+---
+
+## §历史 (2026-07-31 早些)：Foley 接线补全 + 频率调整 + 气泡位移（实跑通过 ✅）
 
 **起因**：用户实跑发现"音效完全没声"+"气泡启动偏右再跳变"+"戳身没声"。诊断：① Foley 的 **App.tsx 接线从未落地**（soundManager 孤立单例，无 import/调用；ContextMenu 要的 soundMuted/onToggleSound props 也没传，TS 报错被 vite esbuild 静默忽略）→ 旧 §历史"Foley 实跑通过 9 触发点"记录错误 ② 气泡 `bubble-*` 动画 keyframes 覆盖 transform 且不含 translateX(-50%)，动画期间丢居中→偏右，结束跳回居中 ③ 戳身无声 = HMR 后 sound 单例重建 buffers 空 + mount effect preload 不重跑 + poke cooldown 5000ms，首次现场加载无声后连戳全被 cooldown 拦。
 
@@ -293,6 +365,8 @@ Kill List 三闭环全部端到端跑通（Body→Memory→Soul）。逐项审�
 
 ## §下一步候选（按优先级重排，基于 §审计 + 北极星 #10 + Kill List 已完成）
 
+> ⚠️ **本节为 07-28 快照，已过时**（Tier1 三项全完成、Tier2 #4/#5 已做）。最新统一优先级 backlog 见文末 [§下一步总清单](#下一步总清单2026-07-31-统一优先级--取代上方-下一步候选)。保留下方作历史对照。
+
 Kill List 三闭环已完成，现按"提升体验/生命感"→"闭环深度"→"Body 完善"→"开发者基建"→"架构债"→"二期"排序。
 
 **Tier 1 — 生命感/体验（#10 北极星，对话是核心交互）**
@@ -319,3 +393,55 @@ Kill List 三闭环已完成，现按"提升体验/生命感"→"闭环深度"�
 
 **Tier 6 — 二期愿景（design §14 二期清单）**
 13. Shared World（桌面元素认知）/ Rituals / Landmarks / Adaptive Traits V2 / 混合检索 V2。
+
+---
+
+## §下一步总清单（2026-07-31，统一优先级 · 取代上方 §下一步候选）
+
+> **权威 backlog。** 上方 §下一步候选 是 07-28 快照（Tier1 已全完成、Tier2 #4/#5 已做），仅作历史对照。
+> Kill List 三闭环全部端到端跑通（活着 Body → 记住你 Memory → 懂你 Soul）。
+> 排序驱动：北极星 #10（优先生命感不优先功能）+ 优先级阶梯（活着→记住→懂你→工具砍）+ 实施计划 P0-P17 / A1-A2。
+> 两类工作：**① 待验收**（已编码、收尾即闭环，最高 ROI）→ **② 待开发**（按 Tier 优先级）。
+
+### ① 待验收（代码层已全部验收 ✅ 2026-07-31 18:01；GUI 实跑待用户）
+
+> **代码层闭环**：`cargo test --lib` **207 passed** / `cargo check --tests` 全 harness 编译 ✅ / `tsc --noEmit` ✅ / `npm run build` ✅（2.12s）。**全部已 rebuild 进 release exe**（`D:\cargo-target\desktop-pet\release\desktop-pet.exe` 07-31 18:01，含工作树未提交的 A1/A2/A4 Rust 改动；桌面快捷方式自动指向）。A1-A6 代码层验收通过，余下仅 GUI 运行时实跑（见"运行时实跑"列）。
+
+| # | 项 | 代码层验收 | 运行时实跑（用户） |
+|---|---|---|---|
+| A1 | consolidation max_tokens 修复 | ✅ `consolidation.rs:89` `Some(4096)` + `:97-103` 空 content 防御 | 需攒 ≥100 低 importance episodes 自然触发，难快速复现（不必强测） |
+| A2 | Reflection TurnThreshold/MajorEvent 触发器 | ✅ 优先级 Daily→MajorEvent→TurnThreshold + 12 单测全过 | 需攒 30 条对话记忆 或 importance>0.85 事件 |
+| A3 | converse 注入 surfaced thought | ✅ `converse.rs:202-221` 注入 + 消费性 | 需 reflection 先产 thought（一日以上），下次对话观察带出 |
+| A4 | Sleeping 入睡/唤醒 | ✅ `App.tsx:216-222` 入睡 + `:604-607` 唤醒 | **可立即验证**：改系统时间 2-6 点 + 不交互 10min→入睡；戳/摸/对话→唤醒 |
+| A5 | circadian sleepiness 调权重 | ✅ `microBehavior.ts` sleepy 公式 + `App.tsx:226` 喂入 fsm.tick | **可立即验证**：深夜 yawn↑ / look_around↓（对比白天） |
+| A6 | emotionBridge 连续表情 | ✅ `App.tsx:56` toEmotionVector + `:934` 传 Live2DCanvas | **可立即验证**：戳→嘴角下垂；开心→微笑笑眼；久运行→半眯 |
+| A7 | ~~多气泡堆叠~~ | ❌ **未实现** | 降级为 ③ follow-up（见下） |
+
+> **A7 勘误**：原 backlog 把"多气泡堆叠"列为待验收，核验发现 `App.tsx:75-77` 气泡是单气泡状态（`bubbleText/Visible/Style/Pos` 均单一 useState）、`showBubble`(:159) 是覆盖语义（新气泡直接覆盖旧的 + 重置 timer），从未实现堆叠。降级为 follow-up；若用户确认需要"堆叠/排队"再开。
+
+### ② 待开发（按优先级）
+
+**Tier 2 — Soul/对话深度（懂你 · 闭环增强）**
+- ~~**B1. Consolidation 反向更新 Facts**~~ ✅ **已完成（2026-08-03，合并自 opencode 副本）**：`consolidate` 成功后调 `backfill_facts`（LLM 从摘要提取 JSON 事实 → category 白名单+confidence clamp → `expire_old` 冲突过期 + `dedup_insert`）。失败隔离（只 warn）。+8 单测 + 新 `consolidation_harness`（真实 LLM 端到端）。详见 §最近一轮 (2026-08-03)。
+- **B1b. Grounding 运行时阻断（B 档 · ⏳ 条件触发）**：A 档（prompt 收紧）实跑若仍偶发主动开口幻觉则升级——`check_groundedness` 补中文 claim 模式（现全英文、中文漏检）+ 在 proactive/welcome_back 输出端挂检测、发现编造就丢弃/降级。根因+修复详见 §最近一轮 (07-31 19:10)。
+
+**Tier 3 — Body 完善（活着 · 生命感）**
+- ~~**B2. 完整物理**~~ ✅ **已完成（2026-08-03，合并自 opencode 副本）**：自由落体 + 任务栏弹跳（P12.1）。新 `gravity.ts`（GRAVITY/BOUNCE 常量 + `stepGravity` 纯函数）。**关键**：发现 `startDragging` 吞 webview 鼠标事件（旧 `onUp` 死代码）→ 改 `onMoved`+静止检测；petPos useState→ref 重构修卡顿。用户偏好"1/3 飘落悬停"（不真触底，bounce 当前是死代码，待确认）。详见 §最近一轮 (2026-08-03)。
+- **B3. Sleeping 配套收尾**（小项）：① 睡着抑制 DeepNight nudge（现睡着仍冒"早点睡"，像梦话）② 接 sleep 音效素材（已预留未接）③ LateNight(22-2) 不入睡只 yawn。
+
+**Tier 4 — 开发者基建（#11 Explainability）**
+- **B4. P16 Debug Panel 补全**：Prompt token 预算 / Retrieved score breakdown / Reflect(has_thought/unsurfaced) / AnimFSM / Cost 分区。`DebugPanel.tsx` 现 6 个 section 全无这些。
+- **B5. P17 Golden 评估框架**：人格漂移 score + CI 自动跑 + `tests/evaluation.rs`。现仅 `golden_conversations.rs` 数据，无评估框架/CI。
+- **B4b. conversations 死表修复（#11 可追溯）**：生产路径调用 `conversations::insert` 写对话日志（现仅测试调用、表 0 行）。独立 bug——本次幻觉排查中因它无法回溯她原话。
+
+**Tier 5 — 架构债务（重构 · 功能已在跑）**
+- **B6. A1 BrainState 统一快照**：converse 等改 `fn(brain: &BrainState)`，消除多参数列表（架构债）。
+- **B7. A2 统一 Scheduler**：loop_runner 线程+sleep → Scheduler trait（ticks_1s/30s/daily）。
+
+**Tier 6 — 二期愿景（design §14）**
+- **B8.** Shared World（桌面元素认知）/ Rituals / Landmarks / Adaptive Traits V2 / 混合检索 V2。
+
+### ③ 散落 follow-up（低优先 · 可并入相关 Tier）
+Alt+Space 全局键（P11.4）/ 走路脚步声 loop（P11.5）/ 害羞慢现气泡形态（缺后端 mood 标签）/ rest_need 后端暴露（P10）/ speedModifier·energyModifier 接动画速度（circadian）/ idle_weights JSON 化（数据驱动）/ 选择性遗忘（用户请求"忘掉..."，P13 lifecycle_cleanup）。
+
+> **建议下一会话起点**：先清 ① 待验收（A1-A7 逐项 rebuild+实跑，零新代码、闭环既有成果），再按 B1→B8 推进。实跑前提：`%APPDATA%\DesktopPet\config.toml` 配好 DeepSeek key + 桌面快捷方式（或 `npm run tauri dev`）。
