@@ -32,6 +32,28 @@ mod budget {
     pub const EPISODES: usize = 1200;
     pub const INTENT: usize = 100;
     pub const SYSTEM_SCAFFOLD: usize = 300;
+    /// Latest relationship-review summary slot (always-on [Relationship]).
+    pub const RELATIONSHIP: usize = 80;
+}
+
+/// The system-prompt token budget (facts + episodes + persona + emotion +
+/// intent + scaffold). Exposed so the debug panel can show "system prompt N /
+/// budget M" next to the actual (post-compression) size — observability for
+/// architecture #8 (cost) and #11 (why is the context that big?).
+pub fn system_prompt_budget() -> usize {
+    budget::FACTS + budget::EPISODES + budget::PERSONA
+        + budget::EMOTION + budget::INTENT + budget::SYSTEM_SCAFFOLD
+        + budget::RELATIONSHIP
+}
+
+/// The QA (direct-answer) system-prompt token budget. Same as the normal budget
+/// MINUS the memory slots (facts + episodes): `build_qa_system_prompt` injects
+/// no `[Memories]`, so those slots don't apply. Exposed so the debug panel shows
+/// the right ceiling for a QA turn ("system N / budget M") instead of the
+/// memory-inclusive 2005 — otherwise a 505-token QA prompt looks "under budget"
+/// against the wrong number.
+pub fn qa_system_prompt_budget() -> usize {
+    budget::PERSONA + budget::EMOTION + budget::INTENT + budget::SYSTEM_SCAFFOLD
 }
 
 /// Rough token estimate for mixed Chinese/English text.
@@ -94,6 +116,32 @@ pub fn allocate_and_compress(
     messages
 }
 
+/// Allocates messages for direct-answer (question) mode: persona + emotion +
+/// intent + QA directive + working memory, WITHOUT retrieved memories, so a
+/// knowledge question cannot be steered into hard-associating unrelated
+/// pet topics. Working memory is still kept so multi-turn questions flow.
+pub fn allocate_qa(
+    retrieval: &RetrievalResult,
+    working_memory: &[ChatMessage],
+    emotion: &EmotionState,
+    intent: &Intent,
+) -> Vec<ChatMessage> {
+    let mut messages = Vec::new();
+
+    let system_prompt =
+        crate::mind::grounding::build_qa_system_prompt(retrieval, emotion, intent);
+
+    messages.push(ChatMessage {
+        role: "system".to_string(),
+        content: system_prompt,
+    });
+
+    let conv_messages = compress_conversation(working_memory, budget::CONVERSATION);
+    messages.extend(conv_messages);
+
+    messages
+}
+
 /// Compresses the system prompt by trimming memories if they exceed the
 /// combined budget for facts + episodes + persona + emotion + intent + scaffold.
 fn compress_system_prompt(
@@ -103,7 +151,8 @@ fn compress_system_prompt(
     intent: &Intent,
 ) -> String {
     let budget = budget::FACTS + budget::EPISODES + budget::PERSONA
-        + budget::EMOTION + budget::INTENT + budget::SYSTEM_SCAFFOLD;
+        + budget::EMOTION + budget::INTENT + budget::SYSTEM_SCAFFOLD
+        + budget::RELATIONSHIP;
 
     let tokens = estimate_tokens(&prompt);
     if tokens <= budget {
@@ -164,6 +213,7 @@ fn compress_system_prompt(
        episodes: retrieval.episodes[..keep_episodes.min(retrieval.episodes.len())].to_vec(),
        facts: retrieval.facts[..keep_facts.min(retrieval.facts.len())].to_vec(),
        relationship: retrieval.relationship.clone(),
+       relationship_review: retrieval.relationship_review.clone(),
        persona_traits: retrieval.persona_traits.clone(),
        user_profile: retrieval.user_profile.clone(),
    };
@@ -171,25 +221,56 @@ fn compress_system_prompt(
     crate::mind::grounding::build_system_prompt(&truncated_retrieval, emotion, intent)
 }
 
-/// Truncates working memory from the front (oldest messages first)
-/// to fit within the conversation token budget.
+/// Truncates working memory to fit within the conversation token budget.
+///
+/// Hermes-inspired rule (user messages are never compressed away): user
+/// messages are collected verbatim first and are always kept; assistant
+/// replies are kept only while budget allows, and older assistant replies
+/// are evicted first when a user message pushes over budget. This preserves
+/// what the USER actually said at the cost of losing the pet's own earlier
+/// replies — the pet can still follow the user's thread, and the user's
+/// words are never misremembered through truncation.
 fn compress_conversation(messages: &[ChatMessage], budget_tokens: usize) -> Vec<ChatMessage> {
     let total = estimate_messages_tokens(messages);
     if total <= budget_tokens {
         return messages.to_vec();
     }
 
- // Drop from the front until we fit.
-    let mut start = 0;
-    while start < messages.len() {
-        let remaining = &messages[start..];
-        if estimate_messages_tokens(remaining) <= budget_tokens {
-            break;
+    // Collect from newest to oldest (reversed). User messages always stay;
+    // assistant messages fill remaining budget, oldest assistants evicted first.
+    let mut kept: Vec<ChatMessage> = Vec::new();
+    let mut used = 0usize;
+    for m in messages.iter().rev() {
+        let t = estimate_tokens(&m.content) + 4;
+        if m.role == "user" {
+            kept.push(m.clone());
+            used += t;
+            // Evict oldest kept assistant replies until we fit again.
+            while used > budget_tokens {
+                match kept.iter().rposition(|k| k.role != "user") {
+                    Some(pos) => {
+                        used -= estimate_tokens(&kept[pos].content) + 4;
+                        kept.remove(pos);
+                    }
+                    None => break, // all user messages; keep newest by dropping from front
+                }
+            }
+        } else if used + t <= budget_tokens {
+            kept.push(m.clone());
+            used += t;
         }
-        start += 1;
+        // assistant message over budget: skip (it is the pet's own words, droppable)
     }
 
-    messages[start..].to_vec()
+    // If even all user messages over budget, trim the oldest ones (never
+    // possible in practice — user messages are short — but guard anyway).
+    let mut kept = kept;
+    kept.reverse();
+    while used > budget_tokens && !kept.is_empty() {
+        used -= estimate_tokens(&kept[0].content) + 4;
+        kept.remove(0);
+    }
+    kept
 }
 
 #[cfg(test)]
@@ -206,6 +287,7 @@ mod tests {
            episodes: vec![],
            facts: vec![],
            relationship: None,
+           relationship_review: None,
            persona_traits: vec![],
            user_profile: UserProfile::default(),
        }
@@ -247,6 +329,7 @@ mod tests {
            episodes,
            facts: vec![],
            relationship: None,
+           relationship_review: None,
            persona_traits: vec![],
            user_profile: UserProfile::default(),
        }
@@ -326,6 +409,37 @@ mod tests {
     }
 
     #[test]
+    fn test_conversation_keeps_all_user_messages() {
+        // Hermes rule: user messages are never compressed away. Even when the
+        // budget is tiny, every user message must survive; only assistant
+        // replies get evicted.
+        let mut wm = vec![];
+        for i in 0..20 {
+            wm.push(msg("user", &format!("user message number {}", i)));
+            wm.push(msg("assistant", &format!("a longer assistant reply with more words here {}", i)));
+        }
+
+        let compressed = compress_conversation(&wm, 300);
+        let user_msgs: Vec<&str> = compressed
+            .iter()
+            .filter(|m| m.role == "user")
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(
+            user_msgs.len(),
+            20,
+            "all user messages must survive compression, got {}",
+            user_msgs.len()
+        );
+        // Order preserved, verbatim.
+        assert_eq!(user_msgs[0], "user message number 0");
+        assert_eq!(user_msgs[19], "user message number 19");
+        // Assistant replies were evicted to make room.
+        let assistants = compressed.iter().filter(|m| m.role == "assistant").count();
+        assert!(assistants < 20, "assistant replies should be evicted first");
+    }
+
+    #[test]
     fn test_conversation_no_truncation_needed() {
         let wm = vec![msg("user", "hi"), msg("assistant", "hello")];
         let compressed = compress_conversation(&wm, 1600);
@@ -360,6 +474,7 @@ mod tests {
                 closeness_log: None,
                 updated_at: "2026-07-14T10:00:00+00:00".to_string(),
             }),
+            relationship_review: None,
            persona_traits: vec![PersonaTrait {
                id: "t1".to_string(),
                trait_type: "core".to_string(),
@@ -403,5 +518,50 @@ mod tests {
         assert!(messages[0].content.contains("encourage"));
         assert!(messages[0].content.contains("interview"));
         assert!(messages[0].content.contains("proactive"));
+    }
+
+    #[test]
+    fn test_qa_system_prompt_budget_excludes_memory_slots() {
+        // QA mode injects no [Memories], so its budget omits the facts +
+        // episodes slots — strictly smaller than the normal budget (not 2005).
+        let qa = qa_system_prompt_budget();
+        let normal = system_prompt_budget();
+        assert!(qa < normal, "QA budget {} should be < normal {}", qa, normal);
+        assert_eq!(qa, 80 + 25 + 100 + 300); // PERSONA + EMOTION + INTENT + SCAFFOLD
+    }
+
+    #[test]
+    fn test_qa_keeps_identity() {
+        // QA mode must KEEP identity (persona + user name) so a direct answer
+        // still sounds like 璃 and can address the user by name. Locks the fix
+        // where qa_mode loads persona/relationship/user_profile instead of a
+        // pure default() that stripped them along with the memories.
+        let mut r = empty_retrieval();
+        r.persona_traits = vec![PersonaTrait {
+            id: "p1".to_string(),
+            trait_type: "core".to_string(),
+            trait_key: "温柔".to_string(),
+            confidence: 0.9,
+            source: "seed".to_string(),
+            created_at: "2026-08-04T00:00:00Z".to_string(),
+            updated_at: "2026-08-04T00:00:00Z".to_string(),
+        }];
+        r.user_profile = UserProfile {
+            user_nickname: Some("小明".to_string()),
+            pet_name: None,
+            personality_style: None,
+            relationship_style: None,
+        };
+        let intent = Intent {
+            goal: "converse".to_string(),
+            memory_anchor: String::new(),
+            tone: "gentle".to_string(),
+            proactive: false,
+            action: "normal".to_string(),
+        };
+        let messages = allocate_qa(&r, &[], &EmotionState::default(), &intent);
+        let sys = &messages[0].content;
+        assert!(sys.contains("温柔"), "QA prompt should keep core persona trait");
+        assert!(sys.contains("小明"), "QA prompt should keep user nickname");
     }
 }

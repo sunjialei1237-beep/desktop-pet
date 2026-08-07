@@ -25,6 +25,10 @@ pub struct AppState {
     pub embedding: EmbeddingService,
     pub working_memory: Mutex<WorkingMemory>,
     pub question_pacing: std::sync::Mutex<crate::mind::pacing::QuestionPacing>,
+    /// Last conversation turn's decision-chain trace for the debug panel
+    /// (Architecture #11: "她为什么这么说" — intent + retrieval + trigger +
+    /// violations). Written in send_message, read in get_debug_snapshot.
+    pub last_decision: std::sync::Mutex<Option<DecisionTrace>>,
 }
 
 // -- Response types --
@@ -37,6 +41,7 @@ pub struct EmotionResponse {
     pub social_battery: f64,
     pub stress: f64,
     pub loneliness: f64,
+    pub rest_need: f64,
 }
 
 impl From<crate::db::emotion::EmotionState> for EmotionResponse {
@@ -48,6 +53,7 @@ impl From<crate::db::emotion::EmotionState> for EmotionResponse {
             social_battery: e.social_battery,
             stress: e.stress,
             loneliness: e.loneliness,
+            rest_need: e.rest_need,
         }
     }
 }
@@ -92,15 +98,18 @@ pub async fn send_message(
         .cloned()
         .ok_or("LLM not configured. Please set your API key in settings.")?;
 
-    let result = crate::mind::converse::converse(
-        &text,
-        &conversation_id,
+    let ctx = crate::mind::converse::ConverseCtx {
+        text: &text,
+        conversation_id: &conversation_id,
         turn,
-        &wm_context,
-        &llm,
-        &db,
-        Some(&state.embedding),
-        &state.question_pacing,
+        wm_context: &wm_context,
+        llm: &llm,
+        db: &db,
+        embedding: Some(&state.embedding),
+        pacing: &state.question_pacing,
+    };
+    let result = crate::mind::converse::converse(
+        &ctx,
         // Forward each streamed content token to the frontend through an
         // ipc::Channel for live bubble rendering (architecture #10). Channel
         // is Tauri's intended path for streaming data *during* a command:
@@ -130,6 +139,41 @@ pub async fn send_message(
     let transient = crate::emotion::react::transient_expression(&text, &result.intent.goal)
         .map(|s| s.to_string());
 
+    // Persist raw conversation turn(s) to the durable `conversations` table for
+    // source traceability (Architecture Principle #11: every memory decision
+    // must trace back to the raw wording; episodes link back via
+    // source_conversation_id). `working_memory` (below) is in-memory and
+    // ephemeral — this is the durable log that lets you recall her exact reply
+    // later (e.g. diagnosing a hallucination). Best-effort: a logging failure
+    // warns but never breaks the chat. Harnesses call converse() directly (not
+    // send_message), so they don't pollute the production table.
+    {
+        let now_ts = chrono::Utc::now().to_rfc3339();
+        let user_row = crate::db::conversations::ConversationRow {
+            id: format!("{}_t{}_user", conversation_id, turn),
+            turn: turn as i64,
+            role: "user".to_string(),
+            content: text.clone(),
+            created_at: now_ts.clone(),
+        };
+        if let Err(e) = db.with_conn(|conn| crate::db::conversations::insert(conn, &user_row)) {
+            log::warn!("[conversations] failed to log user turn: {}", e);
+        }
+        if !result.response.is_empty() {
+            let asst_row = crate::db::conversations::ConversationRow {
+                id: format!("{}_t{}_assistant", conversation_id, turn),
+                turn: turn as i64,
+                role: "assistant".to_string(),
+                content: result.response.clone(),
+                created_at: now_ts,
+            };
+            if let Err(e) = db.with_conn(|conn| crate::db::conversations::insert(conn, &asst_row))
+            {
+                log::warn!("[conversations] failed to log assistant turn: {}", e);
+            }
+        }
+    }
+
     // Push user + assistant messages to working memory.
     {
         let mut wm = state
@@ -145,6 +189,43 @@ pub async fn send_message(
                 role: "assistant".to_string(),
                 content: result.response.clone(),
             });
+        }
+    }
+
+    // Stash this turn's decision chain for the debug panel (Architecture #11:
+    // answers "她为什么这么说" — Intent + retrieval + trigger + violations).
+    // Best-effort: a lock failure only skips the debug update, never breaks chat.
+    {
+        let trace = DecisionTrace {
+            at: chrono::Utc::now().to_rfc3339(),
+            intent_goal: result.intent.goal.clone(),
+            intent_tone: result.intent.tone.clone(),
+            intent_action: result.intent.action.clone(),
+            memory_anchor: result.intent.memory_anchor.clone(),
+            trigger_reason: result.trigger_reason.clone(),
+            route: format!("{:?}", result.route),
+            grounding_violations: result.grounding_violations.clone(),
+            retrieved: result
+                .retrieved_scores
+                .iter()
+                .map(|r| DecisionRetrieved {
+                    summary: r.summary.clone(),
+                    score: r.score,
+                    semantic: r.semantic,
+                    strength: r.strength,
+                    recency: r.recency,
+                    emotion: r.emotion,
+                })
+                .collect(),
+            prompt_tokens: result.prompt_tokens.as_ref().map(|p| DecisionPromptToken {
+                system_tokens: p.system_tokens,
+                input_tokens: p.input_tokens,
+                budget: p.budget,
+                conversation_turns: p.conversation_turns,
+            }),
+        };
+        if let Ok(mut guard) = state.last_decision.lock() {
+            *guard = Some(trace);
         }
     }
 
@@ -303,10 +384,14 @@ pub async fn pet_head(db: State<'_, DbState>) -> Result<(), String> {
         let emo = crate::db::emotion::get(conn)?;
         let new_mood = (emo.mood + 0.05).min(1.0);
         let new_battery = (emo.social_battery - 0.01).max(0.0);
+        // Genuine affection relieves loneliness — being petted is the direct
+        // opposite of being ignored. ~0.1 offsets ~15min of idle growth, so one
+        // pet visibly comforts her without trivializing the slow build-up.
+        let new_loneliness = (emo.loneliness - 0.1).max(0.0);
         crate::db::emotion::update_fields(
             conn,
             Some(new_mood), None, None,
-            Some(new_battery), None, None, None, &now,
+            Some(new_battery), None, Some(new_loneliness), None, &now,
         )?;
         Ok(())
     })?;
@@ -461,6 +546,56 @@ pub async fn welcome_back_bubble(
     Ok(Some(
         crate::emotion::react::welcome_back_canned(mood, away_secs).to_string(),
     ))
+}
+
+/// Generates a loneliness-driven "想你了" bubble when the user has been idle at
+/// the desk (homeostasis let loneliness climb) and the relationship is
+/// established. The loop_runner gates emission (loneliness threshold + closeness
+/// + presence + cooldown); this voices it once the frontend asks. Tries the
+/// memory-grounded LLM path first; falls back to a rule-based line when the LLM
+/// is unconfigured or returns nothing (Architecture Principle 8).
+#[tauri::command]
+pub async fn lonely_bubble(
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<Option<String>, String> {
+    let wm_context = {
+        let wm = state
+            .working_memory
+            .lock()
+            .map_err(|e| format!("WM lock error: {}", e))?;
+        wm.get_context()
+    };
+
+    // NOTE: bind the cloned Option to its own `let` so the MutexGuard is dropped
+    // at the end of the statement — keeping it alive across `.await` below would
+    // make the future non-Send (same pattern as `welcome_back_bubble`).
+    let llm = state
+        .llm
+        .lock()
+        .map_err(|e| format!("LLM lock error: {}", e))?
+        .as_ref()
+        .cloned();
+    if let Some(llm) = llm {
+        let outcome = crate::pending::proactive::generate_lonely_bubble(
+            &db,
+            &llm,
+            Some(&state.embedding),
+            &wm_context,
+        )
+        .await?;
+        if let Some(o) = outcome {
+            return Ok(Some(o.reply));
+        }
+        // LLM returned nothing (empty reply) → fall through to canned rule line.
+    }
+
+    // Fallback: rule-based canned line, mood-scaled. Never fails.
+    let mood = db
+        .with_conn(crate::db::emotion::get)
+        .map(|e| e.mood)
+        .unwrap_or(0.5);
+    Ok(Some(crate::emotion::react::lonely_canned(mood).to_string()))
 }
 /// Checks for due cold-start interview questions (first 3 days).
 /// These bypass the closeness gate to help build the relationship early on.
@@ -684,6 +819,54 @@ pub async fn resolve_pending_event(
     crate::pending::resolve(&db, &event_id)
 }
 
+/// Last turn's decision-chain trace (Architecture #11 Explainability).
+/// Answers "她为什么这么说": the Intent that directed the reply, what memory
+/// retrieval surfaced (with score breakdown), why retrieval fired, and any
+/// grounding violations. Captured per turn in send_message.
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionTrace {
+    pub at: String,
+    pub intent_goal: String,
+    pub intent_tone: String,
+    pub intent_action: String,
+    pub memory_anchor: String,
+    pub trigger_reason: String,
+    pub route: String,
+    pub grounding_violations: Vec<String>,
+    pub retrieved: Vec<DecisionRetrieved>,
+    /// Last turn's prompt token budget (#8/#11). None on silence.
+    pub prompt_tokens: Option<DecisionPromptToken>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionRetrieved {
+    pub summary: String,
+    pub score: f64,
+    pub semantic: f64,
+    pub strength: f64,
+    pub recency: f64,
+    pub emotion: f64,
+}
+
+/// Last turn's prompt-budget observability (#8/#11). Serialized mirror of
+/// converse::PromptTokenDebug so the snapshot stays decoupled from the mind
+/// module's types.
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionPromptToken {
+    pub system_tokens: usize,
+    pub input_tokens: usize,
+    pub budget: usize,
+    pub conversation_turns: usize,
+}
+
+/// Latest reflection summary for the debug panel (#11: Soul observability).
+#[derive(Debug, Clone, Serialize)]
+pub struct DebugReflect {
+    pub last_thought: Option<String>,
+    pub last_at: Option<String>,
+    pub unsurfaced_thoughts: i64,
+}
+
 /// Full debug snapshot for the debug panel.
 #[derive(Debug, Serialize)]
 pub struct DebugSnapshot {
@@ -699,6 +882,12 @@ pub struct DebugSnapshot {
     pub recent_facts: Vec<DebugFact>,
     pub pending_events: Vec<DebugPending>,
     pub change_log: Vec<crate::db::changelog::ChangeLogEntry>,
+    /// Last turn's decision chain (Intent + retrieval + trigger + violations).
+    pub last_decision: Option<DecisionTrace>,
+    /// Latest reflection + unsurfaced thought count.
+    pub reflect: DebugReflect,
+    /// Today's LLM call count + token totals (Architecture #8).
+    pub cost: crate::llm::client::LlmCostStats,
     pub llm_configured: bool,
 }
 
@@ -712,6 +901,7 @@ pub struct DebugEpisode {
 
 #[derive(Debug, Serialize)]
 pub struct DebugFact {
+    pub id: String,
     pub category: String,
     pub key: String,
     pub value: String,
@@ -763,14 +953,15 @@ pub async fn get_debug_snapshot(
 
         // Active facts.
         let mut stmt = conn
-            .prepare("SELECT category, key, value, confidence FROM facts WHERE valid_to IS NULL ORDER BY confidence DESC LIMIT 20")
+            .prepare("SELECT id, category, key, value, confidence FROM facts WHERE valid_to IS NULL ORDER BY confidence DESC LIMIT 20")
             .map_err(|e| format!("Prepare error: {}", e))?;
         let recent_facts: Vec<DebugFact> = stmt
             .query_map([], |row| Ok(DebugFact {
-                category: row.get(0)?,
-                key: row.get(1)?,
-                value: row.get(2)?,
-                confidence: row.get(3)?,
+                id: row.get(0)?,
+                category: row.get(1)?,
+                key: row.get(2)?,
+                value: row.get(3)?,
+                confidence: row.get(4)?,
             }))
             .map_err(|e| format!("Query error: {}", e))?
             .filter_map(|r| r.ok())
@@ -791,6 +982,45 @@ pub async fn get_debug_snapshot(
             .filter_map(|r| r.ok())
             .collect();
 
+        // Soul observability (#11): latest reflection + unsurfaced thought count.
+        let last_thought: Option<String> = conn
+            .query_row(
+                "SELECT thought FROM reflections ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        let last_at: Option<String> = conn
+            .query_row(
+                "SELECT created_at FROM reflections ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        let unsurfaced_thoughts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM internal_thoughts WHERE surfaced_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let reflect = DebugReflect {
+            last_thought,
+            last_at,
+            unsurfaced_thoughts,
+        };
+        // Last turn's decision chain (None until the first message is sent).
+        let last_decision = state.last_decision.lock().ok().and_then(|g| g.clone());
+
+        // Today's LLM cost (Architecture #8). Unconfigured or lock-poison → empty.
+        let cost = match state.llm.lock() {
+            Ok(g) => match g.as_ref() {
+                Some(c) => c.cost_today(),
+                None => crate::llm::client::LlmCostStats::default(),
+            },
+            Err(_) => crate::llm::client::LlmCostStats::default(),
+        };
+
         Ok(DebugSnapshot {
             emotion: EmotionResponse::from(emo),
             closeness: rel.as_ref().map(|r| r.closeness).unwrap_or(0.0),
@@ -804,9 +1034,132 @@ pub async fn get_debug_snapshot(
             recent_facts,
             pending_events,
             change_log: crate::db::changelog::recent(conn, 20).unwrap_or_default(),
+            last_decision,
+            reflect,
+            cost,
             llm_configured: state.llm.lock().map(|g| g.is_some()).unwrap_or(false),
         })
     })
+}
+
+// ── Memory curation commands (Debug Panel: read-only → editable) ──────────
+// These let a human correct the pet's memory directly — forget a wrong fact,
+// drop a junk episode, cancel a stray reminder, or nudge her mood to test an
+// animation. All are best-effort + logged to the change_log (Architecture #11:
+// every memory decision traces to a reason). They reuse existing DB accessors
+// rather than raw SQL, so the same soft-delete / vector-cleanup semantics as
+// the automated flows apply.
+
+/// Forgets one fact by id (precise soft-delete via `valid_to`, preserving the
+/// audit trail and the `dedup_insert` revive path — same op the user-directed
+/// Forget route uses). The pet simply stops surfacing it until it's restated.
+#[tauri::command]
+pub async fn forget_fact(db: State<'_, DbState>, id: String) -> Result<bool, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    db.with_conn(|conn| {
+        let expired = crate::db::facts::expire_by_id(conn, &id, &now)?;
+        if expired {
+            let _ = crate::db::changelog::log_change(
+                conn, "debug", &id, "valid_to", "", &now, "manual forget (debug panel)",
+            );
+        }
+        Ok(expired)
+    })
+}
+
+/// Deletes one episode by id AND its embedding vector (so retrieval stays
+// consistent — a dangling vector would still match). Refuses landmarks (the
+/// automated `episodes::delete` guard; a landmark is a core memory).
+#[tauri::command]
+pub async fn delete_episode(db: State<'_, DbState>, id: String) -> Result<bool, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    db.with_conn(|conn| {
+        let removed = crate::db::episodes::delete(conn, &id)?;
+        if removed {
+            // Keep the vector store in sync — a deleted episode's vector must
+            // not survive or it still scores in cosine search.
+            let _ = crate::db::vectors::delete(conn, &id);
+            let _ = crate::db::changelog::log_change(
+                conn, "debug", &id, "deleted", "", &now, "manual delete (debug panel)",
+            );
+        }
+        Ok(removed)
+    })
+}
+
+/// Cancels (resolves) one pending event by id — a stray or wrong reminder the
+/// user doesn't want firing. Reuses the production `resolve_pending_event`
+/// command from the frontend (no separate debug path — same resolution logic).
+
+/// Manual emotion fields for the debug editor. Only provided (Some) fields are
+/// changed — the rest hold their current value (Architecture #2: partial
+/// update, not a full-state overwrite).
+#[derive(Deserialize)]
+pub struct EmotionEdit {
+    pub mood: Option<f64>,
+    pub physical_energy: Option<f64>,
+    pub social_battery: Option<f64>,
+    pub stress: Option<f64>,
+    pub loneliness: Option<f64>,
+}
+
+/// Sets emotion fields directly — for testing animation/emotion 手感 (e.g. drop
+/// mood to 0.1 to confirm the sad face fires). Writes the fields, re-derives
+/// the mood label from the merged state, then emits `emotion-update`
+/// immediately so the pet's face reflects the override without waiting for the
+/// 30s medium tick (Architecture #10 liveliness).
+#[tauri::command]
+pub async fn set_emotion(
+    app: tauri::AppHandle,
+    db: State<'_, DbState>,
+    edit: EmotionEdit,
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let emo = db.with_conn(|conn| {
+        crate::db::emotion::update_fields(
+            conn, edit.mood, None, edit.physical_energy, edit.social_battery,
+            edit.stress, edit.loneliness, None, &now,
+        )?;
+        // Re-derive the label from the merged values so the panel and pet agree
+        // on "calm"/"tense"/etc. for the manually-set mood.
+        let raw = crate::db::emotion::get(conn)?;
+        let merged = crate::emotion::state::EmotionState {
+            mood: raw.mood,
+            physical_energy: raw.physical_energy,
+            social_battery: raw.social_battery,
+            stress: raw.stress,
+            loneliness: raw.loneliness,
+            rest_need: raw.rest_need,
+        };
+        let label = crate::emotion::state::derive_mood_label(&merged);
+        crate::db::emotion::update_fields(
+            conn, None, Some(&label), None, None, None, None, None, &now,
+        )?;
+        let _ = crate::db::changelog::log_change(
+            conn, "debug", "emotion_state", "manual", "", &label,
+            "manual set (debug panel)",
+        );
+        Ok::<_, String>(raw)
+    })?;
+    // Push immediately — same payload shape as the medium tick's emotion push,
+    // so the frontend's existing listener updates the pet's face at once.
+    let _ = app.emit(
+        "emotion-update",
+        serde_json::json!({
+            "mood": emo.mood,
+            "mood_label": crate::emotion::state::derive_mood_label(&crate::emotion::state::EmotionState {
+                mood: emo.mood, physical_energy: emo.physical_energy,
+                social_battery: emo.social_battery, stress: emo.stress,
+                loneliness: emo.loneliness, rest_need: emo.rest_need,
+            }),
+            "physical_energy": emo.physical_energy,
+            "social_battery": emo.social_battery,
+            "stress": emo.stress,
+            "loneliness": emo.loneliness,
+            "rest_need": emo.rest_need,
+        }),
+    );
+    Ok(())
 }
 
 /// Opens the webview developer tools window (used by the context-menu entry).
@@ -832,4 +1185,18 @@ pub fn open_devtools(app_handle: tauri::AppHandle) {
 pub fn quit_app(app_handle: tauri::AppHandle) {
     log::info!("quit_app invoked, exiting process");
     app_handle.exit(0);
+}
+
+/// Hide the main window to the system tray. Invoked by the "暂时离开"
+/// context-menu item. The process stays alive; clicking the tray icon
+/// restores the window (see the tray setup in lib.rs + `restore-from-tray`).
+#[tauri::command]
+pub async fn hide_to_tray(app_handle: tauri::AppHandle) -> Result<(), String> {
+    log::info!("hide_to_tray: hiding main window to system tray");
+    if let Some(win) = app_handle.get_webview_window("main") {
+        win.hide().map_err(|e| format!("Failed to hide window: {}", e))?;
+    } else {
+        log::warn!("hide_to_tray: main window not found");
+    }
+    Ok(())
 }

@@ -25,6 +25,7 @@ Output JSON only:
 }
 
 pending_event: extract when the user states a future plan OR asks you to remind them of something.
+- Today is {today}. Compute event_date from THIS date (e.g. "tomorrow" = today+1, "next Tuesday" = the Tuesday after today).
 - Short-term reminder ("remind me to drink water in 30 minutes", "提醒我3分钟后喝水", "一小时后叫我"): set title to what to remind about, and offset_minutes to the number of minutes from now (e.g. 30, 3, 60). Do NOT set event_date — the system computes the exact time itself.
 - Dated future event ("interview next Friday", "exam on 2026-08-05"): set title and event_date to the ISO date (YYYY-MM-DD). Do NOT set offset_minutes.
 - Use offset_minutes OR event_date, never both. Most messages have no pending_event — omit it entirely then.

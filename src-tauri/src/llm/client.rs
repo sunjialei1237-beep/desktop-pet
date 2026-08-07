@@ -91,6 +91,59 @@ pub struct ChatResult {
     pub total_tokens: u32,
 }
 
+/// Daily LLM cost accounting for the debug panel (Architecture #8: cost is a
+/// design constraint — it must be observable). Shared via `Arc<Mutex<>>` inside
+/// `LlmClient`, so every clone (one is taken per conversation turn) reports into
+/// the same totals. Resets at the local-day boundary.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LlmCostStats {
+    /// Local date (YYYY-MM-DD) these counts belong to.
+    pub date: String,
+    pub calls: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+impl Default for LlmCostStats {
+    fn default() -> Self {
+        Self {
+            date: local_today(),
+            calls: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+        }
+    }
+}
+
+impl LlmCostStats {
+    /// Records one successful call's usage, resetting totals if the local day
+    /// rolled over since the last record.
+    fn record(&mut self, prompt_tokens: u32, completion_tokens: u32) {
+        let today = local_today();
+        if self.date != today {
+            *self = LlmCostStats::default();
+        }
+        self.calls += 1;
+        self.prompt_tokens += prompt_tokens as u64;
+        self.completion_tokens += completion_tokens as u64;
+    }
+
+    /// Returns a snapshot, zeroed if the local day has rolled over (so an
+    /// overnight process doesn't display yesterday's totals as "today").
+    fn snapshot_today(&self) -> Self {
+        if self.date != local_today() {
+            LlmCostStats::default()
+        } else {
+            self.clone()
+        }
+    }
+}
+
+/// Current local date as YYYY-MM-DD (the user perceives cost in their own day).
+fn local_today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
 /// OpenAI-compatible LLM client. Works with DeepSeek, OpenAI, Moonshot, Ollama, vLLM, etc.
 #[derive(Clone)]
 pub struct LlmClient {
@@ -99,6 +152,10 @@ pub struct LlmClient {
     api_key: String,
     main_model: String,
     reflection_model: String,
+    /// Shared daily cost counters (Architecture #8). Behind `Arc<Mutex<>>` so
+    /// every clone reports into one set of totals; `Arc` keeps `LlmClient`
+    /// `Clone` (a fresh client is taken per conversation turn).
+    cost: std::sync::Arc<std::sync::Mutex<LlmCostStats>>,
 }
 
 impl LlmClient {
@@ -125,7 +182,25 @@ impl LlmClient {
             api_key: api_key.to_string(),
             main_model: main_model.to_string(),
             reflection_model: reflection_model.to_string(),
+            cost: std::sync::Arc::new(std::sync::Mutex::new(LlmCostStats::default())),
         })
+    }
+
+    /// Records one successful call's token usage into the shared daily cost
+    /// stats (Architecture #8). Lock-poison safe: a failed lock only skips
+    /// accounting, never breaks the call.
+    fn track_usage(&self, result: &ChatResult) {
+        if let Ok(mut stats) = self.cost.lock() {
+            stats.record(result.prompt_tokens, result.completion_tokens);
+        }
+    }
+
+    /// Today's LLM cost snapshot for the debug panel (#8/#11).
+    pub fn cost_today(&self) -> LlmCostStats {
+        self.cost
+            .lock()
+            .map(|s| s.snapshot_today())
+            .unwrap_or_default()
     }
 
     /// Sends a chat completion request using the main model.
@@ -224,12 +299,14 @@ impl LlmClient {
             total_tokens: 0,
         });
 
-        Ok(ChatResult {
+        let result = ChatResult {
             content,
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
-        })
+        };
+        self.track_usage(&result);
+        Ok(result)
     }
 
     /// Build the chat-completions URL from the configured base_url. Shared by
@@ -325,13 +402,17 @@ impl LlmClient {
                 let line: String = buf[..pos].trim_end_matches('\r').to_string();
                 buf = buf[pos + 1..].to_string();
                 if Self::feed_sse_line(&line, &mut full, &mut usage, &mut on_token) {
-                    return Ok(Self::finalize_stream(full, usage));
+                    let result = Self::finalize_stream(full, usage);
+                    self.track_usage(&result);
+                    return Ok(result);
                 }
             }
         }
 
         // Stream ended without an explicit [DONE] (some providers omit it).
-        Ok(Self::finalize_stream(full, usage))
+        let result = Self::finalize_stream(full, usage);
+        self.track_usage(&result);
+        Ok(result)
     }
 
     /// Feed one SSE line into the stream accumulator. Returns `true` when the
@@ -485,5 +566,46 @@ mod tests {
         // malformed JSON payload — skipped, not fatal
         assert!(!LlmClient::feed_sse_line("data: {not json", &mut full, &mut usage, &mut on_token));
         assert_eq!(full, "");
+    }
+
+    #[test]
+    fn test_cost_record_accumulates() {
+        let mut stats = LlmCostStats::default();
+        assert_eq!(stats.calls, 0);
+        stats.record(10, 5);
+        stats.record(20, 8);
+        assert_eq!(stats.calls, 2);
+        assert_eq!(stats.prompt_tokens, 30);
+        assert_eq!(stats.completion_tokens, 13);
+    }
+
+    #[test]
+    fn test_cost_record_resets_on_day_rollover() {
+        // A stats block stamped to a long-past date must reset before recording.
+        let mut stats = LlmCostStats {
+            date: "2020-01-01".to_string(),
+            calls: 99,
+            prompt_tokens: 999,
+            completion_tokens: 999,
+        };
+        stats.record(10, 4);
+        assert_eq!(stats.calls, 1); // reset, then +1
+        assert_eq!(stats.prompt_tokens, 10);
+        assert_eq!(stats.completion_tokens, 4);
+        assert_eq!(stats.date, local_today());
+    }
+
+    #[test]
+    fn test_cost_snapshot_zeroes_when_stale() {
+        let stats = LlmCostStats {
+            date: "2020-01-01".to_string(),
+            calls: 99,
+            prompt_tokens: 999,
+            completion_tokens: 999,
+        };
+        let snap = stats.snapshot_today();
+        assert_eq!(snap.calls, 0);
+        assert_eq!(snap.prompt_tokens, 0);
+        assert_eq!(snap.date, local_today());
     }
 }

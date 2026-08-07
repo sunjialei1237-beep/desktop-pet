@@ -53,6 +53,49 @@ pub fn build_system_prompt(
     sections.join("\n\n")
 }
 
+/// The direct-answer directive injected for question routes. Written in
+/// Chinese because the pet replies in Chinese and the directive must steer
+/// the generation language directly (same rationale as the bilingual
+/// anti-fabrication rule).
+const QA_MODE_PROMPT: &str = "\
+[Direct-Answer Mode]
+用户这次问的是知识、技术或事实类问题，ta 想要的是答案，不是闲聊。直接、准确、简短地回答，\
+像朋友随口解释一样自然，不要上课、不要绕圈子。不要引用记忆，不要追问，不要往自己或宠物相关话题上联想。\
+不要假装记得用户说过什么，不要编造用户的过去、偏好或经历——你不知道的事就别说。\
+通常一两句话就够，除非问题本身确实需要展开。不确定就老实说不知道。";
+
+/// Builds the system prompt for direct-answer (question) mode.
+///
+/// Same persona/emotion scaffold as the normal prompt, but deliberately
+/// WITHOUT the retrieved memories section and grounding constraint, so the
+/// model cannot be steered into hard-associating an unrelated knowledge
+/// question with past pet topics (the "你是不是指我的背带" failure mode).
+/// Memory focus is stripped from the intent for the same reason.
+pub fn build_qa_system_prompt(
+    retrieval: &RetrievalResult,
+    emotion: &EmotionState,
+    intent: &Intent,
+) -> String {
+    let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
+
+    sections.push(format_persona(
+        &retrieval.persona_traits,
+        &retrieval.relationship,
+        &retrieval.user_profile,
+    ));
+
+    sections.push(format_emotion(emotion));
+
+    let mut qa_intent = intent.clone();
+    qa_intent.goal = "converse".to_string();
+    qa_intent.memory_anchor.clear();
+    sections.push(format_intent(&qa_intent));
+
+    sections.push(QA_MODE_PROMPT.to_string());
+
+    sections.join("\n\n")
+}
+
 /// The grounding guardrail text injected into every system prompt.
 const MEMORY_CONSTRAINT: &str = "\
 [Grounding Constraint]
@@ -161,7 +204,44 @@ fn format_intent(intent: &Intent) -> String {
 }
 
 /// Formats all retrieved memories (facts + episodes) with annotations.
+///
+/// Hermes-inspired split ledger: landmark episodes (关系账——relationship
+/// milestones like "user accepted the job offer") get their own [Milestones]
+/// section ahead of ordinary memories, so the pet treats them as
+/// relationship anchors rather than one more fact. Regular episodes and
+/// facts stay under [Memories].
 fn format_memories(retrieval: &RetrievalResult) -> String {
+    let mut sections = Vec::new();
+
+    // Landmark episodes = relationship ledger (milestones worth anchoring on).
+    let milestones: Vec<&crate::db::episodes::Episode> = retrieval
+        .episodes
+        .iter()
+        .map(|se| &se.episode)
+        .filter(|e| e.is_landmark)
+        .collect();
+    if !milestones.is_empty() {
+        let mut lines = vec!["[Milestones]".to_string()];
+        for ep in milestones {
+            let date = ep.time.split('T').next().unwrap_or("?");
+            lines.push(format!(
+                "- {} (emotion: {}, date: {})",
+                ep.summary,
+                ep.emotion.as_deref().unwrap_or("neutral"),
+                date,
+            ));
+        }
+        sections.push(lines.join("\n"));
+    }
+
+    // Latest relationship review — always-on relationship context (the pet's
+    // synthesized understanding of where the relationship stands), independent
+    // of what the current topic retrieved. Placed before [Memories] so it acts
+    // as a relationship anchor rather than one more fact.
+    if let Some(review) = &retrieval.relationship_review {
+        sections.push(format!("[Relationship]\n{}", review));
+    }
+
     let mut lines = vec!["[Memories]".to_string()];
 
     // Facts sorted by confidence (already done in retrieval, but ensure here)
@@ -182,8 +262,13 @@ fn format_memories(retrieval: &RetrievalResult) -> String {
         ));
     }
 
-    // Episodes sorted by score (already done in retrieval)
-    for scored_ep in &retrieval.episodes {
+    // Episodes sorted by score (already done in retrieval); landmarks already
+    // surfaced above in [Milestones], skip them here to avoid duplication.
+    for scored_ep in retrieval
+        .episodes
+        .iter()
+        .filter(|se| !se.episode.is_landmark)
+    {
         let ep = &scored_ep.episode;
         let date = ep.time.split('T').next().unwrap_or("?");
         lines.push(format!(
@@ -195,11 +280,15 @@ fn format_memories(retrieval: &RetrievalResult) -> String {
         ));
     }
 
-    if lines.len() == 1 {
+    if lines.len() == 1 && sections.is_empty() {
         return String::new(); // No memories
     }
 
-    lines.join("\n")
+    if lines.len() > 1 {
+        sections.push(lines.join("\n"));
+    }
+
+    sections.join("\n\n")
 }
 
 /// Maps a numeric confidence to a human-readable label.
@@ -308,6 +397,7 @@ mod tests {
             episodes: vec![],
             facts: vec![],
             relationship: None,
+            relationship_review: None,
            persona_traits: vec![],
            user_profile: UserProfile::default(),
        }
@@ -367,6 +457,7 @@ mod tests {
                 closeness_log: None,
                 updated_at: "2026-07-14T10:00:00+00:00".to_string(),
             }),
+            relationship_review: None,
             persona_traits: vec![PersonaTrait {
                 id: "t_1".to_string(),
                 trait_type: "core".to_string(),
@@ -379,6 +470,19 @@ mod tests {
            user_profile: UserProfile::default(),
        }
    }
+
+   #[test]
+    fn test_relationship_review_injected() {
+        // A populated relationship_review must surface as a [Relationship]
+        // block in the system prompt (always-on relationship context).
+        let mut r = empty_retrieval();
+        r.relationship_review = Some("你们最近聊到了实习的事，相处轻松".to_string());
+        let prompt = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
+        assert!(
+            prompt.contains("[Relationship]\n你们最近聊到了实习的事，相处轻松"),
+            "relationship review should be injected as a [Relationship] block"
+        );
+    }
 
    #[test]
     fn test_system_prompt_contains_constraint() {
@@ -454,11 +558,28 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_memories_section() {
-        let retrieval = empty_retrieval();
+    fn test_milestones_split_ledger() {
+        // Hermes-inspired relationship ledger: landmark episodes surface in
+        // [Milestones] and are NOT repeated under [Memories].
+        let mut retrieval = retrieval_with_data();
+        retrieval.episodes[0].episode.is_landmark = true;
+        let prompt = build_system_prompt(&retrieval, &EmotionState::default(), &Intent::default());
+        assert!(prompt.contains("[Milestones]"), "landmark must surface in [Milestones]");
+        assert!(prompt.contains("hotpot"), "milestone summary present");
+        // rfind: system.txt 正文也提到这两个标签，真正的区块在 prompt 末尾。
+        let m_start = prompt.rfind("[Milestones]").unwrap();
+        let m_end = prompt.rfind("[Memories]").unwrap();
+        let after_milestones = &prompt[m_start..m_end];
+        assert!(after_milestones.contains("hotpot"), "milestone text must be inside [Milestones] block");
+        let after_memories = &prompt[m_end..];
+        assert!(!after_memories.contains("hotpot"), "landmark must not repeat under [Memories]");
+    }
+
+    #[test]
+    fn test_empty_memories_section() {        let retrieval = empty_retrieval();
         let prompt = build_system_prompt(&retrieval, &EmotionState::default(), &Intent::default());
         assert!(
-            !prompt.contains("[Memories]"),
+            !prompt.contains("- [Fact]"),
             "should omit memories section when empty"
         );
     }

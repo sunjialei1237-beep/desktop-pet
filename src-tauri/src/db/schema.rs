@@ -5,7 +5,7 @@ use rusqlite::Connection;
 pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     let current_version = get_schema_version(conn)?;
 
-    if current_version >= 2 {
+    if current_version >= 3 {
         log::info!("Database schema at version {}, no migration needed", current_version);
         return Ok(());
     }
@@ -25,6 +25,15 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(sql)
             .map_err(|e| format!("Migration v2 failed: {}", e))?;
         log::info!("Migration v2 applied successfully");
+    }
+
+    let current_version = get_schema_version(conn)?;
+    if current_version < 3 {
+        log::info!("Running migration v3 (relationship_reviews)...");
+        let sql = include_str!("../../migrations/003_relationship_reviews.sql");
+        conn.execute_batch(sql)
+            .map_err(|e| format!("Migration v3 failed: {}", e))?;
+        log::info!("Migration v3 applied successfully");
     }
 
     Ok(())
@@ -64,11 +73,11 @@ mod tests {
     fn test_migration_runs_once() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 2);
+        assert_eq!(get_schema_version(&conn).unwrap(), 3);
 
         // Running again should be a no-op
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 2);
+        assert_eq!(get_schema_version(&conn).unwrap(), 3);
     }
 
     #[test]
@@ -90,6 +99,7 @@ mod tests {
             "app_config",
             "change_log",
             "episode_vectors",
+            "relationship_reviews",
         ];
 
         for table in &expected {

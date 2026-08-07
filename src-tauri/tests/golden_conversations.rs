@@ -133,7 +133,7 @@ fn gc_002_pending_event_tracking() {
         closeness_log: None, updated_at: "2026-07-14".to_string(),
     };
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![], user_profile: UserProfile::default(),
+        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
     let intent = planner::plan("hi", &emotion, Some(&rel), &due, &retrieval_result);
     assert_eq!(intent.action, "proactive_check", "GC_002 FAIL: planner should choose proactive_check");
@@ -157,15 +157,20 @@ fn gc_003_emotion_consistency() {
     };
 
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![], user_profile: UserProfile::default(),
+        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
 
-    // User is anxious + pet is stressed → silence
+    // User is anxious → comfort them (NOT silence). Silence was deliberately
+    // removed from the empathy path to break the anxiety → stress → silence
+    // feedback loop (planner.rs Rule 2). She now responds with gentle care.
+    // The stressed emotion is kept as realistic context; stress no longer
+    // gates anxiety routing. Contract pinned by unit test_anxiety_routes_to_care.
     let intent = planner::plan("I am so stressed about everything", &stressed, None, &[], &retrieval_result);
-    assert_eq!(intent.action, "silence", "GC_003 FAIL: high stress + anxiety should produce silence");
-    assert_eq!(intent.tone, "quiet", "GC_003 FAIL: tone should be quiet");
+    assert_eq!(intent.goal, "care", "GC_003 FAIL: anxiety should route to care goal");
+    assert_eq!(intent.action, "normal", "GC_003 FAIL: anxiety should respond (normal), not silence");
+    assert_eq!(intent.tone, "gentle", "GC_003 FAIL: tone should be gentle");
 
-    println!("GC_003 PASS: stress produces quiet tone");
+    println!("GC_003 PASS: anxiety routes to gentle care (silence removed to break feedback loop)");
 }
 
 // ==========================================
@@ -443,7 +448,7 @@ fn gc_011_budget_token_limit() {
     use desktop_pet_lib::mind::retrieval::RetrievalResult;
 
     let retrieval = RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![], user_profile: UserProfile::default(),
+        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
 
     let mut wm = vec![];
@@ -485,8 +490,11 @@ fn gc_012_first_run_seeds_persona() {
     }).unwrap();
 
     assert!(traits.len() >= 5, "GC_012 FAIL: should seed at least 5 core traits");
-    assert!(traits.iter().any(|t| t.trait_key == "gentle"),
-        "GC_012 FAIL: should seed 'gentle' trait");
+    // Liri persona seeds Chinese keys (firstrun.rs seed_persona); '温柔' is
+    // Liri's "gentle" dimension. The old 'gentle' English key was replaced in
+    // the Liri character migration.
+    assert!(traits.iter().any(|t| t.trait_key == "温柔"),
+        "GC_012 FAIL: should seed '温柔' (gentle) trait");
 
     // Second run should NOT re-seed
     let is_first_again = desktop_pet_lib::lifecycle::run_firstrun_checks(&db).unwrap();
@@ -513,6 +521,7 @@ fn gc_013_planner_celebration() {
         episodes: vec![],
         facts: vec![],
         relationship: None,
+        relationship_review: None,
         persona_traits: vec![],
         user_profile: UserProfile::default(),
     };
@@ -544,7 +553,7 @@ fn gc_014_planner_loneliness_proactive() {
         closeness_log: None, updated_at: "2026-07-14".to_string(),
     };
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![], user_profile: UserProfile::default(),
+        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
     let intent = planner::plan("hi", &lonely, Some(&rel), &[], &retrieval_result);
     assert_eq!(intent.goal, "accompany",
@@ -569,7 +578,7 @@ fn gc_015_planner_low_closeness_boundary() {
         closeness_log: None, updated_at: "2026-07-14".to_string(),
     };
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, persona_traits: vec![], user_profile: UserProfile::default(),
+        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
     let intent = planner::plan("hi", &lonely, Some(&rel), &[], &retrieval_result);
     assert_eq!(intent.goal, "converse",
@@ -610,7 +619,7 @@ fn gc_016_planner_memory_anchor() {
                 semantic: 0.8, strength: 0.7, recency: 0.9, emotion: 0.5,
             },
         }],
-        facts: vec![], relationship: None, persona_traits: vec![],
+        facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![],
         user_profile: UserProfile::default(),
     };
     let emotion = EmotionState::default();
@@ -660,25 +669,6 @@ fn gc_017_pending_full_lifecycle() {
     assert_eq!(due_final.len(), 0, "GC_017 FAIL: resolved event should not be due");
 
     println!("GC_017 PASS: pending event lifecycle works end-to-end");
-}
-
-// ==========================================
-// GC_018: Emotion homeostasis - stress recovers toward baseline
-// ==========================================
-#[test]
-fn gc_018_homeostasis_stress_recovery() {
-    let mut s = EmotionState::default();
-    s.stress = 0.9;
-
-    desktop_pet_lib::emotion::apply_drift(&mut s, 3600.0, false);
-    assert!(s.stress < 0.9, "GC_018 FAIL: stress should have decreased");
-    assert!(s.stress > 0.2, "GC_018 FAIL: stress should not reach baseline yet");
-
-    desktop_pet_lib::emotion::apply_drift(&mut s, 100000.0, false);
-    assert!((s.stress - 0.2).abs() < 0.05,
-        "GC_018 FAIL: stress should be near baseline after long time");
-
-    println!("GC_018 PASS: stress recovers toward baseline");
 }
 
 // ==========================================

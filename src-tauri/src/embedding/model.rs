@@ -52,7 +52,13 @@ impl EmbeddingModel {
 
         let session = Session::builder()
             .map_err(|e| EmbeddingError::Onnx(format!("Session builder: {}", e)))?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
+            // NOTE: ort 2.0.0-rc.12 maps `Level3` -> `ORT_ENABLE_LAYOUT`, a value the
+            // ORT 1.20 runtime does not recognise -> it rejects with
+            // "graph_optimization_level is not valid" and loading fails. `All` maps
+            // to the standard `ORT_ENABLE_ALL` and is what ort's own docs mean by
+            // "all optimizations (i.e. Level3)". (Production load hits the same
+            // path, so this fix applies to the app too.)
+            .with_optimization_level(GraphOptimizationLevel::All)
             .map_err(|e| EmbeddingError::Onnx(format!("Opt level: {}", e)))?
             .with_intra_threads(2)
             .map_err(|e| EmbeddingError::Onnx(format!("Threads: {}", e)))?

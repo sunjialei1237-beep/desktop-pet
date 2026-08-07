@@ -60,8 +60,14 @@ async fn cross_session_recall_works() {
     // ---- Phase 1: SEED a fresh fact with an empty working memory ----
     let seed_wm = WorkingMemory::new();
     let conv_id = format!("mem_seed_{}", chrono::Utc::now().timestamp());
+    let seed_wm_ctx = seed_wm.get_context();
     let seed = converse::converse(
-        SEED_MSG, &conv_id, 0, &seed_wm.get_context(), &llm, &db, None, &pacing, |_|{},
+        &converse::ConverseCtx {
+            text: SEED_MSG, conversation_id: &conv_id, turn: 0,
+            wm_context: &seed_wm_ctx, llm: &llm, db: &db,
+            embedding: None, pacing: &pacing,
+        },
+        |_|{},
     ).await.expect("seed converse");
     println!("SEED reply: {:?}", seed.response);
     println!("SEED route: {:?}, trigger: {}", seed.route, seed.trigger_reason);
@@ -79,9 +85,15 @@ async fn cross_session_recall_works() {
 
     // ---- Phase 2: NOISE check — a pure question must not create a pseudo-fact ----
     let noise_wm = WorkingMemory::new();
+    let noise_conv_id = format!("mem_noise_{}", chrono::Utc::now().timestamp());
+    let noise_wm_ctx = noise_wm.get_context();
     let noise = converse::converse(
-        NOISE_QUESTION, &format!("mem_noise_{}", chrono::Utc::now().timestamp()),
-        0, &noise_wm.get_context(), &llm, &db, None, &pacing, |_|{},
+        &converse::ConverseCtx {
+            text: NOISE_QUESTION, conversation_id: &noise_conv_id, turn: 0,
+            wm_context: &noise_wm_ctx, llm: &llm, db: &db,
+            embedding: None, pacing: &pacing,
+        },
+        |_|{},
     ).await.expect("noise converse");
     let facts_after_noise = snapshot_fact_keys(&db);
     let new_noise_facts: Vec<&String> = facts_after_noise
@@ -94,9 +106,15 @@ async fn cross_session_recall_works() {
 
     // ---- Phase 3: RECALL with a FRESH empty working memory ----
     let recall_wm = WorkingMemory::new();
+    let recall_conv_id = format!("mem_recall_{}", chrono::Utc::now().timestamp());
+    let recall_wm_ctx = recall_wm.get_context();
     let recall = converse::converse(
-        RECALL_MSG, &format!("mem_recall_{}", chrono::Utc::now().timestamp()),
-        0, &recall_wm.get_context(), &llm, &db, None, &pacing, |_|{},
+        &converse::ConverseCtx {
+            text: RECALL_MSG, conversation_id: &recall_conv_id, turn: 0,
+            wm_context: &recall_wm_ctx, llm: &llm, db: &db,
+            embedding: None, pacing: &pacing,
+        },
+        |_|{},
     ).await.expect("recall converse");
     println!("RECALL reply: {:?}", recall.response);
     let recalled = recall.response.contains(EXPECTED_TOKEN);

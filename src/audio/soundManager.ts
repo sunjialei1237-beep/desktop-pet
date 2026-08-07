@@ -29,7 +29,7 @@ export const INTIMATE_THRESHOLD = 40;
 // --- Asset keys -> public paths. Vite serves public/ at BASE_URL root. ---
 type AssetKey =
     | "surprise-soft" | "startle-short" | "soft-ah" | "annoyed" | "laugh"
-    | "cloth" | "land" | "lift" | "send" | "greeting";
+    | "cloth" | "land" | "lift" | "send" | "greeting" | "sleep";
 
 // Public assets served at origin root (same convention as Live2DCanvas paths).
 const ASSET_PATH: Record<AssetKey, string> = {
@@ -43,6 +43,7 @@ const ASSET_PATH: Record<AssetKey, string> = {
     "lift":         "/audio/foley/lift.mp3",           // 跳: pick-up effort
     "send":         "/audio/ui/send.mp3",              // UI音效: send confirm
     "greeting":     "/audio/voice/greeting.mp3",       // hi: startup greeting
+    "sleep":        "/audio/voice/sleep.mp3",          // 睡觉声: drifting off
 };
 
 interface Variant {
@@ -196,6 +197,19 @@ class SoundManager {
         if (this.greeted) return;
         this.greeted = true;
         this.playSample("greeting", ctx);
+    }
+
+    /**
+     * Drifting-off cue when she falls asleep. A one-shot state-entry cue (like
+     * greet()), NOT a weighted-random interaction sound — so it bypasses the
+     * trigger table. The call site (DeepNight auto-sleep) is the natural rate
+     * limiter, so no one-shot flag or cooldown is needed. Mute respected via
+     * ensureCtx (#6).
+     */
+    sleep(): void {
+        const ctx = this.ensureCtx();
+        if (!ctx) return; // muted / unavailable
+        this.playSample("sleep", ctx);
     }
 
     private pick(variants: Variant[]): Variant {

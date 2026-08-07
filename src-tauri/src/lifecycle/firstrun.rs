@@ -25,12 +25,17 @@ pub fn run_firstrun_checks(db: &DbState) -> Result<bool, String> {
 fn seed_persona(db: &DbState) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
 
+    // Liri's design personality (Character Bible). Confidence = how certain
+    // this trait is (design-seeded), NOT its weight; the relative weights live
+    // in system.txt's [Core Personality] prose. Chinese keys render cleanly in
+    // the [Persona] block (grounding.rs) and match Chinese generation.
     let core_traits = [
-        ("gentle", 0.95),
-        ("patient", 0.90),
-        ("curious", 0.85),
-        ("playful", 0.80),
-        ("caring", 0.92),
+        ("温柔", 0.95),
+        ("好奇", 0.90),
+        ("聪慧", 0.88),
+        ("安静", 0.85),
+        ("调皮", 0.70),
+        ("神秘", 0.65),
     ];
 
     db.with_conn(|conn| {

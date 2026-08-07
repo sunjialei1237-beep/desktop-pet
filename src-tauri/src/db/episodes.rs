@@ -89,6 +89,23 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<Episode>, String> {
     Ok(result)
 }
 
+/// Deletes a single episode by ID (selective forgetting — user-directed).
+/// Landmarks are protected: refusing to delete a landmark extends
+/// lifecycle_cleanup's invariant to user requests, so the pet's formative
+/// memories survive even if asked to forget them. Returns true if a row was
+/// actually removed (false for a landmark or a missing id). The caller also
+/// removes the episode's embedding vector (db::vectors::delete) to keep
+/// retrieval consistent.
+pub fn delete(conn: &Connection, id: &str) -> Result<bool, String> {
+    let affected = conn
+        .execute(
+            "DELETE FROM episodes WHERE id = ?1 AND is_landmark = 0",
+            params![id],
+        )
+        .map_err(|e| format!("Failed to delete episode: {}", e))?;
+    Ok(affected > 0)
+}
+
 /// Decays all non-landmark episode strengths by the daily decay rate.
 pub fn decay_strength(conn: &Connection) -> Result<u64, String> {
     let affected = conn

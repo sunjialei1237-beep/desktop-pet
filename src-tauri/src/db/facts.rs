@@ -77,6 +77,25 @@ pub fn dedup_insert(conn: &Connection, fact: &Fact) -> Result<(), String> {
     Ok(())
 }
 
+/// Expires a SINGLE fact by id (selective forgetting — user-directed).
+/// Sets valid_to = now on the still-active fact with this id. Unlike
+/// `expire_old` (which expires every value of a category+key when a
+/// contradiction arrives), this is precise: only the one fact the user asked
+/// to forget. Soft-delete (expire) preserves the row so the audit trail and
+/// `dedup_insert`'s revive path stay intact — a forgotten preference simply
+/// stops surfacing until the user states it again. Returns true only if an
+/// active fact was actually expired (false if already expired or missing).
+pub fn expire_by_id(conn: &Connection, id: &str, now: &str) -> Result<bool, String> {
+    let affected = conn
+        .execute(
+            "UPDATE facts SET valid_to = ?1, updated_at = ?1
+             WHERE id = ?2 AND valid_to IS NULL",
+            params![now, id],
+        )
+        .map_err(|e| format!("Failed to expire fact by id: {}", e))?;
+    Ok(affected > 0)
+}
+
 /// Expires old facts when a contradicting fact arrives.
 /// Sets valid_to = now on the old fact with the same (category, key) but different value.
 pub fn expire_old(conn: &Connection, category: &str, key: &str, now: &str) -> Result<u64, String> {
@@ -206,6 +225,35 @@ mod tests {
             // Old fact should be expired
             let active = get_active(conn, "preference", "drink")?;
             assert_eq!(active.len(), 0, "expired fact should not be active");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_expire_by_id_is_precise() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            // Two active facts under the same category+key but different values.
+            // expire_old would nuke both; expire_by_id must touch only the one.
+            dedup_insert(conn, &test_fact("f1", "preference", "drink", "coffee"))?;
+            // Bypass dedup (same key, different value) via a direct second row.
+            conn.execute(
+                "INSERT INTO facts (id, category, key, value, confidence, valid_from, valid_to, source_episode, mention_count, created_at, updated_at)
+                 VALUES ('f2','preference','drink','milk tea',0.8,'2026-07-14',NULL,NULL,1,'2026-07-14','2026-07-14')",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+
+            assert!(expire_by_id(conn, "f1", "2026-08-05T00:00:00")?, "active fact should expire");
+            assert!(!expire_by_id(conn, "f1", "2026-08-05T00:00:00")?, "already-expired fact should not expire again");
+            assert!(!expire_by_id(conn, "nope", "2026-08-05T00:00:00")?, "missing id should return false");
+
+            // f2 must still be active (precise, not category-wide).
+            let mut active = get_active(conn, "preference", "drink")?;
+            active.sort_by(|a, b| a.id.cmp(&b.id));
+            assert_eq!(active.len(), 1, "only f2 should remain active");
+            assert_eq!(active[0].id, "f2");
             Ok(())
         })
         .unwrap();

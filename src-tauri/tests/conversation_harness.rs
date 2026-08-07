@@ -102,14 +102,11 @@ async fn run_50_turn_conversation() {
         let wm_ctx = wm.lock().unwrap().get_context();
 
         let result = match converse::converse(
-            question,
-            &conversation_id,
-            i as i32,
-            &wm_ctx,
-            &llm,
-            &db,
-            None,
-            &pacing,
+            &converse::ConverseCtx {
+                text: question, conversation_id: &conversation_id, turn: i as i32,
+                wm_context: &wm_ctx, llm: &llm, db: &db,
+                embedding: None, pacing: &pacing,
+            },
             |_|{},
         )
         .await

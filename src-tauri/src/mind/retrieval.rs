@@ -41,11 +41,14 @@ pub struct ScoreBreakdown {
 }
 
 /// Full retrieval result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RetrievalResult {
     pub episodes: Vec<ScoredEpisode>,
     pub facts: Vec<db_facts::Fact>,
     pub relationship: Option<db_relationship::Relationship>,
+    /// Latest relationship-review summary (always-on relationship context).
+    /// None until the first background review runs. Injected as [Relationship].
+    pub relationship_review: Option<String>,
     pub persona_traits: Vec<db_persona::PersonaTrait>,
     pub user_profile: UserProfile,
 }
@@ -147,10 +150,19 @@ pub fn retrieve(
     // Onboarding profile (user-chosen nickname / pet name / personality / relationship).
     let user_profile = db.with_conn(crate::db::onboarding::load)?;
 
+    // Latest relationship review (always-on relationship context). Cheap DB
+    // read (no embedding); None until the first background review runs.
+    let relationship_review = db
+        .with_conn(crate::db::relationship_reviews::get_latest)
+        .ok()
+        .flatten()
+        .map(|r| r.summary);
+
     Ok(RetrievalResult {
         episodes: scored,
         facts,
         relationship,
+        relationship_review,
         persona_traits,
         user_profile,
     })
@@ -262,7 +274,11 @@ fn compute_semantic(
 
 /// Keyword overlap similarity for fallback. Falls back to character bigrams
 /// for CJK text where whitespace tokenization produces no word overlap.
-fn keyword_similarity(a: &str, b: &str) -> f64 {
+///
+/// `pub(crate)` so `mind::forget` can reuse this proven CJK matcher when
+/// finding the best fact / pending event to forget (facts and pending events
+/// have no embedding vectors, so their match confidence is keyword-based).
+pub(crate) fn keyword_similarity(a: &str, b: &str) -> f64 {
     let words_a: std::collections::HashSet<&str> = a.split_whitespace().collect();
     let words_b: std::collections::HashSet<&str> = b.split_whitespace().collect();
     if words_a.is_empty() || words_b.is_empty() {
@@ -292,6 +308,27 @@ fn char_bigrams(s: &str) -> std::collections::HashSet<String> {
         .windows(2)
         .map(|w| format!("{}{}", w[0], w[1]))
         .collect()
+}
+
+/// Overlap coefficient on character-bigrams: `|A ∩ B| / min(|A|, |B|)` (0..1).
+/// Unlike the symmetric `keyword_similarity` (Jaccard, which divides by the
+/// UNION), this normalizes by the SMALLER bigram set — so it stays high when a
+/// short memory is surrounded by extra words in either direction:
+///   - "忘掉咖啡" vs fact value "咖啡"      → 1.0 (the value is fully mentioned)
+///   - "忘掉面试提醒" vs reminder "面试提醒" → 1.0 (the title is fully mentioned)
+///   - "忘掉面试" vs reminder "明天的面试"   → 0.33 (genuinely ambiguous → declines)
+/// Used by selective forgetting for facts / pending events, which have no
+/// embedding vectors so their match confidence is keyword-driven. (Architecture
+/// Principle #11: documented metric.)
+pub(crate) fn char_overlap(a: &str, b: &str) -> f64 {
+    let ba = char_bigrams(a);
+    let bb = char_bigrams(b);
+    if ba.is_empty() || bb.is_empty() {
+        return 0.0;
+    }
+    let inter = ba.intersection(&bb).count() as f64;
+    let smaller = ba.len().min(bb.len()) as f64;
+    inter / smaller
 }
 
 /// Computes time-based recency score: exp(-days_old / halflife).
@@ -402,6 +439,22 @@ mod tests {
     fn test_keyword_similarity_no_overlap() {
         let sim = keyword_similarity("apple", "banana");
         assert!((sim - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_char_overlap() {
+        // Short memory fully mentioned inside a longer request (either direction).
+        assert!((char_overlap("忘掉咖啡", "咖啡") - 1.0).abs() < 0.001, "value fully contained");
+        assert!((char_overlap("咖啡", "忘掉咖啡") - 1.0).abs() < 0.001, "symmetric");
+        // Unrelated memory.
+        assert!((char_overlap("忘掉那个", "咖啡") - 0.0).abs() < 0.001, "no overlap");
+        // Multi-char value fully contained.
+        assert!((char_overlap("忘掉咖啡奶茶这件事", "咖啡奶茶") - 1.0).abs() < 0.001);
+        // Partial: only one shared bigram between two 3-bigram strings → 1/3.
+        let partial = char_overlap("我提到了咖啡", "咖啡奶茶"); // shared {咖啡}, min(4,3)=3
+        assert!((partial - 1.0 / 3.0).abs() < 0.01, "partial overlap got {}", partial);
+        // Empty side is undefined -> 0.
+        assert_eq!(char_overlap("abc", ""), 0.0);
     }
 
     #[test]

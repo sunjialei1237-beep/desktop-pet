@@ -1,4 +1,5 @@
 use crate::llm::client::{ChatMessage, LlmClient};
+use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 
 const EXTRACTOR_PROMPT: &str = include_str!("../../resources/prompts/extractor.txt");
@@ -86,25 +87,78 @@ pub async fn extract(
     known_facts: &str,
     llm: &LlmClient,
 ) -> Result<ExtractionResult, String> {
-    let system_prompt = EXTRACTOR_PROMPT.replace("{known_facts}", known_facts);
+    // Inject today's date (local time, weekday) so the LLM can resolve
+    // relative dates like "明天" / "下周二" correctly instead of hallucinating
+    // a training-date (observed: "明天" → 2026-01-02, "下周二" → 2026-05-12).
+    let now_local = chrono::Local::now();
+    let weekday_cn = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        [now_local.weekday().num_days_from_monday() as usize];    let today = format!("{}（{}）", now_local.format("%Y-%m-%d"), weekday_cn);
+    let system_prompt = EXTRACTOR_PROMPT
+        .replace("{known_facts}", known_facts)
+        .replace("{today}", &today);
 
-    let messages = vec![
-        ChatMessage {
-            role: "system".to_string(),
-            content: system_prompt,
-        },
-        ChatMessage {
-            role: "user".to_string(),
-            content: text.to_string(),
-        },
-    ];
+    let messages = || {
+        vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: system_prompt.clone(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: text.to_string(),
+            },
+        ]
+    };
 
-    let result = llm
-        .chat_reflection(&messages, Some(0.3), Some(4096))
-        .await
-        .map_err(|e| format!("Extractor LLM call failed: {}", e))?;
+    let mut last_err = String::new();
+    for attempt in 1..=2 {
+        let result = llm
+            .chat_reflection(&messages(), Some(0.3), Some(4096))
+            .await
+            .map_err(|e| format!("Extractor LLM call failed: {}", e))?;
 
-    parse_extraction(&result.content)
+        match parse_extraction(&result.content) {
+            Ok(extraction) => {
+                if attempt > 1 {
+                    log::info!("[extractor] recovery succeeded on retry {attempt}");
+                }
+                return Ok(extraction);
+            }
+            Err(e) => {
+                last_err = e;
+                // Empty/blank content is a transient flash empty-output (same
+                // failure mode as pitfall #3, but with 4096 the reasoning ate
+                // the full budget). One retry; then degrade to an empty
+                // extraction so a lost reminder never kills the whole turn.
+                if result.content.trim().is_empty() {
+                    log::warn!(
+                        "[extractor] empty LLM content (attempt {}); retrying or degrading",
+                        attempt
+                    );
+                } else {
+                    log::warn!(
+                        "[extractor] parse failed (attempt {}): {}",
+                        attempt,
+                        truncate_for_log(&result.content, 120)
+                    );
+                }
+            }
+        }
+    }
+
+    log::warn!(
+        "[extractor] extraction failed after retries: {}; degrading to empty extraction (turn continues, memory skipped)",
+        last_err
+    );
+    Ok(ExtractionResult::default())
+}
+
+fn truncate_for_log(s: &str, n: usize) -> String {
+    let mut out: String = s.chars().take(n).collect();
+    if s.chars().count() > n {
+        out.push('…');
+    }
+    out
 }
 
 /// Parses the LLM's JSON output into an ExtractionResult.

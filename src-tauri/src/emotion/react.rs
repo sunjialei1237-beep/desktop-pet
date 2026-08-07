@@ -117,6 +117,21 @@ pub fn welcome_back_canned(mood: f64, away_secs: u64) -> &'static str {
     }
 }
 
+/// Rule-based fallback for the loneliness-driven nudge when the LLM is
+/// unconfigured or returns nothing (Architecture Principle 8: degrade
+/// gracefully). Picks by mood bucket. Mirrors the LLM path's contract: a
+/// short, gentle reach-out — never clingy, never a question that demands an
+/// answer (respects Liri's non-dependent nature).
+pub fn lonely_canned(mood: f64) -> &'static str {
+    if mood >= 0.65 {
+        "嘿~你还在呀，真好。"
+    } else if mood <= 0.35 {
+        "……你也在呢吧。"
+    } else {
+        "突然想跟你说说话~"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -202,6 +202,7 @@ mod tests {
            episodes: vec![],
            facts: vec![],
            relationship: None,
+           relationship_review: None,
            persona_traits: vec![],
            user_profile: UserProfile::default(),
        }
@@ -239,6 +240,7 @@ mod tests {
            }],
            facts: vec![],
            relationship: None,
+           relationship_review: None,
            persona_traits: vec![],
            user_profile: UserProfile::default(),
        }

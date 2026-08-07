@@ -16,6 +16,7 @@ import { createGravity, stepGravity, type GravityState } from "./animation/gravi
 import { getCircadianState, deepNightMessages, TimeOfDay } from "./animation/circadian";
 import { DEFAULT_EMOTION, type EmotionVector } from "./animation/emotionDriver";
 import { typewriterPacing, inferPacingMood } from "./animation/bubblePacing";
+import { shouldAutoSleep } from "./animation/sleepLogic";
 import { sound, INTIMATE_THRESHOLD } from "./audio/soundManager";
 
 interface EmotionData {
@@ -25,6 +26,7 @@ interface EmotionData {
   social_battery: number;
   stress: number;
   loneliness: number;
+  rest_need: number;
 }
 
 interface ProactiveAction {
@@ -52,8 +54,8 @@ function bubbleClassForMood(label: string): string {
 }
 
 // Project the backend emotion snapshot to the continuous vector the Live2D
-// layer interpolates. `rest_need` is not yet exposed by the backend (energy
-// already covers fatigue); defaulted to 0 here -- tracked as a follow-up.
+// layer interpolates. `rest_need` is now exposed by the backend (and evolved in
+// the homeostasis loop), so a tired pet's droopy eyes actually show.
 function toEmotionVector(e: EmotionData): EmotionVector {
   return {
     mood: e.mood,
@@ -61,7 +63,7 @@ function toEmotionVector(e: EmotionData): EmotionVector {
     social_battery: e.social_battery,
     stress: e.stress,
     loneliness: e.loneliness,
-    rest_need: 0,
+    rest_need: e.rest_need,
   };
 }
 
@@ -235,14 +237,19 @@ const transientTimerRef = useRef<number | null>(null);
       // DeepNight (2-6) auto-sleep: left alone long enough + nothing happening ->
       // drift off. markInteraction() refreshes lastInteractionRef on any poke/pet/
       // drag/chat, so this won't re-fire until SLEEP_AFTER_IDLE_MS elapses again.
+      // Condition extracted to shouldAutoSleep() so it is unit-testable.
       if (
-        circadianRef.current.period === TimeOfDay.DeepNight &&
-        fsm.state !== BehaviorState.Sleeping &&
-        !isThinking &&
-        behavior !== BehaviorState.Talking &&
-        Date.now() - lastInteractionRef.current > SLEEP_AFTER_IDLE_MS
+        shouldAutoSleep({
+          period: circadianRef.current.period,
+          state: fsm.state,
+          isThinking,
+          isTalking: behavior === BehaviorState.Talking,
+          idleMs: Date.now() - lastInteractionRef.current,
+          thresholdMs: SLEEP_AFTER_IDLE_MS,
+        })
       ) {
         fsm.forceState(BehaviorState.Sleeping);
+        sound.sleep(); // drifting-off cue (plays once — guard above gates entry)
         return;
       }
       if (isThinking || behavior === BehaviorState.Talking) return;
@@ -341,6 +348,24 @@ const transientTimerRef = useRef<number | null>(null);
         .catch((e) => console.warn("[welcome-back] welcome_back_bubble failed", e));
     }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
+    // Loneliness-driven nudge: homeostasis let loneliness climb while the user
+    // was idle at the desk, and the backend (gated by closeness + presence +
+    // 30-min cooldown) decided she should reach out. Voice it via the
+    // memory-grounded LLM path (falls back to a rule line backend-side).
+    // Suppressed during onboarding / away, like welcome-back.
+    listen<{ loneliness: number }>("lonely-nudge", () => {
+      if (onboardingActiveRef.current) return;
+      if (awayMode) return;
+      // She's asleep — don't wake her to say "想你了". Mirrors the "go to bed"
+      // nudge guard: a sleepy 璃 stays sleepy (Architecture #12 silence).
+      if (fsmRef.current?.state === BehaviorState.Sleeping) return;
+      invoke<string | null>("lonely_bubble")
+        .then((reply) => {
+          if (reply) showBubble(reply, 10000, bubbleClassForMood(moodLabel));
+        })
+        .catch((e) => console.warn("[lonely-nudge] lonely_bubble failed", e));
+    }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
+
     listen<{ status: string; elapsed_secs: number }>("app-status", (event) => {
       if (event.payload.status === "resumed") {
         const hours = Math.round(event.payload.elapsed_secs / 3600);
@@ -417,7 +442,13 @@ const transientTimerRef = useRef<number | null>(null);
 
  useEffect(() => {
    const onKey = (e: KeyboardEvent) => {
-     if (e.key === "F12") { e.preventDefault(); setShowDebug((v) => !v); }
+     // F12 is the default, but some laptops hijack it (e.g. sleep key), so also
+     // accept Ctrl+Shift+D as a reliable alternate to toggle the Debug Panel.
+     const k = e.key.toLowerCase();
+     if (e.key === "F12" || (e.ctrlKey && e.shiftKey && k === "d")) {
+       e.preventDefault();
+       setShowDebug((v) => !v);
+     }
    };
    window.addEventListener("keydown", onKey);
    return () => window.removeEventListener("keydown", onKey);
@@ -679,20 +710,27 @@ const transientTimerRef = useRef<number | null>(null);
    return () => cancelAnimationFrame(raf);
   }, [awayMode, isThinking, attention, inputVisible]);
 
-  // P12: DeepNight proactive nudge (every 10 min check, fires once per period)
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (awayMode) return;
-      const circ = getCircadianState();
-      if (circ.period === TimeOfDay.DeepNight && Math.random() < 0.4) {
-        const msgs = deepNightMessages();
-        showBubble(msgs[Math.floor(Math.random() * msgs.length)], 8000, "bubble-worried");
-      } else if (circ.period === TimeOfDay.LateNight && Math.random() < 0.2) {
-        showBubble("还不睡呀…", 6000, "bubble-sad");
-      }
-    }, 10 * 60 * 1000);
-    return () => clearInterval(timer);
+  // P12: DeepNight/LateNight proactive nudge. Extracted into a callback so the
+  // dev verify hook (window.__pet.probeNudge) can fire one on demand instead of
+  // waiting the full 10-min interval.
+  const runNudge = useCallback(() => {
+    if (awayMode) return;
+    // She's asleep — don't sleep-talk the "go to bed" nudge (#10).
+    if (fsmRef.current?.state === BehaviorState.Sleeping) return;
+    const circ = getCircadianState();
+    if (circ.period === TimeOfDay.DeepNight && Math.random() < 0.4) {
+      const msgs = deepNightMessages();
+      showBubble(msgs[Math.floor(Math.random() * msgs.length)], 8000, "bubble-worried");
+    } else if (circ.period === TimeOfDay.LateNight && Math.random() < 0.2) {
+      showBubble("还不睡呀…", 6000, "bubble-sad");
+    }
   }, [showBubble, awayMode]);
+
+  // Nudge check every 10 min (fires once per period, probabilistically).
+  useEffect(() => {
+    const timer = setInterval(runNudge, 10 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [runNudge]);
 
 // P12: Drag handling
   // 方案 B: drag the pet = drag the OS window. NATIVE startDragging() for zero
@@ -711,6 +749,51 @@ const transientTimerRef = useRef<number | null>(null);
       fsmRef.current.forceState(BehaviorState.Idle);
     }
   }, []);
+
+  // DEV-ONLY verify hook (北极星 #7: invisible in release — Vite replaces
+  // import.meta.env.DEV with false and dead-code-eliminates this effect).
+  // Lets us验收 circadian / Sleeping / B3 WITHOUT touching the OS clock or
+  // waiting 10 min. Open browser DevTools (right-click pet → DevTools, dev
+  // only — calls open_devtools; NOTE F12 is the in-app Debug Panel, different)
+  // → Console → window.__pet. See docs/verify-checklist.md.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const origGetHours = Date.prototype.getHours;
+    const api = {
+      // Pretend it's hour h. circadian.ts is the only getHours caller; Date.now()
+      // is untouched, so idle/sleep timers still use the real clock.
+      setHour: (h: number): void => { Date.prototype.getHours = (): number => h; },
+      // Restore the real clock.
+      resetHour: (): void => { Date.prototype.getHours = origGetHours; },
+      // Back-date last interaction so the DeepNight auto-sleep guard fires on
+      // the next 2.5s tick — skips the 10-min idle wait, real code path.
+      forceIdle: (mins: number): void => {
+        lastInteractionRef.current = Date.now() - mins * 60_000;
+      },
+      // Enter/exit Sleeping directly (sleeping pose + sleep sound).
+      sleep: (): void => {
+        fsmRef.current?.forceState(BehaviorState.Sleeping);
+        sound.sleep();
+      },
+      wake: (): void => { markInteraction(); },
+      // Fire one nudge check now instead of waiting 10 min. No-op while asleep
+      // (verifies B3① suppression); 0.4/0.2 random, so call a few times.
+      probeNudge: (): void => { runNudge(); },
+      state: (): Record<string, unknown> => ({
+        behavior: fsmRef.current?.state,
+        period: circadianRef.current.period,
+        sleepiness: circadianRef.current.sleepiness,
+        idleSecs: Math.round((Date.now() - lastInteractionRef.current) / 1000),
+      }),
+    };
+    const w = window as unknown as { __pet?: typeof api };
+    w.__pet = api;
+    console.log("[dev] window.__pet ready: setHour/forceIdle/sleep/wake/probeNudge/state");
+    return () => {
+      Date.prototype.getHours = origGetHours; // never leak a fake hour
+      delete w.__pet;
+    };
+  }, [runNudge, markInteraction]);
 
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return; // left click only
@@ -963,6 +1046,25 @@ const handleBodyClick = useCallback(() => {
   const handleAwayMode = useCallback(() => {
     setAwayMode(true);
     showBubble("我先休息一下哦~", 4000, "bubble-calm");
+    // Hide the window to the system tray shortly after the bubble shows.
+    // Clicking the tray icon restores it (clears awayMode via the
+    // restore-from-tray listener below).
+    setTimeout(() => { void invoke("hide_to_tray"); }, 600);
+  }, [showBubble]);
+
+  // Restore from tray: clicking the tray icon re-shows the window (Rust) and
+  // emits this event. Clear awayMode and greet the user back.
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    (async () => {
+      unlisten = await listen("restore-from-tray", () => {
+        setAwayMode(false);
+        showBubble("回来啦~", 3000, "bubble-happy");
+      });
+      if (cancelled) unlisten();
+    })();
+    return () => { cancelled = true; unlisten?.(); };
   }, [showBubble]);
 
   const handleQuit = useCallback(() => {
@@ -1034,6 +1136,7 @@ const handleBodyClick = useCallback(() => {
      onModelBounds={handleModelBounds}
      onModelHitBounds={handleModelHitBounds}
      transientExpression={transientExpression}
+     speedModifier={circadianRef.current.speedModifier}
    />
    </div>
 
@@ -1063,7 +1166,13 @@ const handleBodyClick = useCallback(() => {
       )}
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
-      {showDebug && <DebugPanel />}
+      {showDebug && (
+        <DebugPanel
+          anim={{ state: behavior, history: fsmRef.current?.getHistory() ?? [] }}
+          onClose={() => setShowDebug(false)}
+          onQuit={handleQuit}
+        />
+      )}
     </div>
   );
 }

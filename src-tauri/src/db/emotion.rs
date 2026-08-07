@@ -136,15 +136,42 @@ pub fn apply_homeostasis_time_aware(conn: &Connection, now: &str) -> Result<f64,
     let new_social = drift_toward(current.social_battery, current.bl_social, elapsed, TAU_SOCIAL);
     let new_stress = drift_toward(current.stress, current.bl_stress, elapsed, TAU_STRESS);
 
+    // Rest need evolves via the shared needs rule (grows when energy is low,
+    // recovers when rested). The in-memory `tick_needs` was never wired here, so
+    // rest_need was previously frozen at its seed value -- exposing it to the
+    // frontend had no visible effect. Activating it now lets droopy-tired eyes
+    // actually appear (Architecture Principle #10: liveliness).
+    let new_rest_need =
+        crate::emotion::tick_rest_need(current.rest_need, current.physical_energy, elapsed);
+
+    // Loneliness drifts up over idle time via the shared needs rule. The
+    // interaction drop is applied as react deltas during conversation
+    // (mind::converse), so homeostasis only models the growth term. Previously
+    // loneliness was never updated here -> it froze at its seed value and the
+    // planner's "high loneliness -> accompany" rule was unreachable in
+    // production. Activating it lets her actually miss the user (Architecture
+    // Principle #1: pure rule; #10: liveliness).
+    let new_loneliness = crate::emotion::tick_loneliness(current.loneliness, elapsed);
+
     let new_label = crate::emotion::state::label_for_mood(new_mood);
 
     conn.execute(
         "UPDATE emotion_state SET
             mood = ?1, mood_label = ?2,
             physical_energy = ?3, social_battery = ?4, stress = ?5,
-            last_homeostasis_at = ?6, updated_at = ?6
+            rest_need = ?6, loneliness = ?7,
+            last_homeostasis_at = ?8, updated_at = ?8
          WHERE id = 1",
-        params![new_mood, new_label, new_energy, new_social, new_stress, now],
+        params![
+            new_mood,
+            new_label,
+            new_energy,
+            new_social,
+            new_stress,
+            new_rest_need,
+            new_loneliness,
+            now
+        ],
     )
     .map_err(|e| format!("Failed to apply time-aware homeostasis: {}", e))?;
 
@@ -193,6 +220,29 @@ mod tests {
             assert!((elapsed - 300.0).abs() < 1.0, "5 min elapsed");
             let emo = get(conn)?;
             assert!(emo.stress < 0.8, "stress should drift toward baseline");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_time_aware_homeostasis_grows_loneliness() {
+        // The production homeostasis path must grow loneliness over idle time.
+        // Previously loneliness was never updated here -> frozen at its seed
+        // value -> planner Rule 4 (high loneliness -> accompany) unreachable.
+        let db = test_db();
+        db.with_conn(|conn| {
+            // Start at loneliness 0, 1h ago.
+            update_fields(conn, None, None, None, None, None, Some(0.0), None, "2026-01-01T00:00:00+00:00")?;
+            conn.execute("UPDATE emotion_state SET last_homeostasis_at = '2026-01-01T00:00:00+00:00' WHERE id = 1", []).map_err(|e| format!("{}", e))?;
+            let _ = apply_homeostasis_time_aware(conn, "2026-01-01T01:00:00+00:00")?;
+            let emo = get(conn)?;
+            // 1h = 3600s @ 0.0001/s -> +0.36
+            assert!(
+                (emo.loneliness - 0.36).abs() < 0.01,
+                "loneliness should grow ~0.36 over 1h idle, got {}",
+                emo.loneliness
+            );
             Ok(())
         })
         .unwrap();

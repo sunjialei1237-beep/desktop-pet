@@ -37,6 +37,7 @@ F12                                                         # Debug Panel（仅 
 - `docs/HANDOFF.md` — ⭐ 跨会话进度/交接（**每次会话先读**）
 - `docs/Architecture-Principles.md` — 12 条北极星原则
 - `docs/specs/...design.md` — 产品设计 v2（16 节）
+- `docs/specs/liri/` — ⭐ Liri 角色圣经（设计规范/动画设计/制作规范）：**最终角色=璃(小狐灵)，动画走 Spine+PixiJS 非 Live2D**（当前 `Live2DCanvas.tsx` 占位待迁；FSM/emotionDriver 沿用）
 - `docs/plans/...plan.md` — 实施计划 v1.1（P0–P17 + Kill List）
 - `docs/decisions/` — ADR 决策记录（窗口策略等）
 - `docs/archive/known-issues-2026-07-18.md` — 历史问题诊断（P1 视线已修复，留作上下文）

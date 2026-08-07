@@ -8,6 +8,7 @@ pub mod relationship;
 pub mod emotion;
 pub mod pending;
 pub mod reflections;
+pub mod relationship_reviews;
 pub mod vectors;
 pub mod changelog;
 pub mod onboarding;

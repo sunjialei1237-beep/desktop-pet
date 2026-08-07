@@ -1,5 +1,6 @@
 pub mod correction;
 pub mod extractor;
+pub mod forget;
 pub mod gate;
 pub mod store;
 pub mod working;
@@ -10,8 +11,10 @@ pub mod trigger;
 pub mod planner;
 pub mod converse;
 pub mod pacing;
+pub mod evaluation;
 
 pub use correction::{handle_correction, CorrectionResult};
+pub use forget::{forget_best_match, forget_episode, ForgetResult};
 pub use extractor::{extract, EmotionDelta, EpisodeInput, ExtractionResult, FactInput, PendingInput};
 pub use gate::{classify, GateRoute};
 pub use store::store as store_extraction;
@@ -54,6 +57,7 @@ pub async fn ingest(
                 extraction: Some(extraction),
                 episode_id,
                 correction: None,
+                forget: None,
             })
         }
 
@@ -70,6 +74,7 @@ pub async fn ingest(
                 extraction: Some(extraction),
                 episode_id: None,
                 correction: None,
+                forget: None,
             })
         }
 
@@ -105,6 +110,7 @@ pub async fn ingest(
                 extraction: Some(extraction),
                 episode_id: None,
                 correction: None,
+                forget: None,
             })
         }
 
@@ -116,6 +122,27 @@ pub async fn ingest(
                 extraction: None,
                 episode_id: None,
                 correction,
+                forget: None,
+            })
+        }
+
+        GateRoute::Forget => {
+            // User asked to forget something. Scan episodes, facts, and pending
+            // reminders for the single best confident match and erase it
+            // (episode: hard delete + vector cleanup; fact: soft expire;
+            // pending: resolve). Rust decides what to delete and refuses when
+            // uncertain or for landmarks; the LLM only classified the intent
+            // (Architecture Principle #1). No confident match -> she honestly
+            // tells the user she doesn't remember it (never deletes the wrong
+            // thing). The result is surfaced to converse so she can acknowledge
+            // naturally without repeating the deleted content.
+            let forget = forget_best_match(text, db, embedding)?;
+            Ok(IngestionOutcome {
+                route,
+                extraction: None,
+                episode_id: None,
+                correction: None,
+                forget: Some(forget),
             })
         }
 
@@ -126,6 +153,21 @@ pub async fn ingest(
                 extraction: None,
                 episode_id: None,
                 correction: None,
+                forget: None,
+            })
+        }
+
+        GateRoute::Question => {
+            // General-knowledge question: no memory operation. Skip the
+            // extractor entirely (saves an LLM call) — extraction would only
+            // return empty facts for a question anyway. Direct-answer mode is
+            // handled downstream in converse.
+            Ok(IngestionOutcome {
+                route,
+                extraction: None,
+                episode_id: None,
+                correction: None,
+                forget: None,
             })
         }
     }
@@ -142,4 +184,6 @@ pub struct IngestionOutcome {
     pub episode_id: Option<String>,
     /// The correction result (if a correction was handled).
     pub correction: Option<CorrectionResult>,
+    /// The forget result (if the user asked to forget a memory).
+    pub forget: Option<ForgetResult>,
 }

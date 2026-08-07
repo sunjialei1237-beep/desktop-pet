@@ -335,6 +335,112 @@ pub async fn generate_welcome_back(
     }
 }
 
+/// Generates a loneliness-driven "想你了" bubble. When homeostasis has let
+/// loneliness climb (the user has been idle at the desk, not talking) and the
+/// relationship is established, she occasionally reaches out — a gentle nudge,
+/// not a demand. Unlike `generate` (voices a *recalled* memory) and
+/// `generate_welcome_back` (voices a *return*), this voices quiet *longing*:
+/// "you're right there but we haven't talked, I just wanted to say hi".
+///
+/// Like `generate_welcome_back`: the memory anchor is *optional* (no anchor →
+/// still speak, a lonely nudge is always worth a soft word) and never
+/// fabricated (anchor comes only from retrieval, Principle 3). The loop_runner
+/// gates the *emission* (loneliness threshold, closeness, presence, cooldown);
+/// this function only voices it once the frontend asks. Principle 1 (Rust picks
+/// anchor + assembles prompt; LLM only voices), Principle 8 (one LLM call).
+pub async fn generate_lonely_bubble(
+    db: &DbState,
+    llm: &LlmClient,
+    embedding: Option<&EmbeddingService>,
+    wm_context: &[ChatMessage],
+) -> Result<Option<BubbleOutcome>, String> {
+    let db_emotion = db.with_conn(crate::db::emotion::get)?;
+    let emotion = EmotionState {
+        mood: db_emotion.mood,
+        physical_energy: db_emotion.physical_energy,
+        social_battery: db_emotion.social_battery,
+        stress: db_emotion.stress,
+        loneliness: db_emotion.loneliness,
+        rest_need: db_emotion.rest_need,
+    };
+
+    let retrieval = crate::mind::retrieval::retrieve(
+        "user's life recent events preferences",
+        &emotion,
+        embedding,
+        db,
+        3,
+    )?;
+
+    // Optional anchor: a durable fact, else a recent episode. Empty if neither
+    // — a lonely nudge with no anchor is still a valid "just thinking of you".
+    let (memory_anchor, has_anchor): (String, bool) =
+        if let Some(f) = retrieval.facts.iter().find(|f| is_anchorable_fact(f)) {
+            (format!("{}: {}", f.key, f.value), true)
+        } else if let Some(ep) = retrieval.episodes.first() {
+            (ep.episode.summary.clone(), true)
+        } else {
+            (String::new(), false)
+        };
+
+    // Tone tracks mood: a high-mood pet nudges playfully, otherwise gentle.
+    let tone: &str = if emotion.mood >= 0.65 { "playful" } else { "gentle" };
+
+    let intent = crate::mind::planner::Intent {
+        goal: "accompany".to_string(),
+        memory_anchor: memory_anchor.clone(),
+        tone: tone.to_string(),
+        proactive: true,
+        action: "lonely_nudge".to_string(),
+    };
+
+    let mut messages =
+        crate::mind::budget::allocate_and_compress(&retrieval, wm_context, &emotion, &intent);
+
+    let anchor_clause = if has_anchor {
+        format!("你刚好想起 ta 之前跟你提过的事：{memory_anchor}。可以顺便轻轻带一句，像真的惦记着这件事，但只能围绕它原意，别换成别的话题、别编出没提过的细节。")
+    } else {
+        String::new()
+    };
+
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: format!(
+            "（你一个人待了一会儿，有点想 ta。ta 就在旁边但没说话，你想轻轻戳一下 ta——不是催 ta 回复，也不是有事要说，就是想让 ta 知道你在。{anchor_clause}只说 1 句，简短、自然、别黏人、别问问题逼 ta 答。按规则回复，尤其规则 8 严禁编造。）"
+        ),
+    });
+
+    log::info!(
+        "[lonely_nudge] loneliness={:.2} has_anchor={} tone={} facts={} episodes={} msgs={}",
+        emotion.loneliness,
+        has_anchor,
+        tone,
+        retrieval.facts.len(),
+        retrieval.episodes.len(),
+        messages.len(),
+    );
+
+    let chat_result = llm
+        .chat(&messages, Some(0.8), Some(4096))
+        .await
+        .map_err(|e| format!("LLM error: {:?}", e))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = db.with_conn(|conn| {
+        crate::db::relationship::record_interaction(conn, "lonely_nudge", &now)
+    });
+
+    let reply = chat_result.content.trim().to_string();
+    if reply.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(BubbleOutcome {
+            reply,
+            anchor: memory_anchor,
+        }))
+    }
+}
+
 /// Whether a fact is worth proactively bringing up. Excludes pseudo-facts
 /// (questions the user asked, phrased as facts by an over-eager extractor) and
 /// requires reasonable confidence. Durable preferences/relationships/goals pass.

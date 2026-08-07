@@ -9,7 +9,9 @@
 pub mod consolidation;
 pub mod monologue;
 pub mod reflection;
+pub mod review;
 
 pub use consolidation::{consolidate, lifecycle_cleanup};
 pub use monologue::surface_thoughts;
 pub use reflection::{run_reflection, ReflectionResult, ReflectionTrigger};
+pub use review::{maybe_run_review_if_due, run_review, ReviewResult};

@@ -14,10 +14,15 @@ pub enum GateRoute {
     PendingEvent,
     /// User is correcting a prior memory.
     Correction,
+    /// User asks the pet to FORGET a specific memory ("忘掉那件事").
+    Forget,
     /// Simple greeting/acknowledgment, minor emotion nudge.
     Silence,
     /// Pure noise, do nothing.
     Discard,
+    /// User asks a general-knowledge / technical / factual question.
+    /// Routes to direct-answer mode: no memory injection, answer on-topic.
+    Question,
 }
 
 impl GateRoute {
@@ -28,8 +33,10 @@ impl GateRoute {
             GateRoute::EmotionOnly => "emotion_only",
             GateRoute::PendingEvent => "pending_event",
             GateRoute::Correction => "correction",
+            GateRoute::Forget => "forget",
             GateRoute::Silence => "silence",
             GateRoute::Discard => "discard",
+            GateRoute::Question => "question",
         }
     }
 }
@@ -48,26 +55,48 @@ const GATE_PROMPT: &str = include_str!("../../resources/prompts/gate.txt");
 
 /// Classifies the user's message into a GateRoute using the reflection model.
 /// Uses temperature 0.1 for deterministic classification.
+///
+/// Failure policy (gate failure must never kill the whole turn): one retry on
+/// empty content or parse failure (flash occasionally burns the whole 4096
+/// budget on reasoning — pitfall #3), then degrade to `StoreFull` so the
+/// conversation continues through the normal memory-aware flow.
 pub async fn classify(text: &str, llm: &LlmClient) -> Result<GateRoute, String> {
-    let messages = vec![
-        ChatMessage {
-            role: "system".to_string(),
-            content: GATE_PROMPT.to_string(),
-        },
-        ChatMessage {
-            role: "user".to_string(),
-            content: text.to_string(),
-        },
-    ];
+    let messages = || {
+        vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: GATE_PROMPT.to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: text.to_string(),
+            },
+        ]
+    };
 
-    let result = llm
-        .chat_reflection(&messages, Some(0.1), Some(2048))
-        .await
-        .map_err(|e| format!("Gate LLM call failed: {}", e))?;
+    for attempt in 1..=2 {
+        let result = llm
+            .chat_reflection(&messages(), Some(0.1), Some(4096))
+            .await
+            .map_err(|e| format!("Gate LLM call failed: {}", e))?;
 
-    // Parse JSON from the response. Tolerate extra text around the JSON.
-    let route = parse_gate_json(&result.content)?;
-    Ok(route)
+        match parse_gate_json(&result.content) {
+            Ok(route) => return Ok(route),
+            Err(e) => {
+                log::warn!(
+                    "[gate] classify failed (attempt {}): {}; retrying or degrading",
+                    attempt,
+                    e
+                );
+            }
+        }
+    }
+
+    log::warn!(
+        "[gate] classify failed after retries for {:?}; degrading to StoreFull (normal flow)",
+        text.chars().take(40).collect::<String>()
+    );
+    Ok(GateRoute::StoreFull)
 }
 
 /// Parses the gate response JSON, extracting the route field.
@@ -82,8 +111,10 @@ fn parse_gate_json(raw: &str) -> Result<GateRoute, String> {
         "emotion_only" => Ok(GateRoute::EmotionOnly),
         "pending_event" => Ok(GateRoute::PendingEvent),
         "correction" => Ok(GateRoute::Correction),
+        "forget" => Ok(GateRoute::Forget),
         "silence" => Ok(GateRoute::Silence),
         "discard" => Ok(GateRoute::Discard),
+        "question" => Ok(GateRoute::Question),
         other => Err(format!("Unknown gate route: {}", other)),
     }
 }
@@ -143,6 +174,18 @@ mod tests {
     fn test_parse_silence() {
         let route = parse_gate_json(r#"{"route": "silence"}"#).unwrap();
         assert_eq!(route, GateRoute::Silence);
+    }
+
+    #[test]
+    fn test_parse_forget() {
+        let route = parse_gate_json(r#"{"route": "forget", "reason": "user wants to erase a memory"}"#).unwrap();
+        assert_eq!(route, GateRoute::Forget);
+    }
+
+    #[test]
+    fn test_parse_question() {
+        let route = parse_gate_json(r#"{"route": "question", "reason": "general knowledge"}"#).unwrap();
+        assert_eq!(route, GateRoute::Question);
     }
 
     #[test]

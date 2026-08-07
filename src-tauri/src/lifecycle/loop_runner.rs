@@ -23,10 +23,15 @@ pub fn start_life_loop(app: AppHandle) {
         // Active -> away -> Active cycle.
         let mut last_presence = crate::perception::presence::PresenceState::Active;
         let mut away_since: Option<std::time::Instant> = None;
+        // Cooldown state for the loneliness-driven nudge (thread-local, like
+        // `away_since`). Resets on app start — acceptable: she simply skips the
+        // first cooldown window after launch.
+        let mut last_lonely_nudge: Option<std::time::Instant> = None;
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(30));
             medium_tick(&app);
             check_presence_transition(&app, &mut last_presence, &mut away_since);
+            check_lonely_nudge(&app, &mut last_lonely_nudge);
         });
     }
 
@@ -104,6 +109,7 @@ fn medium_tick(app: &AppHandle) {
                     "social_battery": emo.social_battery,
                     "stress": emo.stress,
                     "loneliness": emo.loneliness,
+                    "rest_need": emo.rest_need,
                 }),
             );
         }
@@ -158,6 +164,74 @@ fn check_presence_transition(
     }
 
     *last_presence = now_presence;
+}
+
+/// Loneliness above which she may proactively reach out (matches planner Rule 4).
+const LONELY_NUDGE_THRESHOLD: f64 = 0.6;
+/// Closeness required before a lonely nudge (matches planner Rule 4: an early
+/// relationship earns no unprompted reach-out, respecting Liri's non-clingy
+/// nature — she doesn't pine for strangers).
+const LONELY_NUDGE_CLOSENESS: f64 = 20.0;
+/// Min seconds between lonely nudges — keeps it a rare surprise, not spam.
+const LONELY_NUDGE_COOLDOWN_SECS: u64 = 30 * 60;
+
+/// Loneliness-driven proactive nudge. When homeostasis has let loneliness climb
+/// (the user has been idle, not talking) AND the relationship is established
+/// (closeness >= 20, mirroring planner Rule 4) AND the user is actually at the
+/// desk (presence Active) but not mid-conversation, she occasionally reaches
+/// out — a gentle "想你了" bubble. Cooldown-bounded so it stays a rare
+/// surprise, not spam (Architecture #10 liveliness, #8 cost, #6 graceful:
+/// failure logged, never fatal). Mirror of `check_presence_transition`.
+fn check_lonely_nudge(app: &AppHandle, last_nudge: &mut Option<std::time::Instant>) {
+    use crate::perception::presence::{current_presence, PresenceState};
+
+    // Only when the user is actually present — nudging an empty desk is wasted.
+    if current_presence() != PresenceState::Active {
+        return;
+    }
+
+    let db = match get_db(app) {
+        Some(s) => s,
+        None => return,
+    };
+
+    // Loneliness + closeness gating (mirror planner Rule 4 thresholds).
+    let (loneliness, closeness) = db
+        .with_conn(|conn| {
+            let emo = crate::db::emotion::get(conn)?;
+            let closeness = crate::db::relationship::get(conn)
+                .map(|r| r.closeness)
+                .unwrap_or(0.0);
+            Ok::<_, String>((emo.loneliness, closeness))
+        })
+        .unwrap_or((0.0, 0.0));
+
+    if loneliness <= LONELY_NUDGE_THRESHOLD || closeness < LONELY_NUDGE_CLOSENESS {
+        return;
+    }
+
+    // Don't nudge mid-conversation.
+    let just_talked = recent_interaction_secs(app)
+        .map(|s| s < 120)
+        .unwrap_or(false);
+    if just_talked {
+        return;
+    }
+
+    // Cooldown: a lonely nudge is a rare surprise, not every 30s tick.
+    let now = std::time::Instant::now();
+    if let Some(last) = *last_nudge {
+        if now.duration_since(last).as_secs() < LONELY_NUDGE_COOLDOWN_SECS {
+            return;
+        }
+    }
+
+    log::info!(
+        "Life loop: loneliness={:.2} closeness={:.0} — emitting lonely-nudge",
+        loneliness, closeness
+    );
+    let _ = app.emit("lonely-nudge", serde_json::json!({ "loneliness": loneliness }));
+    *last_nudge = Some(now);
 }
 
 /// Seconds since the last recorded interaction, or None if unavailable.
@@ -234,6 +308,15 @@ fn slow_tick(app: &AppHandle) {
             // (internal guard in consolidate()), so calling it hourly is cheap.
             if let Err(e) = crate::soul::consolidation::consolidate(&db, &llm).await {
                 log::warn!("Life loop consolidation failed: {}", e);
+            }
+            // Relationship review: summarize where the relationship stands every
+            // N new conversation episodes. Episode-gated (rare), so the extra
+            // LLM call is acceptable (Architecture #8). Failure is logged, never
+            // fatal (Principle #6).
+            match crate::soul::review::maybe_run_review_if_due(&db, &llm).await {
+                Ok(true) => log::info!("Life loop: relationship review ran"),
+                Ok(false) => {}
+                Err(e) => log::warn!("Life loop relationship review failed: {}", e),
             }
         });
     }

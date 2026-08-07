@@ -9,6 +9,67 @@ use crate::mind::extractor::{EmotionDelta, ExtractionResult, FactInput, PendingI
 use chrono::Utc;
 use uuid::Uuid;
 
+/// Backfills embeddings for episodes stored BEFORE the embedding model was
+/// available — i.e. the first time BGE-M3 is enabled on a DB that already has
+/// memories. Embeds the summary of every episode that has no vector yet and
+/// stores it, so old memories benefit from semantic retrieval too.
+///
+/// No-op (returns 0) if the model isn't ready. Best-effort per episode: a
+/// single embed failure is logged and skipped, not fatal.
+///
+/// Architecture: #1 (Rust drives, embedding only computes), #10 (old memories
+/// deserve retrieval too), #11 (progress + counts logged).
+pub fn backfill_missing_vectors(
+    db: &DbState,
+    embedding: &EmbeddingService,
+) -> Result<usize, String> {
+    if !embedding.is_ready() {
+        return Ok(0);
+    }
+
+    // Episodes with no stored vector yet (LEFT JOIN ... IS NULL).
+    let missing: Vec<(String, String)> = db.with_conn(|conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT e.id, e.summary FROM episodes e
+                 LEFT JOIN episode_vectors v ON e.id = v.episode_id
+                 WHERE v.episode_id IS NULL",
+            )
+            .map_err(|e| format!("prepare missing episodes: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("query missing episodes: {}", e))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| format!("read missing row: {}", e))?);
+        }
+        Ok(out)
+    })?;
+
+    if missing.is_empty() {
+        log::info!("[backfill] all episodes already have vectors, nothing to do");
+        return Ok(0);
+    }
+    log::info!("[backfill] embedding {} episode(s) missing vectors", missing.len());
+
+    let mut added = 0usize;
+    for (id, summary) in &missing {
+        match embedding.embed(summary) {
+            Ok(vec) => {
+                match db.with_conn(|conn| db_vectors::insert(conn, id, &vec)) {
+                    Ok(_) => added += 1,
+                    Err(e) => log::warn!("[backfill] store vector for {} failed: {}", id, e),
+                }
+            }
+            Err(e) => log::warn!("[backfill] embed {} failed: {}", id, e),
+        }
+    }
+    log::info!("[backfill] added {} vector(s)", added);
+    Ok(added)
+}
+
 /// Stores the extraction result into the database.
 /// If embedding model is available, generates vectors for episodes.
 ///
@@ -129,13 +190,28 @@ pub fn store(
     Ok(stored_episode_id)
 }
 
-/// Stores a fact with dedup logic: if same category+key exists, update or expire old.
+/// Stores a fact with dedup + conflict resolution.
+///
+/// First expires any currently-active fact under the same `(category, key)` so
+/// a newly extracted value REPLACES the old one (single-valued slot). This
+/// makes ingest consistent with the correction and consolidation paths, which
+/// both call `expire_old`. Without it, a freshly stated preference ("我喜欢
+/// 咖啡") would coexist with the stale one ("likes milk tea") until the next
+/// background consolidation runs — and the stale fact (more mentions, ordered
+/// first) wins recall, so she'd answer "奶茶" right after being told "咖啡".
+/// `dedup_insert` then either revives the same value (mention++) or inserts
+/// the new value; expired rows stay in the table for audit + future revival.
 fn store_fact(
     conn: &rusqlite::Connection,
     fact: &FactInput,
     source_episode: Option<&str>,
     now: &str,
 ) -> Result<(), String> {
+    // Expire conflicting same-key facts BEFORE insert. For a re-stated same
+    // value this expires-then-revives (dedup_insert case 2 bumps mention_count);
+    // for a new value it clears the old slot so only the current value remains.
+    db_facts::expire_old(conn, &fact.category, &fact.key, now)?;
+
     let fact_id = format!("fact_{}", Uuid::new_v4().simple());
     let new_fact = db_facts::Fact {
         id: fact_id,
@@ -278,6 +354,57 @@ mod tests {
             let facts = db_facts::get_active(conn, "preference", "drink")?;
             assert_eq!(facts.len(), 1);
             assert_eq!(facts[0].mention_count, 2);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_store_fact_new_value_replaces_old_same_key() {
+        // Regression: stating a new preference ("我喜欢咖啡") must expire the
+        // old one ("likes milk tea") under the same (category, key) immediately,
+        // not wait for consolidation. Otherwise the stale fact (more mentions)
+        // wins recall and she answers the old preference.
+        let db = test_db();
+        let milk_tea = ExtractionResult {
+            episode: None,
+            facts: vec![FactInput {
+                category: "preference".to_string(),
+                key: "beverage_preference".to_string(),
+                value: "likes milk tea".to_string(),
+                confidence: 0.85,
+            }],
+            emotion_delta: None,
+            pending_event: None,
+        };
+        let coffee = ExtractionResult {
+            episode: None,
+            facts: vec![FactInput {
+                category: "preference".to_string(),
+                key: "beverage_preference".to_string(),
+                value: "likes coffee".to_string(),
+                confidence: 0.85,
+            }],
+            emotion_delta: None,
+            pending_event: None,
+        };
+
+        store(&milk_tea, "conv_1", 0, &db, None).unwrap();
+        store(&coffee, "conv_2", 0, &db, None).unwrap();
+
+        db.with_conn(|conn| {
+            let active = db_facts::get_active(conn, "preference", "beverage_preference")?;
+            assert_eq!(active.len(), 1, "only the new value should remain active");
+            assert_eq!(active[0].value, "likes coffee", "new preference must win");
+            // The old milk-tea row still exists but is expired (audit trail).
+            let expired: Vec<String> = conn
+                .prepare("SELECT value FROM facts WHERE category='preference' AND key='beverage_preference' AND valid_to IS NOT NULL")
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+            assert!(expired.iter().any(|v| v == "likes milk tea"), "old value should be expired, not deleted");
             Ok(())
         })
         .unwrap();

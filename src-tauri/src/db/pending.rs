@@ -88,6 +88,40 @@ pub fn mark_resolved(conn: &Connection, id: &str, now: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// Returns all pending (not yet triggered/resolved) events — used by selective
+/// forgetting to match a "忘掉那个提醒" request against reminder titles. Only
+/// status='pending' events are matchable: a triggered/resolved reminder is
+/// already done and should not be "forgotten" again.
+pub fn get_all_pending(conn: &Connection) -> Result<Vec<PendingEvent>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, event_date, remind_date, source_episode,
+                    status, importance, followup_count, created_at, triggered_at, resolved_at
+             FROM pending_events
+             WHERE status = 'pending'
+             ORDER BY created_at DESC",
+        )
+        .map_err(|e| format!("Failed to prepare all-pending query: {}", e))?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(PendingEvent {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            event_date: row.get(2)?,
+            remind_date: row.get(3)?,
+            source_episode: row.get(4)?,
+            status: row.get(5)?,
+            importance: row.get(6)?,
+            followup_count: row.get(7)?,
+            created_at: row.get(8)?,
+            triggered_at: row.get(9)?,
+            resolved_at: row.get(10)?,
+        })
+    }).map_err(|e| format!("Failed to query all pending: {}", e))?;
+
+    rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
+}
+
 trait Pipe: Sized {
     fn pipe<F, R>(self, f: F) -> R where F: FnOnce(Self) -> R { f(self) }
 }
@@ -128,6 +162,41 @@ mod tests {
             mark_triggered(conn, "pe_1", "2026-07-15T08:05:00")?;
             let due_after = get_due(conn, "2026-07-15T09:00:00")?;
             assert_eq!(due_after.len(), 0, "triggered event should not be due");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn pe(id: &str, title: &str, status: &str) -> PendingEvent {
+        PendingEvent {
+            id: id.to_string(),
+            title: title.to_string(),
+            event_date: "2026-07-15".to_string(),
+            remind_date: Some("2026-07-15T08:00:00".to_string()),
+            source_episode: None,
+            status: status.to_string(),
+            importance: 0.8,
+            followup_count: 0,
+            created_at: "2026-07-14T10:00:00".to_string(),
+            triggered_at: None,
+            resolved_at: None,
+        }
+    }
+
+    #[test]
+    fn test_get_all_pending_excludes_non_pending() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            insert(conn, &pe("pe_a", "interview", "pending"))?;
+            insert(conn, &pe("pe_b", "doctor", "pending"))?;
+            insert(conn, &pe("pe_c", "done deal", "resolved"))?;
+            insert(conn, &pe("pe_d", "fired", "triggered"))?;
+
+            let all = get_all_pending(conn)?;
+            assert_eq!(all.len(), 2, "only pending events should be returned");
+            let titles: Vec<&str> = all.iter().map(|e| e.title.as_str()).collect();
+            assert!(titles.contains(&"interview") && titles.contains(&"doctor"));
+            assert!(!titles.contains(&"done deal") && !titles.contains(&"fired"));
             Ok(())
         })
         .unwrap();

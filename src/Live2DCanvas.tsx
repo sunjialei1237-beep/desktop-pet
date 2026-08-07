@@ -25,6 +25,11 @@ interface Live2DCanvasProps {
   attention: AttentionState;
   pointerRef: React.MutableRefObject<PointerXY>;
   isThinking: boolean;
+  // Circadian animation-speed multiplier (circadian.ts speedModifier). Scales the
+  // PIXI ticker delta so the library's idle breathing/blink/motion/physics slow
+  // down at night and speed up in the morning -- the pet visibly gets drowsy
+  // after dark (Architecture Principle #10: liveliness). Default 1.0 = real-time.
+  speedModifier: number;
   onHeadClick: () => void;
   onBodyClick: () => void;
   // Loose bounding rect (25% padding) for gaze/click-through; keeps head above
@@ -75,7 +80,7 @@ function applyBehaviorToModel(model: any, behavior: BehaviorState) {
   }
 }
 
-export function Live2DCanvas({ emotionVector, behavior, attention, pointerRef, isThinking, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, transientExpression }: Live2DCanvasProps) {
+export function Live2DCanvas({ emotionVector, behavior, attention, pointerRef, isThinking, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, transientExpression, speedModifier = 1.0 }: Live2DCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const modelRef = useRef<any>(null);
@@ -87,8 +92,8 @@ export function Live2DCanvas({ emotionVector, behavior, attention, pointerRef, i
 
   // FIX-A / FIX-B: mirror the latest props into a ref read each ticker frame,
   // so focus/motion react instantly without re-running the heavy load effect.
-  const propsRef = useRef({ attention, behavior, isThinking, emotionVector, transientExpression });
-  propsRef.current = { attention, behavior, isThinking, emotionVector, transientExpression };
+  const propsRef = useRef({ attention, behavior, isThinking, emotionVector, transientExpression, speedModifier });
+  propsRef.current = { attention, behavior, isThinking, emotionVector, transientExpression, speedModifier };
 
   useEffect(() => {
     let destroyed = false;
@@ -191,6 +196,11 @@ export function Live2DCanvas({ emotionVector, behavior, attention, pointerRef, i
         // mouse and never lets the gaze return to center; our last-write-per-frame
         // wins, so Ignored forces the gaze back to the model's front.
         const focusTickerFn = () => {
+          // Circadian animation speed: scale the ticker delta so idle breathing,
+          // blink, motion and physics all slow down at night / perk up in the
+          // morning (Architecture Principle #10). Set every frame from the latest
+          // circadian speedModifier prop; 1.0 (afternoon) is PIXI's default.
+          app.ticker.speed = propsRef.current.speedModifier;
           const m = modelRef.current;
           const canvas = canvasRef.current;
           if (!m || !canvas) return;

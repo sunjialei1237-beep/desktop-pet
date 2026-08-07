@@ -28,18 +28,25 @@ impl DownloadProgress {
     }
 }
 
-/// The files BGE-M3 ONNX needs (model + tokenizer + config + ONNX Runtime DLL).
-/// The DLL is needed because we use ort's load-dynamic feature to avoid
-/// MSVC version conflicts with statically linked binaries.
+/// The files BGE-M3 ONNX needs. The DLL is needed because we use ort's
+/// load-dynamic feature to avoid MSVC version conflicts with statically linked
+/// binaries. `model.onnx_data` is the external weight blob — Xenova's export
+/// splits graph (model.onnx) and weights (model.onnx_data); ort loads the
+/// weight file automatically from the same dir as model.onnx.
 pub const REQUIRED_FILES: &[&str] = &[
     "model.onnx",
+    "model.onnx_data",
     "tokenizer.json",
     "config.json",
     "onnxruntime.dll",
 ];
 
-/// Default HuggingFace repo for the ONNX export of BGE-M3.
-const HF_BASE_URL: &str = "https://huggingface.co/Qdrant/bge-m3-onnx/resolve/main";
+/// Base URL for the BGE-M3 ONNX export. We use the `Xenova/bge-m3` repo
+/// (external-data format: graph + weight split) served via hf-mirror.com —
+/// the original `Qdrant/bge-m3-onnx` now 401s, and huggingface.co itself is
+/// slow/unreliable from China. Files live under `onnx/` except
+/// tokenizer.json + config.json which are at the repo root.
+const HF_BASE_URL: &str = "https://hf-mirror.com/Xenova/bge-m3/resolve/main";
 
 /// ONNX Runtime GitHub release download URL (CPU-only, Windows x64).
 /// Version must match what ort 2.0.0-rc.12 expects.
@@ -96,14 +103,24 @@ impl ModelDownloader {
         std::fs::create_dir_all(&self.model_dir)
             .map_err(|e| EmbeddingError::Download(format!("Failed to create model dir: {}", e)))?;
 
-        // Model files from HuggingFace.
-        for file_name in &["model.onnx", "tokenizer.json", "config.json"] {
-            let dest = self.model_dir.join(file_name);
+        // Model files from HuggingFace. Xenova/bge-m3 uses external-data
+        // format: model.onnx (graph) + model.onnx_data (weights) live under
+        // onnx/, tokenizer.json + config.json at the repo root. We fetch each
+        // from its remote path but save flat into model_dir (ort finds
+        // model.onnx_data next to model.onnx automatically). (remote_path, local_name)
+        let hf_files: &[(&str, &str)] = &[
+            ("onnx/model.onnx", "model.onnx"),
+            ("onnx/model.onnx_data", "model.onnx_data"),
+            ("tokenizer.json", "tokenizer.json"),
+            ("config.json", "config.json"),
+        ];
+        for (remote_path, local_name) in hf_files {
+            let dest = self.model_dir.join(local_name);
             if dest.exists() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-                log::info!("Model file already present: {}", file_name);
+                log::info!("Model file already present: {}", local_name);
                 continue;
             }
-            self.download_file(http, file_name, &dest, progress).await?;
+            self.download_file(http, remote_path, &dest, progress).await?;
         }
 
         // ONNX Runtime DLL from GitHub (packaged in a zip).
@@ -265,7 +282,7 @@ mod tests {
         let dl = ModelDownloader::new(&dir);
         assert!(!dl.check_complete());
         let missing = dl.missing_files();
-        assert_eq!(missing.len(), 4);
+        assert_eq!(missing.len(), REQUIRED_FILES.len());
     }
 
     #[test]

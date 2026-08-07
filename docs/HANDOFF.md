@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-03**
+> 最后更新：**2026-08-07（续·激活 loneliness——接通最后一个死情绪字段，璃会在你离开后主动找你：tick_loneliness 进 homeostasis 唤醒 planner Rule 4 + lonely-nudge 气泡；lib 259 / harness / tsc / build / vitest 全绿）**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -22,16 +22,532 @@
 | 生命感 情绪连续外显 | ✅ build 过 / 待实跑 | emotionDriver → Live2DCanvas 连续参数插值（P10 emotionBridge）|
 | 生命感 气泡生命力(节奏+glyph) | ✅ 实跑通过 | bubblePacing 打字节奏随情绪(关键词驱动) + bubble-glyph 无文字气泡（#12）|
 | 生命感 昼夜节律接入 | ✅ build 过 / 待今晚实跑 | circadian sleepiness 接入微行为权重（深夜 yawn↑/look_around↓，Tier3 #7）— PID 95248 挂着过夜 |
-| 生命感 Foley 音效 | ✅ 实跑通过 | 真实 Foley 素材 10 接入 + 启动 hi + 权重静默优先 + cooldown + 亲密度分档；sleep 预留（Sleeping 未做）（Tier1 #3）|
+| 生命感 Foley 音效 | ✅ 实跑通过 | 真实 Foley 素材 10 接入 + 启动 hi + 权重静默优先 + cooldown + 亲密度分档；sleep 已接（B3，待实跑）（Tier1 #3）|
 | 对话 流式回复 | ✅ 实跑确认 | ipc::Channel 逐字（emit/listen 命令体内投递延迟+listener 立即 unlisten 全丢→Channel 正解）；用户长回复实跑确认逐字 |
 
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
 
+> **2026-08-07 自主批次推进中**（用户授权长程自主："按优先级推进所有后续内容，每项自测后更新 HANDOFF，不询问；待实跑项统一整理"）。逐项推进，每项自测（cargo test --lib / check --tests / tsc）绿后勾选。**release exe 在批次末统一 rebuild**（中间项都以库单测 + check 编译通过为正确性证据；批次末 Task #14 前一次性 `npx tauri build --no-bundle`，避免每项重构都重编一次前端嵌入）：
+> - [x] **Task #8 鲁棒性加固**：① main 空回复重试——converse `chat_stream` 把 `on_token` 改 `mut`、传 `&mut on_token` 复用，content 空时重试一次（镜像 extractor 重试；flash reasoning 吃光预算 finish_reason=length 空 content 的坑#3 瞬态）。② harness 启发式误报——Acknowledge/ForgetAck 关键词表加现实同义措辞（记着/记心里/放心吧/帮你记 + 不提/不会再/抹掉/清掉），治 705/1002「语义对无关键词」误报。**lib 259 / check --tests ✅**。纯后端 + 测试，release 需 rebuild。
+> - [x] **Task #9 B6 BrainState**：converse 9 参 → `ConverseCtx<'a>` 统一快照（8 个引用字段 + `on_token` 留作独立泛型 `FnMut`——回调是流式旁路非状态，塞进 struct 会让整体变泛型）。函数体用 8 行别名桥接（`let text = ctx.text;`…），400 行 body 字节不变，最低风险。6 处调用全改：commands.rs（生产）+ memory_recall(×3)/conversation_harness/prompt_quality_harness。harness 里的 `get_context()` 临时 Vec 绑定本地避免跨 await 临时生命周期问题。**check --tests ✅ + lib 259 ✅**。纯机械包装，行为不变。
+> - [x] **Task #10 B7 Scheduler —— 经评估主动搁置**（ADR: `docs/decisions/2026-08-07-scheduler-deferred.md`）。原计划 §A2 假设 Body 跑在 Rust（`ticks_1s` 动画/物理），但实际遵循原则 #5：Body 在前端，Rust 无 1s 动画 tick。审计 Rust 定时器仅 medium(30s)/slow(1h)/cursor(ms 感知)/两个 one-shot 启动——`start_life_loop` 已是唯一注册中心，无多态无注入需求，引入 trait object 是投机抽象（#9/#10）。高风险重写时序核心、零用户价值。搁置，何时复议见 ADR。
+> - [x] **Task #11 记忆可视化编辑**：Debug Panel 从只读→可编辑。后端 3 新命令（复用既有 DB accessor，不写裸 SQL）：`forget_fact(id)`（`facts::expire_by_id` 软删，保审计轨/revive 路径）、`delete_episode(id)`（`episodes::delete` + `vectors::delete` 同步向量，拒删地标）、`set_emotion(EmotionEdit)`（`update_fields` + 重导 mood_label + 即时 emit `emotion-update` 让脸马上变）。pending 取消复用既有 `resolve_pending_event`（不另起路径）。`DebugFact` 加 `id` 字段。前端：Facts/Episodes/Pending 每行 ✕ 按钮（fact/episode 带 confirm 防误删）+ Emotion 编辑器（5 滑块 Apply）。2s 轮询 + mutate 后即时 refresh。**check --lib ✅ + lib 259 ✅ + tsc ✅**。→ 待实跑：F12 打开面板手动测编辑（见 verify-checklist）。
+> - [x] **Task #12 loneliness 收尾**：① lonely-nudge 加 Sleeping 守卫——`App.tsx` 监听器加 `if (fsmRef.state===Sleeping) return`（镜像"该睡了"nudge 的同款守卫，睡着不冒"想你了"，原则 #12）。② `pet_head` 互动降孤独 -0.1（摸头是注意力的反面=孤独缓解；poke 是逗弄不减；~0.1 抵 15min idle 增长，一次摸头明显安慰但不让缓慢累积失效）。**tsc ✅ + check --lib ✅**。→ 待实跑：深夜 Sleeping 时确认不冒 lonely 气泡 + 摸头后 loneliness 回落（见 verify-checklist）。
+> - [x] **Task #13 死代码清理**（核实后修正前提）：① **`trigger_proactive` 并非死代码**——`commands.rs:451` 生产调用它（前次"6 调用全测试"的判断过时/错误），**保留不动**。② **删 `emotion/homeostasis.rs` 整文件**（`apply_drift`+私有常量+`drift_toward`+4 测试）——生产用 `db::emotion::apply_homeostasis_time_aware` 自带一套 `TAU_*`/`drift_toward`，homeostasis.rs 全程零生产调用；**且其 `TAU_STRESS=3600` 与生产 `7200` 已分叉，留着会误导**（典型双实现坑）。同步删 `emotion/mod.rs` 的 `mod`/`pub use` + golden `GC_018`。③ **`tick_needs` 保留**——虽是测试专用包装，但正确委托给生产用的纯函数（不分叉、不误导），删它低价值中风险（需改写 needs.rs 共享文件的测试），留 + 注释说明。**check --tests ✅ + lib 255（原 259 −4 homeostasis 测试）✅**。
+> - [x] **Task #14 统一待实跑清单**：扩写 `docs/verify-checklist.md`（原有 Body/circadian/sleep A5/A4/B3/A6 不动），新增「本批次验收」一节 D1-D7：D1 Debug Panel 记忆编辑（forget fact/delete episode/cancel pending/emotion 滑块）、D2 loneliness 主动找你、D3 loneliness 睡着抑制、D4 摸头降孤独、D5 Forget 流程、D6 QA 直答、D7 rest_need 疲惫眼——全部用本批次新增的 **Emotion 编辑器秒级触发**（原本需等几小时）。附「不易快速验收」表（关系 review/空回复重试/surfaced thought/B6 重构）。顺带给 Debug Panel Brain 行加 Lonely 显示（D2/D4 观察 loneliness 用）。**tsc ✅**。交付：用户照此清单 dev 模式手动验手感。
+> 详见各任务 §最近一轮 条目（批次末汇总）。
+
+> **2026-08-07（续）更新 · 激活 loneliness——璃会"想你"**：用户"读 handoff、用 codegraph 了解代码、继续开发"。AskUserQuestion 在 4 方向里确认走 **激活 loneliness**（服务"陪伴"北极星，未受阻低风险）。codegraph 核验发现 **loneliness 是最后一个死情绪字段**——`apply_homeostasis_time_aware`（生产 homeostasis）只更新 mood/energy/social/stress/rest_need，从不更新 loneliness（08-04 修了 rest_need，loneliness 漏了），冻结在种子值 → planner Rule 4「loneliness>0.6 + closeness≥20 → 主动陪伴」永远到不了。两段落地：① **核心（镜像 rest_need 修法）**——`needs.rs` 抽 `tick_loneliness` 纯增长规则 + 接进 `tick_needs`（DRY）；`apply_homeostasis_time_aware` 调它 + SQL UPDATE 加 `loneliness=?7`（renumber ?8）；② **主动气泡（镜像 welcome-back/proactive 模式）**——新 `generate_lonely_bubble`（镜像 generate_welcome_back：retrieve 锚 + Intent goal=accompany/action=lonely_nudge + 1 句温柔 prompt「别黏人别问问题逼答」+ LLM 4096 坑#3）+ `lonely_canned`（react.rs mood 分档降级 #8）+ `lonely_bubble` 命令 + 注册；`loop_runner::check_lonely_nudge`（门控 loneliness>0.6 + closeness≥20 + presence Active + 非对话中 + 30min 线程本地 cooldown → emit "lonely-nudge"）；App.tsx listener → invoke → showBubble。**closeness≥20 门控保证早期关系不主动找你**（Liri 非依赖人格安全阀）。**全程不改 fn 签名**（踩坑#4：新 fn + 新 action 字符串 + SQL 参数）。**lib 259 / check --tests / tsc / build / vitest 24 全绿**。**待实跑**：dev 攒 closeness≥20 + 离开 ~1.7h（loneliness 到 0.6）→ 看她主动冒"想你了"气泡；或回来后她回复带 accompany 暖意（planner Rule 4）。**release exe 已重建**（npx tauri build --no-bundle，D:\cargo-target\desktop-pet\release\desktop-pet.exe，前端+后端都改）。详见 §最近一轮 (2026-08-07 续)。**当前无进行中任务**。
+
+> **2026-08-07 更新 · 关系进展摘要（Hermes 后台 review）落地**：用户"读 handoff、用 codegraph 了解代码、继续开发"。AskUserQuestion 在 4 个方向（关系进展摘要 / 激活 loneliness / 记忆可视化编辑 / 架构债 BrainState）里确认走**关系进展摘要**（服务"懂你"Soul 闭环深化）。每 15 个新 conversation episode，后台 reflection 模型回顾产出 1-2 句"你们关系最近状态"总结（璃视角、free text），注入为 always-on `[Relationship]` 区块——让她即使当前话题检索不到相关记忆，也带着对关系整体的理解。**3 新文件 + 6 改文件，全程不改 fn 签名（踩坑#4）**：新表 `relationship_reviews`（migration v3 + `db/relationship_reviews.rs`）+ 新 `soul/review.rs`（镜像 reflection.rs：纯谓词 `should_run_review` + `run_review` + `maybe_run_review_if_due`）+ RetrievalResult 加 `relationship_review` 字段走现成注入管道（`retrieve` 填充 → `format_memories` 输出 `[Relationship]`）+ slow_tick 调度 + budget RELATIONSHIP=80 + system.txt 指引。**踩坑#4 变体已修**：RetrievalResult 加字段后同步所有显式构造点（lib retrieval/budget×4/grounding×2/planner×2 + harness golden×7/evaluation/questioning；converse 用 `::default()` 自动 None）。**lib 257 / golden 30 / evaluation 6 全绿，check --tests ✅**。**待实跑**：dev 攒≥15 记忆后 slow_tick 触发 → DB 看 `relationship_reviews` 有行 + 对话语气带关系理解。**release exe 需 `npx tauri build --no-bundle`**（system.txt include_str! + 后端 + migration v3）。详见 §最近一轮 (2026-08-07)。**当前无进行中任务**。
+
+> **2026-08-05（续⑤）更新 · 100 条提示词质量评测 4 轮迭代完成（98/100 通过，0 真乱扯）**：用户"自己写一套测试，100 条对话多方面测试提示词回复质量，汇总表格审查"。新增 `tests/prompt_quality_harness.rs`（**永久性评测资产**，100 条 × 10 组：G1 知识/G2 技术/G3 闲聊/G4 情绪/G5 喜讯/G6 记忆(种子DB)/G7 提醒/G8 边界/G9 关系/G10 修正遗忘；走完整 converse 链路 + 启发式硬检查 + LLM-as-judge 评分，写报告 `docs/review/prompt-quality-report-YYYY-MM-DD.md`）。**4 轮迭代修复链**（每轮 100 条实跑验证）：R1 发现 extractor 空输出整轮崩（4/100）→ 修 extractor 重试+降级；R2 发现 gate/correction 类别空洞 reasoning 爆预算（gate.txt 排除规则副作用）→ 修 gate/correction 重试+降级 + gate.txt 给排除项明确归宿 store_full + QA 模式加防编造句；R3 发现 extractor 算错日期（"明天"→2026-01-02）→ 修 extractor 注入本地今天日期+星期（{today} 占位，不改签名）；R4 启发式调优（合理澄清反问不再误报）。**最终：98/100 硬检查通过，0 真乱扯，知识问答 20/20 满分直答，记忆组 10/10 引用（"你记得我在忙什么吗"→"记得，你在找实习"），日期全对（下周二→2026-08-11）。** 剩余 2 fail 均启发式误报（705 语义已确认但无关键字 / 1002 同上）+ 1 偶发空回复（407，1/100 LLM 空输出）。judge 标"幻觉"3 条全为不知种子/注入机制的误判。**lib 248 passed**。**release 已重建**（本轮改动 gate/extractor/correction/gate.txt/extractor.txt 均 include_str! 或后端）。待办：407 类 main 空回复可加重试（低优先）。
+
+> **2026-08-05 更新 · 选择性遗忘扩展至 fact/pending + FTS5 可行性证伪**：用户"读 handoff、用 codegraph 了解代码、按优先级继续开发"。**① FTS5 证伪（决定性）**：HANDOFF 把 FTS5 全历史检索标为"最高 ROI follow-up"。写 throwaway probe 测 bundled SQLite 三分词器对中文 2 字查询 '火锅' 的 MATCH——**FTS5 可用但 trigram/unicode61/ascii match count 全 0**（trigram 需≥3 字 / unicode61 不分 CJK / ascii 只认 ASCII；旧记"sqlite-vec 自带 fts5_cjk"**错误**——fts5_cjk 非标准、sqlite-vec 不捆绑 FTS5 分词器）→ **FTS5 对中文不可行，从 backlog 移除，勿再尝试**（除非引入 jieba 可加载扩展 / Rust 分词，远超干净 follow-up）。**② 转向选择性遗忘 fact+pending**（08-04 续 episode MVP 的 deferred scope："fact/pending 遗忘未做"，结构镜像 episode）。新 `forget_best_match` 调度器扫 episode/fact/pending 三路、各自 0.7 置信度门、取最高分执行一条（episode 硬删+向量清 / fact 软过期 `expire_by_id` / pending `mark_resolved`）；用户不说忘哪种 → 扫三种挑最佳；歧义时软动作（fact 过期可恢复）自然压过硬删。新 `char_overlap`（bigram 重叠系数 `|A∩B|/min`，修 Jaccard 把"忘掉咖啡"/"咖啡"稀释到 0.33 的问题→1.0）。**验证全绿**：lib **247 passed**（240+7）/ `cargo check --tests` ✅。**待实跑**：dev "忘掉X"（X=偏好/提醒）→ 确认回"好，我忘了"+ 后续不召回（Debug Panel 看 fact valid_to / pending status）。**release exe 需 `npx tauri build --no-bundle`**（纯后端 + gate.txt include_str!）。详见 §最近一轮 (2026-08-05)。
+
+> **2026-08-04（续④）更新 · 审查并修复 opencode 续③ QA 直答代码的 4 处问题**：用户"代码库新增的是 opencode 写的，针对回复没逻辑的问题，看看 handoff 检查代码"。审 opencode 续③（QA 直答路由 + Hermes compress_conversation + Milestones）后发现并全修：① **[中] QA 模式丢失身份层**——`converse` qa_mode 用 `RetrievalResult::default()` 把 persona/relationship/user_profile 连同记忆一起丢了 → `build_qa_system_prompt` 的 `[Persona]` 退化为通用 fallback，璃的知识直答叫不出用户名字/丢关系。修：qa_mode 仍跳过 episodes/facts（防跑偏），但**补加身份 DB 读**（persona/relationship/user_profile，廉价无 embedding）→ 直答保留璃身份。② **[小] QA Debug budget 错**——prompt_debug 用正常 budget(2005)，但 QA 无 [Memories]。修：新 `qa_system_prompt_budget()=505`（PERSONA+EMOTION+INTENT+SCAFFOLD），qa_mode 用它。③ **[小] qa_mode 未强制 action**——罕见 planner silence 会吞掉问题答案。修：qa_mode `intent.action="normal"`（问题必答）。④ **[小] QA 仍跑 grounding check**——空 retrieval 只会误报。修：qa_mode 跳过 check_groundedness。**确认无问题的部分**：compress_conversation 重写逻辑正确（user 永留/驱逐最老 assistant/时序复原）、gate 4096（坑#3 已修）、Question 跳 extractor 合理。**验证**：lib **240 passed**（238+2 新：qa budget 值 + QA 保留身份）/ `cargo check --tests` ✅。**待实跑**：dev 问知识题确认璃叫得出你名字（fix#1）。**release exe 已重建**（`D:\cargo-target\desktop-pet\release\desktop-pet.exe`，08/04 22:30，`npx tauri build --no-bundle`，含本会话全部改动：#10 rest_need/speedModifier + 选择性遗忘 + QA 4 修复；桌面快捷方式同路径免改）。
+
+> **2026-08-04（续③）更新 · QA 直答路由 + 提示词正向重写 + Hermes 记忆优化落地**：用户反馈知识问答体验差（"harness 是什么"被硬套宠物话题、回复生硬）。三部分完成：
+> ① **Question 直答路由**（治"硬套"）：gate 新增 `question` 分类（gate.txt + `GateRoute::Question`）→ ingest 跳过 extractor（省一次 LLM 调用）→ converse QA 模式：跳过记忆检索（RetrievalResult::default()）、清空 intent memory anchor/engage 指令、跳过 pacing、跳过念头注入 → 新 `build_qa_system_prompt`（人格+情绪+中文直答指令，**无 [Memories]/[Grounding Constraint]**）+ `budget::allocate_qa`（QA 版 allocate_and_compress，签名不动避坑#4）。
+> ② **system.txt 正向重写 + mes_example**（治"生硬"）：14 条禁令清单 → `[How to talk]` 正向说话方式 + **4 条中文示例对话**（知识直答/分享跟进/记忆自然引用/闲聊）。保留 persona 契约回归网（evaluation.rs）全部字样：6 维人格/话痨卖萌依赖/严禁编造/璃。改了一个 stale 断言：`test_empty_memories_section` 的 `[Memories]` 检查改 `- [Fact]`（system.txt 正文现在也提标签字样）。
+> ③ **Hermes agent 落地**（调研 NousResearch/hermes-agent 225k⭐，记忆最佳实践）：**用户消息永不压缩**（`compress_conversation` 重写——user 消息 verbatim 全保留、超预算先挤 assistant 回复，修"用户倾诉被截断失真"）+ **关系账 [Milestones] 分组**（landmark episode 单独区块注入、不重复进 [Memories]，Hermes 双账本思想适配陪伴场景）。其余 Hermes 优化已天然满足（压缩/辅助走 flash、consolidation 容量跳过重试）或记 follow-up（FTS5 全历史检索、关系进展摘要、记忆可视化编辑）。
+> **会话前半段**：Debug Panel 退出通道（面板全窗口覆盖挡住右键 → 加粘性工具栏 ✕关闭面板/⏻退出桌宠，走 handleQuit→quit_app）+ 快捷键重构（新 `src/shortcuts.ts`：`e.code==="KeyD"` 防中文输入法截获 key="Process"、Esc 无条件关面板）+ gate/correction `max_tokens` 2048→4096（踩坑#3 复发：flash reasoning 吃光 2048 预算 content 空 JSON 崩）+ 主对话模型切 `deepseek-v4-flash`（AppData config）。
+> 验证：lib **238 passed** / golden 30 / harness 编译 ✅ / 前端 tsc ✅。**release 已重建**（npx tauri build --no-bundle，exe 18:07→最新，桌面快捷方式无需动）。
+
+> 📋 **待办（下一会话起点）· QA/新提示词 runtime 实跑**：① `npm run tauri dev` 问知识问题（"什么是X"/"帮我解释报错"）→ 确认直答不套宠物、F12 面板 Last Turn 显示 route=question；② 分享类消息（"我今天…"）确认示例风格生效（简短+一个真问题）；③ 聊天几次后确认旧记忆仍自然引用（[Milestones] 里程碑出现）。**Hermes 高价值 follow-up**：FTS5 全历史检索（零成本毫秒级回忆，sqlite-vec 库自带 fts5_cjk 中文分词，替代部分 embedding 召回）、"关系进展摘要"（后台每 N 次对话异步总结，对应 Hermes 后台 review）、记忆可视化编辑（Debug Panel 只读→可改）。
+
+> **2026-08-04（续）更新 · 选择性遗忘 episode MVP**：用户"开做选择性遗忘，做完跑 50 条功能测试，遇问题自检修复"。实现**用户主导的主动遗忘**（lifecycle_cleanup 的用户控制版）：用户说"忘掉X"→ gate 路由 `Forget` → 复用 retrieve 语义匹配最佳 episode → **置信度门在 `score_breakdown.semantic`（0.7，非 total score——total 混了 strength/recency，强近期无关记忆也能高分→删错）** + landmark 保护 → Rust 删 episode 行 + `vectors::delete` → converse 注入确认提示（"好，我忘了"，**禁复述**；无匹配则诚实"不记得"）。新 `mind/forget.rs` 模块（镜像 correction.rs）+ `db/episodes::delete`（保护 landmark）+ gate Forget 变体 + gate.txt 类别 + IngestionOutcome 加 `forget` 字段 + converse 提示。**全程不改 fn 签名**（踩坑#4：只加枚举变体 + struct 字段 + 内联分支）。**8 新单测**全绿。**自愈**：跑 golden 时 C 盘满（0.5GB，os error 112）→ 诊断 `src-tauri/target/release` 是 07/28 陈旧残留（release 早走 D 盘，活动 exe 在 D 08/03）→ 删之腾 2.31GB → golden 增量编译过。详见 §最近一轮 (2026-08-04 续)。
+
+> 📋 **待办（下一会话起点）· 选择性遗忘 runtime + 扩展**：① **runtime 实跑**：`npm run tauri dev` 攒几条记忆后说"忘掉我说的X"→ 确认她回"好，我忘了"且后续不再召回（Debug Panel 看 episode 删了没）。② **MVP 边界（可选 follow-up）**：当前只删 top-1 episode、阈值 0.7 需真实样本调、无多轮消歧义（低置信直接"不记得"而非反问"你说的是…"）、fact/pending 遗忘未做。详见 §最近一轮。
+
+：用户选"#10 生命感收尾"方向（非字面最高优先的 B6/B7 架构债——那是对运行中代码的推测性重构，违反"不重构没坏的东西"）。本轮补全两个长期标"低优先/follow-up"但服务北极星#10、且补全**已半接线系统**的缺口。**① rest_need 后端暴露+激活**——审计发现 `tick_needs`/`apply_drift`（emotion/needs.rs、homeostasis.rs）**只在自身测试里被调用、生产从未调**（生产走 DB 层 `apply_homeostasis_time_aware`，只漂移 mood/energy/social/stress，从不碰 rest_need）→ 单纯"暴露"会显示恒定种子值、毫无效果。故同时激活：新 `tick_rest_need(r,e,t)` 纯函数（低能量增长 + **恢复项 exp 衰减**，修原 tick_needs 单调只增永不恢复的设计缺陷）+ `tick_needs` 复用它 + 接进 `apply_homeostasis_time_aware`（UPDATE 加 rest_need 列）+ `EmotionResponse`/From/emit 三处加字段 + 前端 `EmotionData`/`toEmotionVector` 读取。效果：低能量时 rest_need 增长 → emotionDriver 半眯眼真的可见（之前恒 0）。**② circadian speedModifier 接动画速度**——`circadian.ts` 早输出 speedModifier（Morning 1.2 / DeepNight 0.4）但**零消费方**（只有 sleepiness 喂了 fsm）。Live2DCanvas 加 `speedModifier` prop → per-frame `focusTickerFn` 设 `app.ticker.speed` → 库的 idle 呼吸/眨眼/motion/physics 全局随昼夜变速（深夜真的变慢）。**验证全绿**：lib **227 passed**（226+1 恢复测试）/ `cargo check --tests` ✅ / `tsc` exit 0 / `vitest` 24 / `build` ✅（2.60s）。**待实跑**：dev 看 ① 低能量半眯眼（需攒状态或 CDP 注入 high rest_need）② 深夜 ticker.speed=0.4 全局变慢（`__pet.setHour(3)` 即时切换）。详见 §最近一轮 (2026-08-04)。**release exe 需 `npx tauri build --no-bundle` 才生效**（前端+后端都改了）。**当前无进行中任务**。
+
+> 📋 **待办（下一会话起点）· runtime 实跑 #10 两项**：`npm run tauri dev` → ① 低能量半眯眼：Debug Panel 或 CDP 把 rest_need 拉高，肉眼确认眼睛半闭（emotionDriver EYE_REST_GAIN 生效）② 深夜变慢：`__pet.setHour(3)`（dev-only 钩子，重写 getHours 模拟 DeepNight）→ 观察呼吸/眨眼/motion 明显变慢（ticker.speed=0.4），`setHour(10)`（Morning）→ 略快。静态全过，仅剩渲染确认。验完勾掉。
+
+：用户"继续 B4,B5 推进"。**B4-余余 两分区补全**（#11 Explainability 收尾）：① **AnimFSM**——fsm.ts 加 `getHistory()` getter 暴露末 5 微行为 history；App 传 `anim={state:behavior, history}` 给 DebugPanel；新 AnimFSM 分区显示当前态+recent history（"她现在在干嘛"）② **Prompt-token**——budget.rs 加 `system_prompt_budget()`（=2005）；converse 加 `PromptTokenDebug{system_tokens,input_tokens,budget,conversation_turns}` 挂 ConversationResult（**续③ 同款不改 fn 签名**，silence=None/normal=Some，在既有 system_tokens log 处复算）；commands 镜像 `DecisionPromptToken` 投影进 DecisionTrace；DebugPanel Last Turn 加 "Prompt: sys N/budget M | input K (N turns)"。**B5 Golden 评估框架**（审计确认原无 evaluation.rs/personality_drift_score/CI）：新 `src/mind/evaluation.rs`（DriftKind Chatty/Cloying/Clingy + DriftReport + `personality_drift_score` 规则启发式 + 7 单测）+ `tests/evaluation.rs`（**Liri 人格契约回归网** 4 测：6 维度/狐灵身份/NOT-list/严禁编造，锁续② 落地的人格 + 2 drift 端到端）。**验证全绿**：lib **226 passed**（219+7 eval）/ `cargo check --tests` ✅（evaluation.rs 编译 + 既有 harness 无破）/ `--test evaluation` 6 passed / `tsc` ✅ / `vitest` 24 / `build` ✅（1.89s）。**B4 前端两分区待 dev 实跑确认渲染**（静态全过；要看 AnimFSM/Prompt 分区需 `npm run tauri dev` 发消息开 Debug Panel）。详见 §最近一轮 续⑧。
+> 📋 **待办（下一会话起点）· B4 两分区 runtime 实跑**：`npm run tauri dev` 发一条消息 → F12（或 Ctrl+Shift+D）开 Debug Panel → 肉眼确认 ① **AnimFSM** 分区显当前 state + recent history ② **Last Turn** 内显 `Prompt: sys N/budget M tok | input K (N turns)`。静态全过（compile/types/build/单测），仅剩渲染确认；后端 PromptToken→snapshot 链路续③ 已验活着。验完勾掉。
+
+> **2026-08-03（续⑦）更新 · sleep 内容首次有测试**：用户"sleep相关的内容是不是还没有做测试"——确认 A4/A5/B3 全标"待实跑"、**前端零测试**（Rust 219 vs 前端 0）。补：① **加 vitest**（devDep + vitest.config.ts，node env，`npm test`/`test:watch`）② **抽纯逻辑**——`sleepLogic.ts::shouldAutoSleep`（从 App.tsx auto-sleep 条件抽出 A4 触发谓词）+ `microBehavior.ts::applySleepyWeight`（A5 公式 `w*=1+(sleepy-1)*sleepiness` 抽出，pickNextBehavior 复用）③ **24 前端单测**：circadian(10)/sleepLogic(7)/microBehavior(7)，覆盖 A5 输入（DeepNight 0.9/Morning 0.1 + 5 时段 + 边界）、A4 触发（DeepNight-only/非已睡/非 think-talk/idle 严 >阈值 各分支）、A5 效果（yawn 夜↑~3×/look_around 夜↓/白天 no-op/clamp）。**验证**：`npx vitest run` **24 passed** / `tsc --noEmit` ✅ / `npm run build` ✅（1.97s）。详见 §最近一轮 续⑦。**+ runtime CDP 验证（同轮）**：`npm run tauri dev` + `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` → Node WebSocket 连 CDP 驱动 `window.__pet`——A5 setHour(3)→DeepNight/0.9 & setHour(10)→Morning/0.1 ✅、A4 sleep()→"sleeping" & wake()→"hum" ✅、B3① 睡着 probeNudge×10 零气泡 ✅（awake sanity 1/15 证 nudge 本身没坏）、截图分析 sleeping=**闭眼**/awake=**睁眼** ✅。**唯一仍待人验：B3② sleep 音效**（`sound.sleep()` 入睡播放，我听不到——dev 仍开着，可右键→DevTools→`__pet.sleep()` 亲耳听）。**当前无进行中任务**。
+
+> **2026-08-03（续⑥）更新 · 清测试**：用户"是不是还有几个测试没做？先清测试"。**发现 `cargo test --test golden_conversations` 有 2 个 stale 测试失败**（lib 219 一直绿，掩盖了集成测试回归）：① **gc_003_emotion_consistency**——断言"高 stress+焦虑→silence"，但 planner Rule 2 **故意改成** anxiety→`care/normal/gentle`（打破 焦虑→stress→silence 反馈环；planner.rs:112-127 注释详述 + 单测 `test_anxiety_routes_to_care` 钉契约；golden 测试漏同步）② **gc_012_first_run_seeds_persona**——断言 `trait_key=="gentle"`，但 续② Liri 迁移后 `seed_persona` 播种中文维度 `温柔`（firstrun.rs:32-39）。**两者均改测试不改生产**（生产是有意行为，测试 stale）。修复后 golden **30 passed** ✅。**全确定性测试绿**：lib 219 + golden 30 + questioning pacing 1 + embedding_ab 1 = **251**。**闭环1 `memory_recall` real-LLM 复验通过**（多文件 Rust 改动后确认核心链路：seed 持久化→noise 抑制→跨会话 recall "糯米" 全 ✅，46s）。详见 §最近一轮 续⑥。**当前无进行中任务**，下一会话按 B4-余余（AnimFSM 前端 / Prompt 动态 token）→ B5（Golden 评估，待 Liri 稳定）推进。
+
+> **2026-08-03（续⑤）更新 · 两 follow-up**：① Settings 下载按钮 Qdrant 401→Xenova（hf-mirror）+ REQUIRED_FILES 加 `model.onnx_data` + download_all 处理 `onnx/` 子目录 external data；② **暂时离开 = 最小化到系统托盘**（lib.rs 建 TrayIcon 左键 click 恢复 + emit restore-from-tray；commands `hide_to_tray`；App handleAwayMode 调 hide + listener 清 awayMode；**原只设 awayMode 标志窗口根本没隐藏**）。tray-icon feature 早启用只差接线。验证：219 passed + tsc + check --tests + release rebuild(19:20) + 启动 sanity（进程活+vectors14 幂等）。**tray 交互（右键离开→托盘→点击恢复）+ 下载按钮待用户手动验证**（OS 层）。详见 §最近一轮 续⑤。
+
+> **2026-08-03（续④）更新 · embedding 接入 + 检索质量翻倍**：用户"下载 embedding 装 D 盘 + 对比测试看提升"。已完成：① BGE-M3 装入 `D:\models\bge-m3`（Xenova/bge-m3；原 Qdrant/bge-m3-onnx 已 401）② config→D 盘 ③ **修 ort rc.12 加载 bug**（Level3→All；记忆 `ort-rc12-embedding-load-bug`）④ **加 backfill**（历史 episode 自动向量化，真实 DB 0→14 验证）⑤ benchmark（语义 Hit@3 33%→67%、avg sem 0.035→0.741≈21×）⑥ release rebuild + 端到端。详见 §最近一轮 续④ + 记忆 `bge-m3-model-location`。**当前无进行中任务**。**follow-up**：download.rs 的 HF_BASE_URL 仍指失效 Qdrant（Settings 下载按钮坏，手动下载已绕过）；B5 Golden 评估。
+
+> **2026-08-03（续③）更新 · 深度审计 + #11 可观测簇**：用户要求"对计划未完成部分做深度审计 + 列优先级更新 HANDOFF + 按优先级继续开发"。审计对照 `implementation-plan.md` P0-P17/A1-A2 逐项核验**代码实际状态**（非仅信 HANDOFF 旧记录），结论见 [§审计 (2026-08-03 续③)](#审计-2026-08-03-续③深度审计--代码级核验)。**重排结论**：三闭环已全完成、生命感主轴在维护态，**Liri/Spine（真正的 #10 下一步）受阻于 Liri.spine 资产未交付** → 当前最高 ROI 且**未受阻**的是 **#11 Explainability 簇**：① **B4b conversations 死表（确认真 Bug）**——生产路径从未调用 `conversations::insert`（grep 0 命中 / callers 仅测试），07-31 幻觉因此无法回溯她原话；② **B4 Debug Panel 缺 5/9 分区**——Retrieved/Intent/Reflect 是"她为什么这么说"诊断链的核心，07-31 幻觉若有这些早定位了。本轮**已完成** **B4b（死表修复）→ B4-MVP（Retrieved+Intent+Reflect 三分区）→ B4-余 Cost（LlmClient 今日调用+token 计数）**——`cargo test --lib` **219 passed** / `cargo check --tests` ✅ / `tsc --noEmit` ✅ / `npm run build` ✅（详见 §最近一轮 续③）；AnimFSM(前端 fsm 上抛)/Prompt-动态 token 留 follow-up。**B1b 推迟**（07-31 A 档后无复发，条件触发）。**B6/B7 推迟**（在跑的架构债，重构风险高，非用户态）。**✅ 已实跑确认（2026-08-03 dev 真实 LLM）**：发一句话 → Ctrl+Shift+D（笔电 F12 被绑休眠，本轮加的备用键）看 Last Turn/Retrieved/Reflect/Cost 四分区全有值；conversations 0→2 行；**Cost 首次暴露单轮 3 次 LLM 调用（gate+extractor+main）**；Retrieved 的 sem≈0 暴露当前环境未加载 embedding（既有问题）。详见 §最近一轮 续③。release exe 需 `npx tauri build --no-bundle` 才生效。
+> **2026-08-03（续②）更新 · 重大方向**：用户确认最终角色 = **璃 Liri（小狐灵）**，动画走 **Spine+PixiJS（不用 Live2D）**——当前 `Live2DCanvas.tsx` 是占位、将来迁移；FSM/emotionDriver/behavior→参数映射等技术无关层沿用。已落地：① 形象设计三文档拷入 [`docs/specs/liri/`](specs/liri/)（设计规范/动画设计/制作规范，原在桌面）② **人格配比落进 system prompt**——`system.txt` 身份+`[Core Personality]` 块改成 Liri（温柔35/好奇20/聪慧20/安静15/调皮5/神秘5 + 狐狸观察者本性 + NOT 话痨/卖萌/依赖/永远积极）；`firstrun.rs::seed_persona` core 维度同步改 Liri（中文 key，confidence=确信度非权重%；**仅对新装生效**，当前库仍是旧种子）。Liri 5 条行为原则大多已被现有 system.txt 规则覆盖（②不假记忆=rule8「严禁编造」）。验证：`cargo test --lib` **216 passed** ✅。**待 rebuild 进 dev/release 生效**（system.txt 是 `include_str!` 编译进二进制）。**待办**：① 当前用户库 core persona_traits 还是旧种子（gentle/patient/...），可选 reseed（`DELETE FROM persona_traits WHERE trait_type='core'` → 重启自动用 Liri 维度重种）；② 动画层 Spine 迁移是新方向（替换 Live2DCanvas，待 Liri.spine 资产）。详见 §最近一轮 (2026-08-03 续②) + 记忆 `liri-character-spine-direction`。
+> **2026-08-03（续）更新**：完成 **B3 Sleeping 配套收尾**（纯前端，2 文件 ~10 行，原则 #1/#5/#6/#10/#11）。① **睡着抑制 nudge**——`App.tsx` DeepNight/LateNight nudge effect 加 `fsmRef.state===Sleeping` 守卫，睡着不再冒「早点睡」梦话（fsmRef 稳定无 stale-closure）② **接 sleep 音效**——`soundManager.ts` 加 `"sleep"` AssetKey + ASSET_PATH（`/audio/voice/sleep.mp3`，素材早已在）+ `sleep()` 方法（**mirroring `greet()`**：一次性状态进入 cue，**非**加权随机交互；mute 经 `ensureCtx` 尊重 #6），`App.tsx` 入睡 `forceState(Sleeping)` 后调 `sound.sleep()`（`fsm.state!==Sleeping` guard 保证每次入睡只响一次）③ **LateNight 不入睡只 yawn**——**已满足，零改动**：auto-sleep 本就 DeepNight-only（`App.tsx:239`），LateNight 经 sleepiness 权重调制多 yawn（Tier3 #7 早已做）。**验证**：`tsc --noEmit` ✅ / `npm run build` ✅（482 modules，2.16s）。**待实跑（已免改系统时间）**：为验收 A4/A5/B3 等需 DeepNight 的项，新增 **dev-only `window.__pet` 验收钩子**（`App.tsx`，`import.meta.env.DEV` 守卫，prod build grep `__pet`/`setHour` 0 命中✓）—— webview 内重写 `Date.prototype.getHours` 模拟时段（不改真实时钟、无 UAC）+ `forceIdle` 倒拨交互时间绕开 10min 入睡等待 + `sleep/wake/probeNudge` 直接触发。**操作清单见 [`docs/verify-checklist.md`](verify-checklist.md)**：`npm run tauri dev` → F12 → Console 用 `__pet.setHour(3)` 等。**当前无进行中任务**，下一会话按 **B4（P16 Debug Panel 补全）** → B5（Golden 评估框架）→ B8 推进；B1b（Grounding B 档运行时阻断）条件触发——实跑若仍偶发主动开口幻觉再升级。
 > **2026-08-03 更新**：从 `D:\桌宠`（opencode 在本仓库副本上的工作）**合并** **B1 Consolidation 反向更新 Facts** + **B2 完整物理（自由落体/任务栏弹跳/1/3 飘落悬停）** + A4/A5 实跑方法论成果（CDP 自动化 + `Date.prototype.getHours` 重写模拟时段）。详见 §最近一轮 (2026-08-03)。两副本 base 完全一致（同 HEAD `50c45d2`，C/D 工作树在 grounding/reflection/Sleeping 等文件**逐字节相同**），故合并 = 纯增量复制 5 改文件 + 2 新文件（`gravity.ts`/`consolidation_harness.rs`），**零冲突**。验证：`cargo check --tests` ✅ / `cargo test --lib` **216 passed**（C 原 208 + B1 新增 8）/ `tsc --noEmit` ✅。清理了 harness 一处死变量（`ep_before`）。**当前无进行中任务**，下一会话按 B3（Sleeping 配套）→ B4（Debug Panel）→ B8 推进。
 > **2026-07-31 18:01 更新**：三闭环 + 生命感主轴完成。**① 待验收代码层已全部闭环**——`cargo test --lib` 207 passed / `cargo check --tests` ✅ / `tsc` ✅ / `build` ✅，已 rebuild 进 18:01 release exe（含 A1/A2/A4 工作树 Rust 改动）。A1-A6 代码层 ✅、A7 勘误降级（未实现，单气泡覆盖）。**余下仅 GUI 运行时实跑**（A4/A5/A6 可立即验证；A1/A2/A3 需攒状态）——见文末 [§下一步总清单](#下一步总清单2026-07-31-统一优先级--取代上方-下一步候选) ①。**当前无进行中任务**，下一会话按 B1→B8 推进或先实跑 A4-A6。**主动开口幻觉已 A 档修复（19:10 rebuild，详见 §最近一轮）；残余：prompt 软约束无运行时阻断，B 档待命。**
 **气泡 release rebuild 闭环（实跑确认 ✅ 2026-07-31）+ consolidation max_tokens 修复 + Reflection 触发器 Tier2 #5 + Sleeping 入睡机制（build 过 / 待实跑）。** 气泡：release exe 落后 dev 2 天，rebuild 后用户实跑确认居中。consolidation：生成任务 max_tokens 2048→4096（踩坑#3 复发）+ 空 content 防御。Tier2 #5：Reflection 事件驱动触发器（TurnThreshold 30 条对话记忆 / MajorEvent importance>0.85，1h 冷却，Daily→MajorEvent→TurnThreshold）。Sleeping：DeepNight(2-6) 无交互≥10min 自动入睡（forceState），交互（戳/摸/拖/对话/双击）markInteraction 唤醒 + 刷新 lastInteraction（天然 10min 清醒冷却）。后端 `cargo test --lib` 207 passed / 全 harness 编译 ✅；前端 `tsc`+`build` ✅。**下一步**：实跑 #4 converse thought / circadian 深夜 / 实跑 Sleeping（改系统时间 2-6 点+等 10min）/ 多气泡堆叠 / Tier2 #6。注：consolidation(≥100 episodes)/Reflection 触发器日常不易快速触发；Sleeping 需改系统时间到 DeepNight 验证。**全部已 rebuild 进 release exe（07-31 13:03），桌面快捷方式已含**；气泡已实跑确认，其余待择机实跑。
+
+## §审计 (2026-08-03 续③)：深度审计 + 代码级核验
+
+**任务**：用户要求审计计划（`implementation-plan.md` P0-P17/A1-A2）未完成部分、列优先级、按优先级继续开发。方法：**不轻信 HANDOFF 旧记录**，对照 codegraph + 源码逐项核验"声称未完成"是否属实、是否有遗漏。
+
+**核验方法**：`codegraph_status`(103 文件/1442 节点) + `codegraph_explore` 看关键符号源码 + `codegraph_callers` 验调用方 + `Grep` 验生产路径 + Read plan P16/P17/A1-A2 验收标准。
+
+**核验结论表**：
+
+| 项 | HANDOFF 旧记 | 代码核验结果 | 证据 |
+|---|---|---|---|
+| **B4b conversations 死表** | backlog 普通项 | ❌ **确认真 Bug（#11 可追溯受损）** | `Grep conversations::(insert\|get_recent\|get_max_turn)` 于 `src-tauri/src` = **0 命中**；`codegraph_callers(insert)` 显示 `conversations::insert` 仅被测试 `test_insert_and_get_recent` 调用。plan P5.3 步骤 5 明确要求"原始对话日志写 conversations 表"。影响：无法回溯她原话（07-31 幻觉即因此无法定位）。 |
+| **B4 Debug Panel** | "缺 5 分区" | ⚠️ **确认 6/9 分区** | `DebugPanel.tsx` = Brain/Counts/Facts/Episodes/Pending/Timeline。plan P16 还要 Prompt token / Retrieved score / Reflect / AnimFSM / Cost。后端 `DebugSnapshot`(commands.rs:689) 无对应字段。 |
+| **B5 Golden 评估** | "框架不完整" | ❌ **确认无框架** | `tests/` 有 `golden_conversations.rs`（数据，42 符号）但**无 `evaluation.rs`**（plan P17 点名）。无 `personality_drift_score`、无 CI。Liri 人格刚落 system.txt → 缺回归网。 |
+| **B6 A1 BrainState** | "架构债" | ⚠️ **确认债** | `converse()` = 10 参数（plan A1 要 `fn(brain:&BrainState)`），违反原则 #2 信号"参数>3"。在跑、重构触踩坑#4。 |
+| **B7 A2 Scheduler** | "架构债" | ⚠️ **确认债** | `loop_runner.rs` = `std::thread::spawn`+`sleep`（medium 30s / slow 1h），非 plan A2 的 Scheduler trait。在跑。 |
+| **B1b Grounding 阻断** | "条件触发" | ⏳ **确认条件成立、未触发** | `check_groundedness`(grounding.rs:235) 仅挂 converse、只 warn、`claim_patterns`(:256) 全英文（中文漏检）、未挂 proactive/welcome_back 输出端。07-31 A 档 prompt 收紧后**无复发报告** → 维持观察，不升级。 |
+| **Liri/Spine 迁移** | 续②新方向 | 🟡 **确认受阻** | `Live2DCanvas.tsx` 是占位（Haru+f00-f05+emotionDriver），将来换 Spine+PixiJS。**受阻于 `Liri.spine` 资产未交付**。技术无关层（FSM/emotionDriver 逻辑/circadian/microBehavior）迁移时沿用——现无可做的代码。 |
+
+**遗漏排查（HANDOFF 未单列但核验发现）**：
+- **A7 多气泡堆叠**：旧 backlog 已正确降级（App.tsx 单气泡覆盖语义，非堆叠）✅。
+- **③散落 follow-up**（Alt+Space 全局键 / 走路脚步声 loop / 害羞慢现 / rest_need 后端暴露 / speedModifier 接动画 / idle_weights JSON 化 / 选择性遗忘）均为小项，核验仍属未做，不升优先级。
+
+**重排优先级（驱动：北极星 #10 + 阶梯 活着→记住→懂你→工具砍 + #8 成本 + #11 可观测 + "是否受阻"）**：
+
+三闭环全完成 → 生命感主轴在维护态。真正的 #10 下一步（Liri/Spine 视觉角色）**受阻于资产**。故当前**未受阻的最高 ROI = #11 Explainability 簇**（B4b 死表 + B4 决策链分区）——它直接服务"她为什么这么说"的诊断，07-31 幻觉这类问题有它早定位了；且 B4b 是真 Bug。
+
+| 优先级 | 项 | 理由 | 本轮 |
+|---|---|---|---|
+| **P1** | **B4b conversations 死表** | 真 Bug、小、外科手术式、解锁 #11 可追溯 | ✅ 本轮 |
+| **P1** | **B4-MVP 决策链分区（Retrieved+Intent+Reflect）** | #11 核心、诊断幻觉/漂移、中等工作量、未受阻 | ✅ 本轮 |
+| P2 | B4 余项（AnimFSM 前端 / Cost LLM 计数 / Prompt 动态 token） | #11 补全，但需前端 plumbing 或 LlmClient 插桩 | ⏳ follow-up |
+| P2 | B5 Golden 评估框架 | 锁 Liri 人格防漂移；重（需真 LLM、≥30 对话、CI） | ⏳ 待 Liri 稳定后 |
+| P3 | B1b Grounding B 档 | 条件触发（A 档后无复发） | ⏳ 观察 |
+| P4 | B6 A1 BrainState / B7 A2 Scheduler | 在跑的架构债、重构风险高 | ⏳ 顺带改 |
+| P5 | Liri/Spine 迁移 | #10 真正下一步，**受阻于资产** | ⏳ 等资产 |
+| P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
+
+**Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-07 续²)：自主批次推进 —— 鲁棒性 / BrainState / 记忆编辑 / loneliness 收尾 / 死代码 / 验收清单
+
+**任务**：用户授权长程自主——"按优先级推进所有后续内容，每项自测后更新 HANDOFF，不询问；待实跑项统一整理"。逐项推进既定队列 #8-#14，每项自测（lib 单测 + check --tests + tsc）绿后落 HANDOFF。详记见 §当前任务 清单，此处只叙事。
+
+**完成**（7/7）：
+- **#8 鲁棒性**：converse 主回复空 content 重试一次（`&mut on_token` 复用，镜像 extractor）+ harness 启发式关键词表扩（治 705/1002 误报）。lib 259 ✅。
+- **#9 B6 BrainState**：converse 9 参 → `ConverseCtx<'a>` 统一快照（on_token 留独立泛型），8 行别名桥接保 body 字节不变。6 调用点全改（commands + 3 harness）。check --tests ✅ + lib 259 ✅。
+- **#10 B7 Scheduler**：**经评估主动搁置**（ADR `docs/decisions/2026-08-07-scheduler-deferred.md`）——计划 §A2 假设 Body-in-Rust，与原则 #5（Body 在前端）冲突；`start_life_loop` 已是定时器注册中心，引入 trait object 是投机抽象、高风险零价值。
+- **#11 记忆可视化编辑**：Debug Panel 只读→可编辑。3 新命令 `forget_fact`/`delete_episode`/`set_emotion`（复用既有 DB accessor，pending 复用 `resolve_pending_event`）+ 前端 ✕ 按钮 + Emotion 5 滑块。check --lib ✅ + lib 259 ✅ + tsc ✅。
+- **#12 loneliness 收尾**：① lonely-nudge 加 Sleeping 守卫（睡着不冒"想你"，#12①）。② `pet_head` 降孤独 -0.1（poke 不降）。tsc ✅ + check --lib ✅。
+- **#13 死代码清理**（**修正前提**）：`trigger_proactive` **非死**（commands.rs:451 生产调用，前次判断过时）→ 保留；删 `emotion/homeostasis.rs` 整文件（零生产调用 + `TAU_STRESS` 与生产分叉会误导）+ GC_018；`tick_needs` 保留（正确委托纯函数、不误导，删它低价值中风险）。check --tests ✅ + lib 255 ✅。
+- **#14 验收清单**：扩写 `docs/verify-checklist.md` 新增 D1-D7（记忆编辑/loneliness/Forget/QA/rest_need，全用新 Emotion 编辑器秒级触发）+ 不易快速验收表。Brain 行加 Lonely 显示。
+
+**交付**：① release exe **已重建**（`npx tauri build --no-bundle` ✅，47s；`D:\cargo-target\desktop-pet\release\desktop-pet.exe` 24.3MB，桌面快捷方式即更新）。② 用户照 `docs/verify-checklist.md` D1-D7 在 dev 模式手动验手感。
+
+**向北星靠拢**：Debug Panel 记忆编辑让"记住你/懂你"可被人工纠偏（错了能改/删，非黑箱）；loneliness 闭环（想你→摸头缓解）+ Sleeping 守卫让"陪伴"更自洽。纯重构（#9/#13）与 ADR（#10）降技术债但不改行为。
+
+---
+
+## §最近一轮 (2026-08-07)：关系进展摘要 —— Hermes 后台 review 落地
+
+**任务**：用户"读 handoff、用 codegraph 了解代码、继续开发"。三闭环全跑通、当前无进行中任务，AskUserQuestion 在 4 个可独立完成的方向里确认走 **关系进展摘要**（对应 Hermes 后台 review，服务"懂你"Soul 闭环深化）——未受阻、低风险、复用 reflection/consolidation 成熟模式；其余三项（激活 loneliness=行为变更需评估 / 记忆可视化编辑=开发者工具不直接服务陪伴 / 架构债 BrainState=重构在跑代码风险高）未选。
+
+**设计**：每 N(=15)个新 conversation episode，后台用 reflection 模型回顾最近的记忆，产出 1-2 句"你们关系最近状态"总结（璃视角、free text），注入为 always-on 的 `[Relationship]` 区块——让她即使当前话题检索不到相关记忆，也带着对关系整体的理解。Hermes 精神：关系账独立、总是注入（而非靠检索运气）。
+
+**实现**（3 新文件 + 6 改文件，全程不改 fn 签名，遵守踩坑#4 + #1 LLM 只表达）：
+- **新表 `relationship_reviews`**（`migrations/003_relationship_reviews.sql` + `db/relationship_reviews.rs`，migration v3）：`insert` / `get_latest` / `latest_created_at` / `count`。独立于 episodes（关系总结 ≠ 单事件，不污染事件检索 / 不被遗忘 / 不消耗向量）。表留全历史（#11 可追溯），注入只取 latest 1 条。+2 单测。
+- **新 `soul/review.rs`**（镜像 reflection.rs 风格）：`should_run_review(db)` 纯谓词（自上次 review 起 ≥15 个新 conversation episode；episode-gated 自然限频，非 conversation episode 如 consolidation 不计）；`run_review(db, llm)`（取最近 30 episode + 20 active facts + relationship 状态 + user_nickname → inline 中文 prompt → LLM `chat_reflection` temp 0.5 / 4096 max_tokens 坑#3 → free text → 空内容防御返 Err 重试 → 写表）；`maybe_run_review_if_due`（scheduler 入口）。+6 纯谓词单测（不足/足够/只计 conversation/上次后少/上次后足够/不计上次前）。
+- **注入走现成管道**（零新机制，与 `relationship` 字段同款）：`RetrievalResult` 加 `relationship_review: Option<String>` → `retrieve()` 查 `get_latest` 填充（廉价 DB 读、无 embedding）→ 纯函数 `format_memories` 输出 `[Relationship]` 区块（在 `[Milestones]` 后、`[Memories]` 前，关系锚点优先）。`budget` 加 RELATIONSHIP=80 slot（system_prompt_budget + compress 同步 +RELATIONSHIP；qa budget 不加因 QA 不注入记忆）。`system.txt` 第 19 行加 `[Relationship]` 指引（LLM 别照搬复述、自然影响语气）。
+- **调度**：`loop_runner::slow_tick` 在 reflection / consolidate 后挂 `maybe_run_review_if_due`（每小时检查、episode-gated 罕触发、失败 log 不致命 #6）。
+
+**踩坑#4 变体（已修，harness 同步）**：`RetrievalResult` 加字段后，所有显式构造点同步——lib 内（retrieval 1 / budget 4 / grounding 2 / planner 2）+ harness（golden 7 / evaluation 1 / questioning 1）全补 `relationship_review: None` 或 `clone()`。`converse.rs` 用 `RetrievalResult::default()`（Default 衍生，新字段自动 None）无需改。`check --tests` 一次定位全部遗漏点，逐一补齐后通过。
+
+**架构契合**：#1（LLM 只写 free text 总结；Rust 决定触发/存储/注入）/ #3（prompt 明令只基于真实记忆、不编造）/ #8（reflection 模型 + episode-gated 罕触发，每 ~15 轮对话 1 次额外调用）/ #9（MVP top-1 latest 注入 + 15 episode 阈值，刚够用）/ #11（relationship_reviews 表 + format_memories `[Relationship]` 区块 + log + 9 新单测可追溯）/ 不改 fn 签名（struct 字段 + 新模块 + 内联分支，规避踩坑#4）。
+
+**验证（全绿）**：`cargo test --lib` **257 passed**（248 + 9 新：6 review 谓词 + 2 relationship_reviews db + 1 `[Relationship]` 注入）/ `cargo check --tests` ✅（全 harness 编译）/ `cargo test --test evaluation` **6 passed**（Liri 人格契约回归网全过，system.txt 加 `[Relationship]` 未破 6 维度/狐灵/NOT-list/严禁编造契约）/ `cargo test --test golden_conversations` **30 passed**（集成场景无回归）。**合计 294 确定性测试全绿**。
+
+**待实跑**：`npm run tauri dev` 攒 ≥15 条记忆后（slow_tick 每小时检查）→ `relationship_reviews` 表出第一行 + 对话里她语气带关系理解（如用户说"最近真累"她不只回"累"相关，还带"我们聊了这么久"的关系感）。CDP 不易触发（需攒 episode + 等 slow_tick），主要靠 dev 自然积累。**release exe 需 `npx tauri build --no-bundle`**（system.txt include_str! + 后端 + migration v3 需重编；旧 DB 启动自动 migrate v3 建表）。
+
+**Scope 边界 / follow-up**：① 阈值 15 是安全起点，实跑后按 review 频率/质量调（太少则陈旧、太多则频繁 LLM 调用）。② review 产 free text 无结构化（不像 reflection 产 JSON traits/thoughts）——关系状态用自然语言够用；若未来要结构化（亲密度趋势 / 里程碑标签）再加。③ 只注入 latest 1 条（历史 review 留表不注入）；若要"关系演变轨迹"注入多需改 format_memories。④ review 不进 episodes / 不向量化（注入是 always-on latest，非检索驱动）——省 embedding 成本，但旧 review 不被语义检索（只服务"当前关系背景"）。⑤ `run_review` 无 LLM 端到端单测（需真模型、慢；靠 `should_run_review` 6 纯谓词测 + 实跑覆盖，镜像 reflection/consolidation 不测 LLM 端到端的惯例）。⑥ 同一 slow_tick 若 reflection + consolidation + review 三者同时 due，是 2-3 次 LLM 调用（每小时上限，且 review 15 episode 才触发一次，可接受 #8）。
+
+**当前无进行中任务**。下一会话起点：① runtime 实跑本轮（dev 攒记忆看 review 生成）② 或回前面留的待实跑（选择性遗忘 fact/pending / QA 直答 / #10 rest_need/speedModifier / B4 AnimFSM/Prompt 分区 / sleep 音）③ 或 B6/B7 架构债（如接受重构风险）④ Liri/Spine（等资产）⑤ Hermes 余项（记忆可视化编辑）。
+
+---
+
+## §最近一轮 (2026-08-07 续)：激活 loneliness —— 璃会"想你"
+
+**任务**：用户"读 handoff、用 codegraph 了解代码、继续开发"。三闭环全跑通、当前无进行中任务。AskUserQuestion 在 4 个未受阻方向（激活 loneliness / 记忆可视化编辑 / B6-B7 架构债 / 鲁棒性加固）里确认走 **激活 loneliness**——服务"陪伴"北极星、未受阻、低风险、镜像 08-04 修 rest_need 的成熟模式。其余未选：记忆可视化是开发者工具不直接服务陪伴；B6/B7 是在跑代码的推测性重构（违反"不重构没坏的东西"）；鲁棒性加固价值较低。
+
+**核验（codegraph + grep）发现关键死字段**：`emotion::tick_needs`（needs.rs）让 loneliness 增长，但 `codegraph_callers` 证它**仅测试调用、生产零调用**（与 08-04 审计发现 rest_need 同病）。生产 homeostasis 走 `db::emotion::apply_homeostasis_time_aware`，08-04 已接 `tick_rest_need`，但 **loneliness 从不更新** → 冻结在种子值。后果：`planner` Rule 4（loneliness>0.6 + closeness≥20 → goal=accompany / proactive）**永远到不了**——loneliness 只能被对话里 `react.rs` 的 delta −0.08/轮往下压，永远爬不到 0.6。即"她想你"这条设计好的规则是死的。另一处 `pending::proactive::trigger_proactive`（Rule 5 loneliness→random_chat）`codegraph_callers` 证同样是**死函数**（6 callers 全测试）——活路径是 generate / generate_welcome_back。
+
+**设计**：两段。① 核心激活（镜像 rest_need）让 loneliness 真增长、planner Rule 4 复活（你回来后她回复带 accompany 暖意）；② 主动气泡（镜像 welcome-back / proactive-prompt emit 模式）让她在你 idle 时**主动**戳你——即选项描述里承诺的"主动找你"。
+
+**实现**（6 改后端文件 + 1 改前端，全程不改 fn 签名，遵守踩坑#4 + #1 Rust 决策）：
+- **`emotion/needs.rs`**：新 `pub fn tick_loneliness(loneliness, elapsed)` 纯增长规则 `(l + elapsed*LONELINESS_RATE).min(1.0)`（仅增长项——交互下降由 converse 里 react delta 处理，homeostasis 只建模 idle 增长）；`tick_needs` 非交互分支改调它（DRY，既有 test_loneliness_growth / test_interaction_reduces 仍绿）。+1 纯函数测（增长/累积/clamp）。
+- **`emotion/mod.rs`**：re-export `tick_loneliness`。
+- **`db/emotion.rs::apply_homeostasis_time_aware`**：加 `new_loneliness = tick_loneliness(current.loneliness, elapsed)` + SQL UPDATE 加 `loneliness = ?7`、`last_homeostasis_at/updated_at` 重编号 `?8`、params 加 `new_loneliness`。+1 测（1h idle → +0.36，证生产路径真增长）。
+- **`pending/proactive.rs::generate_lonely_bubble`**（镜像 generate_welcome_back）：load emotion → retrieve 取可选锚（fact/episode，无锚也说话）→ Intent{goal=accompany, action=lonely_nudge, tone 按 mood, proactive=true} → allocate_and_compress → push 1 句 prompt（「你一个人待了一会儿有点想 ta…轻轻戳一下，不是催回复，别黏人别问问题逼答，规则8 严禁编造」）→ LLM chat temp0.8/4096（坑#3）→ record_interaction("lonely_nudge") → reply。
+- **`emotion/react.rs::lonely_canned(mood)`**：mood 分档 canned 降级（高"嘿~你还在呀，真好"/低"……你也在呢吧"/中"突然想跟你说说话~"），#8 graceful。
+- **`commands.rs::lonely_bubble`** + **`lib.rs`** 注册：薄命令，LLM 路径优先、空则降级 lonely_canned（镜像 welcome_back_bubble）。
+- **`lifecycle/loop_runner.rs::check_lonely_nudge`**（镜像 check_presence_transition）：medium_tick 后调；门控 loneliness>0.6（LONELY_NUDGE_THRESHOLD）+ closeness≥20（LONELY_NUDGE_CLOSENESS，镜像 planner Rule 4 早期不主动）+ presence Active（不戳空桌）+ recent_interaction>120s（非对话中）+ 30min 线程本地 cooldown（LONELY_NUDGE_COOLDOWN_SECS，稀有惊喜非 spam）→ emit "lonely-nudge"。thread-local `last_lonely_nudge` 加进 medium 线程闭包（镜像 away_since）。
+- **`App.tsx`**：listener `listen("lonely-nudge")` → invoke lonely_bubble → showBubble(reply, 10000, moodClass)。onboarding/away 守卫同 welcome-back。
+
+**架构契合**：#1（Rust 决定何时触发/门控/存储；LLM 只表达 free text 气泡）/ #6（closeness 门 + presence 门 + cooldown + canned 降级，每环失败不致命）/ #8（homeostasis 零 LLM；lonely 气泡 cooldown-gated 30min 罕触发，可接受）/ #9（MVP top-1 气泡 + 0.6/20 阈值 + 30min cooldown，刚够用）/ #10（"她想你"= 生命感核心）/ #12（canned 含静默向"……你也在呢吧"，沉默也是表达）/ 不改签名（新 fn + 新 action 字符串 + SQL 参数，规避踩坑#4）。
+
+**验证（全绿）**：`cargo test --lib` **259 passed**（257 + 2 新：tick_loneliness 纯函数 + homeostasis_grows_loneliness 生产路径）/ `cargo check --tests` ✅（全 harness 编译，无签名变更未破）/ `tsc --noEmit` exit 0 / `npm run build` ✅（2.45s）/ `npx vitest run` 24 passed。**release exe 重建中**（npx tauri build --no-bundle，前端+后端都改）。
+
+**待实跑**：`npm run tauri dev` → ① 攒 closeness≥20（多聊几次）② 离开/不说话 ~1.7h（loneliness 增长到 0.6）且 presence Active → 看她主动冒"想你了"类气泡（30min 一次，回复后 loneliness 降停止）；或 ③ 离开后回来发消息，她回复带 accompany 暖意（planner Rule 4，Debug Panel 看 intent.goal）。CDP 不易触发（需攒 closeness + 等 loneliness 增长），主要靠 dev 自然积累。
+
+**Scope 边界 / follow-up**：① **pet/nudge 不降 loneliness**——loneliness 仅由对话 react(−0.08) 降、homeostasis 增；戳/摸更新 last_interaction_at（suppress nudge 2min）但不降 loneliness。次要边缘（戳了不说话 loneliness 仍涨），MVP 接受；若要"互动也解闷"需把降 loneliness 接进 markInteraction，超本任务。② **lonely 气泡走 LLM**（每 30min 一次，cooldown-gated，成本可控）——若要零成本可全走 canned，但重复机械违反生命感。③ **trigger_proactive 仍是死函数**（6 测试 caller），非本轮引入，surgical 不清。④ **lonely-nudge 无 Sleeping 守卫**——靠后端 presence 门（DeepNight 用户通常不在 → 不 emit）；若深夜在桌且璃睡着，理论上会冒"想你"气泡（视觉不一致，罕见边缘，follow-up 可加 fsmRef Sleeping 守卫）。⑤ 阈值 0.6/20/30min 是安全起点，实跑后按频率/质量调。
+
+**当前无进行中任务**。下一会话起点：① runtime 实跑本轮（dev 攒 closeness + 等 loneliness）② 或回前面留的待实跑（关系进展摘要 review / 选择性遗忘 fact-pending / QA 直答 / #10 rest_need-speedModifier / B4 AnimFSM-Prompt / sleep 音）③ 或 B6/B7 架构债 ④ Liri/Spine（等资产）。
+
+---
+
+## §最近一轮 (2026-08-05)：选择性遗忘扩展至 fact/pending + FTS5 可行性证伪
+
+**任务**：用户"读 handoff、用 codegraph 了解代码、按优先级继续开发"。HANDOFF §下一步总清单 把 **FTS5 全历史检索** 标为"最高 ROI follow-up"（续③ Debug Panel 检索退回关键词兜底的诊断遗留）。
+
+**FTS5 可行性证伪（决定性，写入避免重复踩）**：写 throwaway probe（`tests/fts_probe.rs`，已删）测 bundled SQLite（`rusqlite` `bundled` feature）的 3 个 FTS5 分词器对中文 2 字查询 '火锅' 的 MATCH——**FTS5 可用（建表 OK）但 trigram/unicode61/ascii 三者 match count 全 0**。根因：标准 SQLite FTS5 无 CJK 分词——trigram 需 ≥3 字查询；unicode61 把 CJK 连续段当单 token；ascii 只认 ASCII。HANDOFF 旧记"sqlite-vec 自带 fts5_cjk"**错误**（fts5_cjk 非标准 tokenizer，sqlite-vec 也不捆绑 FTS5 分词器）。→ **FTS5 对本库主语言（中文）不可行**，除非引入重依赖（jieba 可加载扩展 / Rust 端分词喂 FTS5），远超"干净 follow-up"范畴。**结论：FTS5 从 backlog 移除/降级，勿再尝试**。probe 省了一轮建错。
+
+**转向**（FTS5 既不可行，取下一未受阻、低风险、服务"记住你"核心的项）：**选择性遗忘扩展至 fact + pending**——08-04 续 episode MVP 明确 deferred（`"fact（偏好）+ pending（提醒）遗忘未做"`），结构镜像 episode 路径，有现成模式可抄。
+
+**实现**（6 文件，全程不改既有 fn 签名，遵守踩坑#4 + #1 Rust 决策）：
+- **`db/facts.rs::expire_by_id(conn,id,now)->Result<bool>`**：精确软删单条 fact（`UPDATE ... SET valid_to=? WHERE id=? AND valid_to IS NULL`）。区别于 `expire_old`（按 category+key 批量过期，用于矛盾事实到达）——expire_by_id 只过期用户指明的那条，保留行供 `dedup_insert` revive + 审计轨迹（forgotten 偏好 = 停止浮现，用户再说起会自然复活）。+1 单测（精确性：同 category+key 两条 value，只过期指定 id；已过期/缺失返 false）。
+- **`db/pending.rs::get_all_pending(conn)->Vec<PendingEvent>`**：返回所有 `status='pending'` 事件（triggered/resolved 不参与匹配——已完成的提醒不该再被"忘"）。forget 动作复用既有 `mark_resolved`（状态机终态，无硬删，pending 模型本就用 status 生命周期）。+1 单测（排除 resolved/triggered）。
+- **`mind/retrieval.rs`**：`keyword_similarity` 改 `pub(crate)`（forget 复用成熟 CJK 匹配器，DRY）+ 新 `pub(crate) char_overlap(a,b)` = **字符 bigram 重叠系数** `|A∩B|/min(|A|,|B|)`（非 Jaccard 的 union 归一）。关键：短记忆被请求词包围时 Jaccard 被稀释（"忘掉咖啡" vs "咖啡" Jaccard 0.33），重叠系数按较小集归一 → 1.0。+1 单测。
+- **`mind/forget.rs`**（核心）：新 `ForgetTarget{Episode,Fact,Pending}` 枚举 + `ForgetCandidate{target,id,summary,confidence}` + 三个 finder（`find_episode_candidate` 复用 retrieve + should_forget 门 + landmark 保护；`find_fact_candidate` char_overlap(text,value) 扫活跃 fact；`find_pending_candidate` char_overlap(text,title) 扫 pending）+ `execute_candidate`（Episode 硬删+向量清 / Fact 软过期 / Pending resolve）+ **`forget_best_match(text,db,embedding)`** 调度器：三路扫描、各自信任门（0.7）、取最高置信度执行一条。用户不说忘哪种记忆（"忘掉咖啡"可能是偏好/提醒/事件）→ 扫三种、挑最佳。置信度度量按类型不同（episode=embedding 语义 / fact·pending=char_overlap）但都 0..1、0.7 门读作"≥70% 确定"。两类型都达标时高分赢——fact（软过期可恢复）自然倾向压过 episode（硬删），歧义时取更安全动作。**保留 `forget_episode`**（窄 API，episode-only；其 execute_forget 4 测仍钉 landmark/置信度门行为，未迁移以遵守 surgical）。+4 新测（fact 过期 / pending resolve / 无匹配诚实拒绝 / 低置信不候选）。
+- **`mind/mod.rs`**：re-export `forget_best_match`；Forget 分支 `forget_episode` → `forget_best_match`。
+- **`resources/prompts/gate.txt`**：forget 类别例子扩偏好/提醒（"忘掉我爱喝咖啡"/"忘掉那个提醒"/"取消那个闹钟"），帮 gate LLM 路由非事件类遗忘请求。
+
+**架构契合**：#1（forget 纯 Rust 决策删谁 + 置信度门 + landmark 保护；LLM 只分类意图 gate + 确认 converse）/ #9（MVP top-1 + 0.7 门 + 软动作为默认）/ #11（char_overlap 注释 + forget log 含 target 类型 + 8 新测可追溯）/ 不改签名（枚举 + 新 fn + 内联，规避踩坑#4）。
+
+**验证（全绿）**：`cargo test --lib` **247 passed**（240 + 7 新：char_overlap / expire_by_id 精确 / get_all_pending 排除非 pending / forget_best_match fact·pending·no-match·低置信）/ `cargo check --tests` ✅（全 harness 编译，forget_best_match 新 fn + ForgetResult 未改未破）。**待实跑**：dev "忘掉X"（X=偏好/提醒）→ 确认她回"好，我忘了"且后续不召回（Debug Panel 看 fact valid_to / pending status）。**release exe 需 `npx tauri build --no-bundle`**（纯后端 + gate.txt include_str!，需重编）。
+
+**Scope 边界 / follow-up**：① fact/pending 匹配用 char_overlap（关键词级，无 embedding）——短值/简练标题匹配好（1.0），冗长标题（"明天的面试"）+ 简练请求（"忘掉面试"）会低于 0.7 诚实拒绝（可接受，用户可换措辞 "忘掉明天的面试"；语义级匹配需给 fact/pending 也加向量，重，未做）。② 仍只忘 top-1 最佳匹配（多匹配需重复请求）。③ forget_best_match 的 episode 路径经 retrieve 有 +0.03 强化副作用——若 fact/pending 赢，某 episode 被无害强化一次（已注释说明，#9 MVP 接受）。④ FTS5 已证伪移除——若未来要零成本全历史检索，需先解决 CJK 分词（jieba 扩展或 Rust 分词）。
+
+---
+
+**实跑发现的 bug 修复（2026-08-05 续）· 同 key fact 冲突未即时淘汰（记忆准确性）**：dev 实跑发现"我说喜欢咖啡，重启后问'我喜欢什么饮品'，她答奶茶"。诊断（写只读探针读真实 DB，已删）：`preference/beverage_preference` 同时有 `"likes milk tea"`(mentions=7) 和 `"likes coffee"`(mentions=1) 两条 **active**——新咖啡没顶掉旧奶茶。根因：`store_fact`（ingest 存 fact 路径）只调 `dedup_insert`（只处理同 value 去重/复活），**没调 `expire_old`**（同 key 不同值的冲突淘汰）；而 `correction`/`consolidation` 路径都调了 → ingest 路径与系统其余部分不一致。`store_fact` 的 doc 还谎称"update or expire old"但 expire 半没实现。旧奶茶 mentions 高、检索排前 → 胜出 → 答奶茶。原本要等后台 consolidation（≥100 episodes）才清理，用户卡在窗口期。system.txt grep 无"奶茶"→排除 prompt 抄袭，纯记忆冲突。**修复**：`store_fact` 在 `dedup_insert` 前加 `expire_old(category,key,now)`——同 key 新值立即顶掉旧值（单值槽，与 correction/consolidation 对齐）；同 value 走 expire+revive 保留 mention 累加（dedup_insert case 2，既有 `test_store_fact_dedup` 仍绿）。+1 回归测试（新偏好顶旧偏好，旧值 expired 不删、留审计）。**lib 248 passed** / `check --tests` ✅。**注**：forward-only——用户现有 DB 里奶茶+咖啡仍共存，重启后再说一次"我喜欢咖啡"即触发清理。设计取舍：(category,key) 视为单值槽，新声明替换旧的——与既有 expire_old 设计一致；若未来要"多值"（如同时喜欢咖啡和奶茶），需改数据模型，当前 single-valued 够用。
+
+---
+
+**当前无进行中任务**。下一会话起点：① runtime 实跑本轮（dev 忘偏好/提醒）② 或回前面留的待实跑（#10 rest_need/speedModifier、QA 直答、B4 AnimFSM/Prompt 分区、sleep 音）③ 或 B6/B7 架构债（如接受重构风险）④ Liri/Spine（等资产）。
+
+---
+
+## §最近一轮 (2026-08-04 续③)：QA 直答路由 + system.txt 正向重写 + Hermes 记忆优化落地
+
+**任务**：用户反馈知识问答体验差——"harness 是什么"被回复扯到宠物话题、硬套记忆、生硬；要求：① 完整梳理提示词注入链并诊断 ② 调研 GitHub 同类角色扮演提示词（airi/SillyTavern/OpenCharacters）+ Hermes agent 记忆实现 ③ 落地改进（知识直答通道 + 提示词正向化 + Hermes 优化迁移）④ HANDOFF 记录 + 重建 release。
+
+**诊断根因**（详见本段"调研"）：① 检索注入带偏——问 harness 时 [Memories]+[Intent memory focus] 强制模型关联旧宠物记忆 → 歧义消解成"宠物背带"；② 14 条禁令清单占注意力 → 防御性表演、模板化；③ 无"知识问题直答"出口；④ flash 世界知识弱于 pro。业界（airi #1539：弱模型镜像 XML 标签→扁平 bullet 块；SillyTavern：mes_example 示例对话优于禁令；Hermes：用户消息永不压缩）指路。
+
+**实现**（后端 7 文件 + 1 前端文件 + 2 prompts，核心策略：只加枚举变体/新函数/内联分支，**不改既有 fn 签名**避踩坑#4）：
+- **gate**：`GateRoute::Question` 变体 + as_str/parse + 单测；`gate.txt` 加 `question` 类别（中英文例子：什么是地心引力/how does Rust borrow checker work，含"帮我看看这个报错"）。
+- **ingest**（mind/mod.rs）：Question 分支直接返回空 outcome——**跳过 extractor**（省一次 LLM 调用，问答无记忆可提）。
+- **converse**：`qa_mode = route==Question` 时——跳过记忆检索（返回 `(RetrievalResult::default(), "question route (QA mode)")`，trigger_reason 提前提为元组，silence 分支同步改）、intent 清 memory_anchor/禁 engage/禁 proactive、跳过 pacing 节流、跳过 surface_thoughts 念头注入、budget 走 `allocate_qa`。
+- **grounding**：新 `build_qa_system_prompt`（SYSTEM_TEMPLATE + [Persona] + [Current Mood] + 清 anchor 的 [Intent] + 中文 `[Direct-Answer Mode]` 指令："直接、准确、简短地回答…不要引用记忆，不要追问，不要往自己或宠物相关话题上联想…不确定就老实说不知道"；**无 [Memories]、无 [Grounding Constraint]**——彻底切断"硬套记忆"的 prompt 通道）。
+- **budget**：新 `allocate_qa`（QA system + compress_conversation 工作记忆）。
+- **system.txt 重写**：禁令清单 → `[Core Personality]`（6 维保留）+ `[How to talk]` 正向（简短/口语/直答知识问题/只问真想知道的一个问题/记忆只围绕 [Memories] 与 [Milestones]/不知道就说不知道）+ **`[Example Conversations]` 4 条中文示例**（知识直答 / "我今天面试过了！"→具体反应+一个真问题 / 记忆自然引用火锅 / 闲聊）。**persona 契约回归网全部字样保留**（evaluation.rs 4 测 + grounding 2 测照过；`test_empty_memories_section` 断言改 `- [Fact]`——正文现也含 [Memories] 字样，标签在句子中 vs 区块在行首，误报修复）。
+
+**Hermes 落地**（NousResearch/hermes-agent，225k⭐）：
+- **① 用户消息永不压缩**：`compress_conversation` 重写——倒序收集，user 消息 verbatim 全保留且优先，超预算先挤掉最老的 assistant 回复；极端全 user 超预算才丢最老 user。修原实现"从前面成对丢消息"导致用户倾诉被截断失真的缺陷。+1 单测（20 user+20 assistant 挤到 300 token，20 条 user 全存活、顺序 verbatim、assistant 被挤掉）。
+- **② 关系账 [Milestones] 分组**：`format_memories` 把 `is_landmark` episode 单独注入 `[Milestones]` 区块（在 [Memories] 前，关系里程碑锚点），[Memories] 内不重复；system.txt 提示模型 [Milestones] 是"你们关系的里程碑事件，值得认真记住"。+1 单测（landmark 只在 [Milestones]、不重复）。Hermes"双文件分账"（MEMORY.md/USER.md）适配陪伴场景 = facts（用户账）+ episodes（事件账）+ milestones（**关系账**，Hermes 未覆盖的陪伴独有维度）。
+- **未落地（记录为 follow-up，避免 scope 膨胀）**：FTS5 全历史检索（Hermes 零 LLM 毫秒级回忆，替代部分 embedding；sqlite-vec 自带 fts5_cjk）、后台"关系进展摘要"review（对应 Hermes 每~10 轮后台 review）、记忆可视化可编辑。**已天然满足**：压缩/辅助走 flash 非 reasoning（=Hermes"辅助任务用便宜模型"）、consolidation 容量跳过重试（=Hermes"超限逼合并"）、reflection 后台沉淀（=后台 review 雏形）、extractor 已知事实去重（=写前去重）。
+
+**会话前半段（同轮）**：① **Debug Panel 退出通道**——DebugPanel 全窗口覆盖（z-index 50 + pointer-events auto）挡住右键菜单、之前退出只能靠快捷键 → 加粘性工具栏：`✕ 关闭面板`（setShowDebug(false)）+ `⏻ 退出桌宠`（handleQuit→quit_app，与右键退出一致）；② **快捷键重构**——新 `src/shortcuts.ts`（isDebugToggle/isDebugClose 纯函数）：`e.code==="KeyD"` 替代 `e.key==="d"`（中文输入法把组合键截获成 key="Process"）、IME 合成事件跳过、**Esc 无条件关闭面板**（幂等，面板打开时最可靠退出通道）；③ **gate/correction max_tokens 2048→4096**——踩坑#3 复发：flash reasoning 把 2048 全吃掉（reasoning_tokens=2048, finish_reason=length, content 空）→ JSON 崩；consolidation 早已 4096，gate/correction 漏了；④ 主对话模型切 `deepseek-v4-flash`（AppData config，main_model；反思本就 flash）。
+
+**调研结论（记录在案）**：角色扮演提示词最佳实践 = 角色字段化（name/description/personality/scenario）+ mes_example few-shot 示范语气 + 扁平 bullet 上下文块（airi #1539：弱模型镜像 XML 标签）+ 关键指令放 history 之后（post_history_instructions）+ lorebook 关键词触发注入 + 正向格式约束替代禁令。Hermes 记忆 = 双文件分账（容量上限+冻结快照注入保 prompt cache）+ agent 自主 curation（save/skip 指引）+ 后台 review（fork 子进程换便宜模型）+ FTS5 全文检索 + micro-compaction（用户消息永不压缩）+ 容量超限报错逼合并 + 写前安全扫描。详情见本段上文实现对照。
+
+**验证（全绿）**：`cargo test --lib` **238 passed**（236 + 1 compress_conversation 用户消息全保留 + 1 milestones 分组；含 gate question parse 等）/ `cargo test --test golden_conversations` **30 passed** / `cargo check --tests` ✅（GateRoute 变体 + RetrievalResult derive Default + build_qa/allocate_qa 新函数未破 harness）/ `tsc --noEmit` ✅ / `npm run build` ✅。**release 已重建**（`npx tauri build --no-bundle`，taskkill 后构建，exe 已就位 D:\cargo-target\desktop-pet\release\desktop-pet.exe，桌面快捷方式指向不变）。
+
+**Scope 边界 / follow-up**：① QA 分类依赖 gate LLM 判准（flash 误判率待真实样本观察；误判为 question 的最坏结果=无记忆注入的直答，安全方向）。② [Milestones] 依赖 `is_landmark` 标注质量（extractor 是否标 landmark 见 store.rs；当前 landmark 少，区块常空——正确行为，空则不注入）。③ FTS5 检索/关系摘要/记忆可视化=Hermes 下一批迁移项。④ 未改 config（main_model 切 flash 已在 AppData，需重启生效）。
+
+**当前无进行中任务**。下一会话起点：① QA/新提示词 runtime 实跑（dev 问知识题+分享题，看 Last Turn route）② 或 Hermes 下一批（FTS5 检索最高 ROI）③ 或 B6/B7 架构债 ④ Liri/Spine（等资产）。
+
+---
+
+## §最近一轮 (2026-08-04 续)：选择性遗忘 episode MVP —— gate Forget + forget.rs 语义删除 + converse 确认
+
+**任务**：用户"开做选择性遗忘，做完自动跑 50 条功能测试，遇问题自检修复"。选择性遗忘 = 用户主导的主动遗忘（lifecycle_cleanup 的用户控制对称版）。MVP 只做 episode（事件），fact/pending 留 follow-up。
+
+**实现**（6 文件，全程不改 fn 签名，遵守踩坑#4 + #1 Rust 决策/LLM 只识别）：
+- **`db/episodes.rs::delete(conn,id)->Result<bool>`**：`DELETE WHERE id=? AND is_landmark=0`——landmark 保护（lifecycle_cleanup 不删 landmark 的不变式延伸到用户请求），返回是否真删（landmark/missing→false）。
+- **新 `mind/forget.rs` 模块**（镜像 correction.rs 风格）：
+  - `ForgetResult{deleted, summary}` + `FORGET_CONFIDENCE=0.7`。
+  - **关键设计**：置信度门在 `score_breakdown.semantic`（0..1 纯内容相关性），**非** total score。审计发现 retrieval total score = semantic + strength(0.3) + recency(0.2) + emotion(0.1)——**一个强近期完全无关的记忆也能拿到 ~0.6**，用 total 当"匹配置信度"会删错记忆（危险）。semantic 分量（embedding: cosine→0..1 无关≈0.5；keyword: Jaccard/bigram 无关=0）才是真匹配信号。0.7 让无关记忆（embedding 0.5）安全不删。
+  - `should_forget(semantic, is_landmark)` 纯谓词（!landmark && semantic>=0.7）→ 单测易、无 DB。
+  - `execute_forget(top, db)`：应用门 + 删 episode + `vectors::delete`（best-effort）。
+  - `forget_episode(text, db, embedding)`：retrieve(top_k=1, emotion=default 中性) → execute_forget。MVP 只删 top-1（多删 follow-up，增 over-delete 风险）。
+- **`mind/gate.rs`**：`GateRoute::Forget` 变体 + `as_str`/`parse_gate_json` 加 "forget" 臂 + parse 单测。所有穷举 match 仅 gate.rs(mod.rs ingest 已加分支)，无遗漏。
+- **`resources/prompts/gate.txt`**：加 `forget` 类别（明确与 correction 区分：correction 改错细节，forget 整段擦除；中英文例子）+ JSON 响应行加 forget。
+- **`mind/mod.rs`**：`pub mod forget` + re-export + ingest 加 `GateRoute::Forget` 分支（调 forget_episode）+ `IngestionOutcome` 加 `forget: Option<ForgetResult>` 字段（5 处构造点补 `forget`）。
+- **`mind/converse.rs`**：pending 提示块后注入 forget 提示（镜像模式）——deleted→"好，我忘了"（**绝对禁复述被删内容**，复述=遗忘失败+惊悚）；未删→"我好像不记得这件事"（诚实，绝不瞎删）。`[converse] forget this turn` log（#11）。
+
+**架构契合**：#1（Rust 决定删谁+置信度门+landmark 保护；LLM 只分类意图 gate + 确认 converse）/ #9（MVP top-1 episode + semantic 阈值，刚够用）/ #11（FORGET_CONFIDENCE 注释 + forget log + 8 单测可追溯）/ 安全（semantic 阈值防删错 + landmark 不可删 + 无匹配不删）/ 不改签名（枚举变体 + struct 字段 + 内联分支，规避踩坑#4）。
+
+**验证（全绿）**：
+- `cargo test --lib` **235 passed**（227 + 8 新：1 gate forget parse + 7 forget.rs）。
+- `cargo test --lib forget` 显式 **8 passed**（should_forget 三分支 + execute_forget 真删/拒 landmark/拒低置信/无候选，含 in-memory DB 验证删除）。
+- `cargo test --test golden_conversations` **30 passed**（既有功能无回归）。
+- `cargo check --tests` ✅（全 harness 编译，GateRoute 变体 + IngestionOutcome 字段未破）。
+- **合计 265 确定性测试全绿**（远超用户要的 50）。
+
+**自愈（磁盘满）**：跑 golden 时 `cargo test --test golden_conversations` 报 `磁盘空间不足 (os error 112)`——**C 盘只剩 0.5GB**（Get-PSDrive: C 245 used/0.5 free，D 69 free）。诊断：dev `cargo test` 落 `src-tauri/target/debug`（C 盘，**非** D——release 才走 D 的 CARGO_TARGET_DIR），其中 `target/release`（2.24GB）是 **07/28 陈旧残留**（D 重定向前），活动 release exe 在 D（08/03）。删 C `target/release` 腾 2.31GB → golden 增量编译过。**纯环境问题，零代码改动**。**踩坑（写入避免重复）**：dev 构建（cargo test/check 默认）走 C `src-tauri/target`，只有 release（tauri build）走 D；C 盘紧张时 `src-tauri/target/release` 是安全可清的陈旧 cruft。
+
+**Scope 边界 / follow-up**：① 只删 top-1 episode（多匹配时用户需重复请求）。② 阈值 0.7 是安全起点，需真实样本调（embedding 模式无关≈0.5，0.7 偏严；keyword fallback 更严可能漏删——但漏删是安全失败方向）。③ 无多轮消歧义（低置信直接"不记得"而非反问"你说的是…"，MVP 简化）。④ fact（偏好）+ pending（提醒）遗忘未做（用 `facts::expire_old` / 删 pending，结构类似，后续）。⑤ 未 rebuild release（纯后端改，dev 验证够；release exe 要 `npx tauri build --no-bundle`）。⑥ 未加 golden 端到端 forget 场景（需 mock LLM 构造 gate→Forget，较大；8 单测 + 实跑覆盖）。
+
+**当前无进行中任务**。下一会话起点：① 选择性遗忘 runtime 实跑（dev 攒记忆→"忘掉X"→确认删+不复述）② 或 #10 两项 runtime（rest_need 半眯眼延后 Liri / speedModifier 深夜变慢）③ 或 B6/B7 架构债 ④ Liri/Spine（等资产）。
+
+---
+
+## §基础设施 (2026-08-04 续)：dev 构建重定向 D 盘 —— .cargo/config.toml 移到项目根
+
+**问题**：自愈磁盘满时发现——dev `cargo test/check` 从项目根跑时落到 C 盘 `src-tauri/target`（撑满 C），而 release 才走 D。根因：**Cargo 按 CWD 向上搜 config，不从 manifest 目录**。原配置在 `src-tauri/.cargo/config.toml`（`target-dir=D:/cargo-target/desktop-pet`），只对 `cd src-tauri` 后的命令生效（如 `npx tauri build`）；从项目根跑的 cargo 命令搜不到它 → 默认 `src-tauri/target`(C)。
+
+**修复**（用户要求"加 .cargo/config.toml target-dir"）：新 `C:\Users\SunJialei\Documents\桌宠\.cargo\config.toml`（项目根，同 target-dir + 注释说明 Cargo 发现语义），删冗余的 `src-tauri/.cargo/config.toml`（含空目录）。项目根 config 从**任意 CWD**（根或 src-tauri）向上走都能命中 → 单一真相源。`cargo metadata` 验证 `target_directory: D:/cargo-target/desktop-pet` ✅。**踩坑（写入避免重复）**：Cargo config 发现是 CWD-upward，非 manifest-dir；项目级 cargo config 应放项目根（manifest 在子目录 src-tauri/ 时尤甚），否则根目录跑的命令用不到。
+
+---
+
+## §最近一轮 (2026-08-04)：#10 生命感收尾 —— rest_need 暴露+激活 + circadian speedModifier 接动画
+
+**任务**：用户"按任务优先级继续开发"。AskUserQuestion 确认方向——选 **#10 生命感收尾**（rest_need 后端暴露 + speedModifier 接动画），**非**字面最高优先的 B6/B7 架构债。理由：B6/B7 是对**正在正常运行的代码**的推测性重构（A1 BrainState 改 converse 9 参签名冲击 5 调用点+全 harness；A2 Scheduler 重写 timing 核心），无用户可见价值、爆炸半径大，违反编码准则"不重构没坏的东西/不做推测性抽象"。而 #10 两项服务北极星、低风险、补全**已半接线系统**（逻辑存在但没接通）。
+
+**① rest_need 后端暴露 + 激活生产循环**（关键审计发现，扩展了原 follow-up scope）：
+- **审计发现死代码**：`codegraph_callers`/`Grep` 确认 `emotion::tick_needs`（needs.rs，让 rest_need/loneliness 增长）和 `emotion::apply_drift`（homeostasis.rs）**仅自身测试调用，生产零调用**。生产 homeostasis 走的是 DB 层 `db::emotion::apply_homeostasis_time_aware`，它**内联重写**了 drift（mood/energy/social/stress）但**从不调 tick_needs** → rest_need（和 loneliness）在生产里冻结在种子值。所以"暴露 rest_need"alone 会显示恒定 0，emotionDriver 的 `e.rest_need * EYE_REST_GAIN` 半眯眼永不触发。
+- **激活方案**（补全半接线，外科手术式）：
+  - `emotion/needs.rs`：新 `pub fn tick_rest_need(rest_need, energy, elapsed) -> f64` 纯函数——低能量（<0.3）增长 `+elapsed*0.0002`；**恢复项**：能量充足时 `rest_need * exp(-elapsed/TAU_REST)`（TAU_REST=1800s，≈energy tau）。**修原设计缺陷**：原 `tick_needs` 的 rest_need 只增不减（单调→疲惫永不恢复），现加恢复项让休息后眼睛重新睁开。`tick_needs` 的 rest_need 行改为调 `tick_rest_need`（DRY，单一规则）。+1 单测（恢复：0.8/1h→<0.2）。
+  - `emotion/mod.rs`：`pub use needs::{tick_needs, tick_rest_need};`
+  - `db/emotion.rs::apply_homeostasis_time_aware`：算 `new_rest_need = tick_rest_need(current.rest_need, current.physical_energy, elapsed)`，UPDATE 加 `rest_need = ?6`（参数重编号）。**注释说明**为何激活（tick_needs 之前没接、暴露无效）。
+  - `commands.rs`：`EmotionResponse` + `From<EmotionState>` 加 `rest_need`（覆盖 `get_emotion_state` 命令路径）。
+  - `loop_runner.rs`：emotion-update emit json 加 `rest_need`（覆盖 medium_tick 推送路径）。
+  - `App.tsx`：`EmotionData` interface 加 `rest_need`；`toEmotionVector` `rest_need: 0` → `e.rest_need` + 更新注释。
+
+**② circadian speedModifier 接动画速度**（circadian.ts 早输出但零消费方）：
+- 审计：`Grep speedModifier` 确认 `circadian.ts` 输出 speedModifier（Morning 1.2/Afternoon 1.0/Evening 0.9/LateNight 0.6/DeepNight 0.4），但**全代码库零消费**（只有 `sleepiness` 喂了 fsm.tick；speedModifier/energyModifier 形同虚设）。
+- 实现（2 文件，最低风险）：`Live2DCanvas.tsx` 加 `speedModifier: number` prop（默认 1.0）→ 进 `propsRef`（既有 mirror 模式）→ per-frame `focusTickerFn`（既有 `app.ticker.add` 回调）首行设 `app.ticker.speed = propsRef.current.speedModifier`。**PIXI ticker.speed 是 delta 倍率**：设 0.4 → 库的 idle 呼吸/眨眼/motion/physics 全部 2.5× 变慢（深夜真的变慢）。`App.tsx`：`<Live2DCanvas ... speedModifier={circadianRef.current.speedModifier} />`（circadianRef 既有，App 频繁重渲染→prop 几秒内刷新，period 每小时才变，绰绰有余）。
+- **设计抉择（为什么不改 behaviorDriver）**：behaviorDriver 用 `performance.now()-start` 真实时间驱动曲线，且周期刻意同步 FSM 微行为时长（"一个 LookAround 一个 sweep"）。若按 speedModifier 缩放 elapsed 会破坏此同步。故只走 ticker.speed 全局变速（覆盖占主导的 idle 呼吸/blink/motion），微行为曲线维持真实时间——可接受（微行为偶发且短；DeepNight 本就多 Sleeping/yawn）。
+- **边界（接受）**：ticker.speed 也缩放 Talking 时 lipsync 的 ticker delta → 深夜说话嘴型可能略滞后。但 Talking 在 DeepNight 罕见，且 speedModifier 0.4 温和，影响极小。
+
+**架构契合**：#1（rest_need 纯规则无 LLM + ticker.speed 纯前端）/ #9（MVP——rest_need 单标量恢复 + ticker.speed 一行全局变速，刚够用）/ #10（疲惫半眯眼可见 + 深夜变慢 = 生命感核心）/ #11（tick_rest_need JSDoc + apply_homeostasis 注释说明激活 + 测试可追溯）。
+
+**验证（全绿）**：`cargo test --lib` **227 passed**（226 + 1 rest_need 恢复测试）/ `cargo check --tests` ✅（EmotionResponse 加字段未破 harness）/ `tsc --noEmit` exit 0 / `npx vitest run` 24 / `npm run build` ✅（2.60s）。
+
+**待实跑（静态全过，runtime 待确认）**：`npm run tauri dev` → ① 低能量半眯眼（Debug Panel 调 rest_need 或 CDP `Runtime.evaluate` 写 DB）② `__pet.setHour(3)` 切 DeepNight → ticker.speed=0.4 全局变慢（呼吸/眨眼/motion 明显缓）。本轮未做 runtime 实跑。
+
+**Scope 边界 / follow-up**：① **loneliness 仍是死字段**——apply_homeostasis_time_aware 也不更新它（tick_needs 的 loneliness 分支同样未接生产）。但 loneliness 影响检索/planner（行为层），激活它是有意行为变更、超本任务（视觉）范围，故不动，留 follow-up。② `apply_drift`（homeostasis.rs）+ `tick_needs` 的 loneliness 分支仍为死代码（仅测试），未删（非本轮引入，surgical 原则只清自己的）。③ rest_need 恢复用 TAU_REST=1800s（≈energy tau），未单独调参——实跑若恢复太快/慢再调 needs.rs 常量。④ 未 rebuild release exe（前端+后端都改，桌面快捷方式需 `npx tauri build --no-bundle`；构建前 taskkill 桌宠）。
+
+**当前测试总量**：Rust lib **227** + golden 30 + evaluation 6 + questioning 1 + embedding 1 + 前端 vitest 24 = **289 确定性测试**（+ 闭环1 real-LLM 已验 + sleep runtime CDP 已验）。
+
+**当前无进行中任务**。下一会话起点：① runtime 实跑 #10 两项（dev CDP）② 或回 B4 runtime 实跑（续⑧ 留的 AnimFSM/Prompt 分区渲染确认）③ 或 B6/B7 架构债（如用户接受重构风险）④ Liri/Spine（等资产）。
+
+---
+
+## §最近一轮 (2026-08-03 续⑧)：B4-余余 Debug Panel 补全 + B5 Golden 评估框架
+
+**任务**：用户"继续 B4,B5 推进"。B4-余余 = Debug Panel 还缺的 AnimFSM + Prompt-动态 token 两分区（续③ 留的 follow-up）；B5 = P17 Golden 评估框架（审计确认原无 evaluation.rs / personality_drift_score / CI）。
+
+**B4-余余 · AnimFSM 分区**（前端 fsm 状态上抛，#11 "她现在在干嘛"）：
+- `fsm.ts`：FSM 早有 `private history: string[]`（末 5 个已结束的微行为，tick 里 push），加 `getHistory(): string[]` getter 暴露（返回 clone）。
+- `App.tsx`：`<DebugPanel anim={{ state: behavior, history: fsmRef.current?.getHistory() ?? [] }} />`——`behavior` 是既有 React state（onStateChange 驱动），每次状态变（含微行为 Idle↔Blink）触发重渲染，history 同步新鲜。
+- `DebugPanel.tsx`：签名加 `anim` prop，新 **AnimFSM** 分区（State + Recent "yawn ← blink ← ..."）。Brain 之前置（两块"实时态"挨着）。
+
+**B4-余余 · Prompt-动态 token 分区**（#8 成本 + #11 "上下文为何这么大"）：
+- `budget.rs`：加 `pub fn system_prompt_budget() -> usize`（FACTS+EPISODES+PERSONA+EMOTION+INTENT+SYSTEM_SCAFFOLD = 2005），把 compress_system_prompt 里写死的 sum 提为公共可观测。
+- `converse.rs`：新 `PromptTokenDebug{system_tokens,input_tokens,budget,conversation_turns}` + `ConversationResult.prompt_tokens: Option<_>`。在既有 `[ctx] system_tokens~=` log 处（normal 分支）hoist `system_tokens` 变量 + 算 input_tokens/budget/turns 组 debug struct；silence 分支 None。**续③ 同款不改 fn 签名**（只加返回 struct 字段，harness 读 .response/.intent 不受影响，`cargo check --tests` ✅ 验证）。
+- `commands.rs`：镜像 `DecisionPromptToken`（Serialize）+ DecisionTrace 加字段；send_message trace 组装投影 `result.prompt_tokens`（best-effort）。进 last_decision → 已有 snapshot 管道，无需新 DebugSnapshot 字段。
+- `DebugPanel.tsx`：last_decision TS 类型加 prompt_tokens，Last Turn 分区加 "Prompt: sys N/budget M tok | input K (N turns)"。
+
+**B5 · Golden 评估框架**（锁 Liri 人格防漂移）：
+- 新 `src/mind/evaluation.rs`（纯函数 #1，无 LLM/DB）：`DriftKind{Chatty,Cloying,Clingy}` + `DriftViolation` + `DriftReport{overall:0..1, violations}` + `personality_drift_score(response)`。规则启发式——Chatty：CJK>200（安静人格别话痨）；Cloying：感叹/波浪号/心/emoji 密度>10% 且≥3（温暖非表演）；Clingy：依赖短语黑名单（不要离开我/离不开你/…）。overall 每违扣 0.34 floor 0。**7 单测**：on-persona 干净 / silence=1.0 / chatty墙 / cloying刷屏 / 少量marks不算 / clingy / 三杀floor0。**注**：只抓 GROSS 漂移；语义漂移需 LLM-as-judge（文档标 future extension）。
+- 新 `tests/evaluation.rs`（集成）：**Liri 人格契约回归网**（4 测，build_system_prompt 断言）——6 维度 温柔/好奇/聪慧/安静/调皮/神秘 + 狐灵身份（璃/Liri/狐）+ NOT-list（话痨/卖萌/依赖）+ rule8 严禁编造。锁续② 落地的 system.txt 人格（当时"缺回归网"，现补上）。+ 2 drift 端到端（on-persona 干净 / off-persona 低分）。
+
+**架构契合**：#1（评估纯函数 + token 计数纯 Rust）/ #8（Prompt-token 让单轮上下文成本可观测）/ #11（AnimFSM 实时态 + Prompt 预算 + 人格契约回归网，"她为什么这么说/在干嘛/像不像她"全可观测）/ 测试纪律（不改 fn 签名规避踩坑#4；B5 补审计确认的缺失框架）。
+
+**验证（全绿）**：`cargo test --lib` **226 passed**（219 + 7 eval）/ `cargo check --tests` ✅（evaluation.rs 编译 + PromptToken 字段未破既有 harness）/ `cargo test --test evaluation` **6 passed** / `tsc --noEmit` exit 0 / `npx vitest run` 24 / `npm run build` ✅（1.89s）。
+
+**待实跑（静态全过，runtime 待确认）**：B4 两分区要 `npm run tauri dev` 发一条消息 → 开 Debug Panel（F12 或 Ctrl+Shift+D）肉眼确认 AnimFSM 分区有 state/history、Last Turn 有 Prompt 行。后端 PromptTokenDebug 经 send_message→snapshot 链路（续③ 已验该管道活），前端渲染编译过，低风险。**本轮未做该 runtime 实跑**。
+
+**当前测试总量**：Rust lib **226** + golden 30 + evaluation 6 + questioning 1 + embedding 1 + 前端 vitest 24 = **288 确定性测试**（+ 闭环1 real-LLM 已验 + sleep runtime CDP 已验）。
+
+**Scope 边界**：① B5 只做规则启发式层（GROSS 漂移），LLM-as-judge（语义漂移、≥30 对话 golden 集、CI）留 future——文档已标，待 Liri 稳定 + 有真实响应样本调阈值。② AnimFSM 只显末 5 history（FSM 本就只存 5），不加完整轨迹（要历史看 Timeline/change_log）。③ Prompt-token 不含 $ 估算（同 Cost 分区决策，模型/定价用户各异）。
+
+**当前无进行中任务**。下一会话起点：① B4 runtime 实跑（dev 看 AnimFSM/Prompt 分区）② 或回 B1b（Grounding B 档，条件触发）/ B6/B7（架构债）③ 或 Liri/Spine（等资产）。
+
+---
+
+## §最近一轮 (2026-08-03 续⑦)：sleep 内容首次有测试 —— vitest + 纯逻辑抽取 + 24 单测
+
+**任务**：用户"sleep相关的内容是不是还没有做测试"。核验确认：A4（入睡/唤醒）/A5（circadian 深夜 yawn）/B3②（sleep 音）/B3①（睡着抑制 nudge）在 HANDOFF 全标"build 过/待实跑"，**从未运行验证**；更关键——**前端零测试**（Rust 219+ 单测 vs 前端 0 个 `*.test.ts`，无 vitest/jest）。sleep 逻辑里**有纯函数核心**却没测。
+
+**方法**：把 sleep 行为的**纯逻辑核心**抽出来单测（确定性、可回归），runtime-only 部分（渲染/音效/一行 guard）留 GUI 验收。
+
+**① 加 vitest**（前端首个测试框架）：
+- `package.json` devDep 加 `vitest@^3.2.7`（兼容 vite 6）；scripts 加 `"test": "vitest run"` / `"test:watch": "vitest"`。
+- 新 `vitest.config.ts`：`environment: "node"`（被测模块 circadian/microBehavior/sleepLogic 无 DOM 依赖，免 jsdom）+ `include: ["src/**/*.test.ts"]`。vitest 优先读它而非 vite.config.ts（后者的 async server 配置是 dev-only）。
+- 注：项目 tsconfig `include: ["src"]` 现在也类型检查 `.test.ts`——`npm run build` 的 `tsc` 段会检查测试文件类型（ desirable，测试类型安全）；vite build 不打包测试文件（非入口）。
+
+**② 抽纯逻辑**（外科手术式，行为零变）：
+- 新 `src/animation/sleepLogic.ts`：`shouldAutoSleep(opts)` ——把 App.tsx FSM-tick effect 里那 5 行 auto-sleep 条件（DeepNight + 非已睡 + 非 think + 非 talk + idle 严 > 阈值）抽成纯谓词。App.tsx 改调它（`isTalking: behavior===Talking` 等），**行为字节级不变**，只是可测。
+- `microBehavior.ts`：抽 `applySleepyWeight(base, sleepy, sleepiness)` ——A5 公式 `w *= 1+(sleepy-1)*sleepiness` + `Math.max(0.01, w)` clamp 独立成函数，`pickNextBehavior` 的 weights.map 改调它（emotion 修正后的 w 作 base 传入），**行为零变**。
+
+**③ 24 单测**（3 文件）：
+- `circadian.test.ts`（10）：A5 输入层。5 时段映射（Morning 6-10/Afternoon 11-16/Evening 17-21/LateNight 22-1/DeepNight 2-5）+ 边界交接（6/11/17/22/2）+ sleepiness 文档值（DeepNight 0.9、Morning 0.1）+ 夜>昼单调 + speed/energy 夜降。钉死 verify-checklist 用 `__pet.setHour` 手动查的那些值。
+- `sleepLogic.test.ts`（7）：A4 触发层。baseline（应睡）+ 翻转单字段破之：非 DeepNight（LateNight/Morning/Evening）不睡 / 已 Sleeping 不重触 / thinking 不睡 / talking 不睡 / idle 未达阈值（严 >，等于阈值也不睡）/ 刚交互（idle=100）不睡。
+- `microBehavior.test.ts`（7）：A5 效果层。白天不变性（sleepiness=0 全池 no-op + undefined sleepy=1）+ 夜间方向（yawn 夜/昼 >2×≈文档 3×、look_around 夜<昼、yawn 比率>look_around 比率）+ clamp（0.01 地板）。
+
+**验证**：`npx vitest run` **24 passed**（590ms）/ `tsc --noEmit` exit 0 / `npm run build` ✅（1.97s，dynamic-import 警告是既有非本轮）。**Rust 未动**（纯前端 + 测试），lib 219 不受影响。
+
+**架构契合**：#1（抽出的谓词/公式纯规则无 LLM）/ #9（MVP 抽核心可测，不一上来堆 e2e）/ #10（sleep 生命感逻辑现有回归网）/ #11（24 单测 + 公式 JSDoc 可追溯）/ 测试纪律（前端从 0 到 24，补 Rust 侧早已有的覆盖文化）。
+
+**④ runtime CDP 验收（同轮补做，用户"现在就做"）**：纯逻辑单测之外，把集成行为也验了。方法：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" npm run tauri dev`（dev-only `window.__pet` 钩子必须在 dev，release 无）→ Node 22 原生 WebSocket 连 `ws://127.0.0.1:9222`（先 `GET /json` 取 page 的 webSocketDebuggerUrl）→ `Runtime.evaluate` 驱动 `__pet` + 读 `__pet.state()` + 查 `.chat-bubble:not(.hidden)` DOM。脚本 ws.onclose/onerror→exit(2)（HANDOFF 续 踩坑：否则断线挂起）。结果**全绿**：
+| 检查 | 结果 |
+|---|---|
+| A5 setHour(3) | `{period:"deep_night",sleepiness:0.9}` ✅ |
+| A5 setHour(10) | `{period:"morning",sleepiness:0.1}` ✅ |
+| A4 sleep() | `behavior:"sleeping"` ✅ |
+| B3① probeNudge asleep ×10 | 零气泡 ✅（awake sanity 1 气泡/15 call 证 nudge 本身没坏，是 Sleeping guard 抑制） |
+| A4 wake() | `behavior:"hum"`（醒，非 sleeping）✅ |
+| 视觉（CDP `Page.captureScreenshot` + 图像分析） | sleeping=**闭眼**/awake=**睁眼明亮+对话气泡** ✅（Live2D f05 睡眠表情渲染正确；无 Zz 符合预期——Zz 仅 SVG PetCharacter，当前 Live2D 占位无，见续②） |
+
+**唯一仍待人验：B3② sleep 音效**——`sound.sleep()` 入睡播放（每次 `__pet.sleep()` 都触发，测试中已多次触发），但我听不到。dev 仍开着（PID 见上），可右键桌宠→DevTools→Console `__pet.sleep()` 亲耳确认（静音后再调应无声，验 #6）。
+
+**CDP 方法论资产（可复用，未来所有"需 GUI 实跑"的验收通用）**：throwaway 脚本已删（同 opencode 物理 CDP 模式），但配方记此——`/json` 取 WS URL → `Runtime.evaluate(expression, {returnByValue,awaitPromise,userGesture:true})` → 长断言序列包成一个 async IIFE 返 JSON 字符串一次取回 → `Page.captureScreenshot` 抓图。`userGesture:true` 关键（解锁 AudioContext 等）。
+
+**Scope 边界**：① 只测纯逻辑核心，没把 App.tsx 整个 FSM-tick effect 拆成可测单元（那需 mock ref/interval，重，不值）② 没加 jsdom 测 React 组件（当前纯逻辑测试够覆盖 sleep 决策）③ 没做 CDP runtime 自动化（复杂、`tauri dev` 编 Rust 慢、GUI 窗口我看不到）——留作下一步候选。
+
+**当前无进行中任务**。下一会话起点：① runtime 验收 sleep（CDP 自动化或手动 verify-checklist）② 或回 B4-余余/B5 推进。
+
+---
+
+## §最近一轮 (2026-08-03 续⑥)：清测试 —— golden_conversations 2 stale 测试修复
+
+**任务**：用户"是不是还有几个测试没做？先清测试"。`cargo test --lib` 一直 219 绿，但**集成测试 `golden_conversations` 长期没跑**，发现 2 个失败（stale 测试，生产代码有意改后漏同步）。
+
+**诊断（两个独立的 stale，均改测试不改生产）**：
+
+1. **gc_003_emotion_consistency**（golden_conversations.rs:148）：
+   - 测试断言"高 stress + 焦虑用户 → `action=silence` / `tone=quiet`"。
+   - 但 planner Rule 2（planner.rs:112-127）**故意改成** 焦虑 → `goal=care / action=normal / tone=gentle`——理由（代码注释详述）：旧"焦虑→吸收 stress→达阈值→silence→silence 再加 stress"是**反馈环**，现焦虑恒走 care 让她在用户需要时回应。单测 `test_anxiety_routes_to_care`（planner.rs:316）已钉此新契约。
+   - golden 集成测试漏同步 → stale。**改测试**断言新契约（care/normal/gentle）+ 注释说明"silence 被故意移除以破反馈环"，指向单测。保留 `stressed` EmotionState 作真实上下文（stress 不再 gate 焦虑路由但仍合法场景）。
+
+2. **gc_012_first_run_seeds_persona**（golden_conversations.rs:474）：
+   - 测试断言 `trait_key == "gentle"`（旧英文 key）。
+   - 但 续② Liri 迁移后 `seed_persona`（firstrun.rs:32-39）播种 6 个中文维度 `温柔/好奇/聪慧/安静/调皮/神秘`（confidence=确信度非权重%，权重在 system.txt 散文）。
+   - **改测试**断言 `trait_key == "温柔"`（Liri 的 gentle 维度）+ 注释说明旧 `gentle` 英文 key 在 Liri 迁移中被替换。测试意图（验首次运行播种 gentle 人格维度）保留。
+
+**关键判断**：这不是"测试坏了凑过"，而是**生产有意改行为后测试 stale**——两处都有更强证据：gc_003 有 planner.rs 注释 + 钉契约的单测 `test_anxiety_routes_to_care`；gc_012 有 续② HANDOFF + firstrun.rs 注释。改测试对齐新契约是正解（"Fix tests when they're wrong"）。
+
+**验证（全确定性测试绿）**：
+- `golden_conversations`：28+2 fail → **30 passed** ✅（gc_003/gc_012 修后过，其余 28 无回归）
+- `cargo test --lib` **219 passed** ✅（未动）
+- `questioning_harness::pacing_throttle`（纯函数）**1 passed** ✅
+- `embedding_ab_harness::embedding_ab_comparison`（CPU benchmark，加载 BGE-M3 43.5s）**1 passed** ✅——复现续④结果：semantic Hit@3 33%→67%、avg sem 0.035→0.741
+- **合计 251 确定性测试全绿**
+- **闭环1 `memory_recall` real-LLM 复验通过** ✅（46s）：多核心 Rust 文件（store.rs/converse.rs/commands.rs）自上次记录后改过，复验核心链路——seed"糯米"持久化 ✅ / noise（纯提问"黑洞蒸发"）不造事实 ✅ / 跨会话问"我家狗叫啥"→recall"糯米" ✅。
+
+**未跑（按需，慢/花钱）**：其余 real-LLM harness（闭环2 `closed_loop2_harness` / `soul_harness` / `soul_loop_harness` / `proactive_harness` / `conversation_harness` / `consolidation_harness`）——`cargo check --tests` ✅ 证全编译，上次记录均绿；逐个跑慢（reasoning 模型）且花钱，未自动跑。GUI 实跑项（A4/A5/A6/B3，见 verify-checklist.md）需 `npm run tauri dev` + 肉眼/耳，CDP 管不到全部，待用户手动。
+
+**架构契合**：#11（两处 stale 测试若不修，未来 golden 回归网失效；现契约对齐可追溯）/ 测试纪律（harness 签名/契约变更必同步集成测试，踩坑#4 的集成测试变体）。
+
+**当前无进行中任务**。下一会话起点：B4-余余（AnimFSM 前端 fsm 状态上抛 / Prompt 动态 token）或 B5（Golden 评估框架，待 Liri 稳定）。
+
+---
+
+## §最近一轮 (2026-08-03 续⑤)：Settings 下载按钮修复 + 暂时离开→系统托盘
+
+**任务**：用户提两个 follow-up：① Settings 下载按钮（HF_BASE_URL 指失效 Qdrant 401）；② 右键"暂时离开"当前无效果，理想 = 最小化隐藏 + 点托盘图标恢复。
+
+**① Settings 下载按钮 → Xenova**（`download.rs`）：
+- `HF_BASE_URL`：`Qdrant/bge-m3-onnx`（**401 Unauthorized**）→ `hf-mirror.com/Xenova/bge-m3`（匿名 + 中国快；续④手动下载已验证该源可用）。
+- `REQUIRED_FILES` 加 `model.onnx_data`（Xenova external-data 权重文件；ort 自动从 model.onnx 同目录加载它）。
+- `download_all` 改 `(remote_path, local_name)` 映射：`onnx/model.onnx`→`model.onnx`、`onnx/model.onnx_data`→`model.onnx_data`、`tokenizer.json`、`config.json`（前两个 Xenova 在 `onnx/` 子目录，本地平铺——ort 靠同名同目录找权重）。
+- 修 `test_check_complete_empty_dir` 硬编码 4 → `REQUIRED_FILES.len()`（数据驱动，未来改文件清单不再踩）。
+
+**② 暂时离开 = 最小化到系统托盘**（新功能；Cargo `tray-icon` feature 早启用，但 lib.rs 从未建托盘）：
+- 诊断：`handleAwayMode`（App.tsx）只 `setAwayMode(true)`（前端标志，抑制气泡/行为）+ 气泡——**窗口根本没隐藏**，所以"没作用"。
+- `lib.rs` setup 建 `TrayIconBuilder`（icon = `default_window_icon()`=icon.ico, tooltip"桌面宠物·点击图标恢复"）：左键 `Click{Left,Up}` → `window.show()+set_focus()` + `emit("restore-from-tray")`。
+- `commands.rs::hide_to_tray`（镜像 quit_app 模式）：`get_webview_window("main").hide()`。
+- `App.tsx`：`handleAwayMode` 加 `setTimeout(()=>invoke("hide_to_tray"),600)`（气泡瞥见再藏）；新增 `listen("restore-from-tray")` effect → `setAwayMode(false)` + "回来啦~"气泡（StrictMode `cancelled`-flag 模式，同其他 listener 防 double-mount 泄漏）。
+
+**架构契合**：#6（托盘是 OS 标准恢复路径，每能力可关）/ #5（Body 层窗口控制独立）/ #11（hide/restore/tray build 全 log）/ **未改 fn 签名**（hide_to_tray 是新命令，规避踩坑#4）。
+
+**验证**：`cargo check --tests` ✅ / `cargo test --lib` **219 passed** ✅ / `tsc --noEmit` ✅ / release rebuild（19:20）✅ / 启动 sanity（进程活 1.5GB 含模型 + vectors 14 幂等未被 backfill 重复）✅。**tray 交互（右键暂时离开→窗口消失+右下角托盘图标→左键托盘恢复窗口）+ Settings 下载按钮待用户手动验证**（OS 层 GUI 交互，CDP 管不到托盘/窗口层级）。
+
+---
+
+## §最近一轮 (2026-08-03 续④)：BGE-M3 embedding 接入 + 检索质量量化 + backfill
+
+**任务**：用户"下载 embedding 模型装 D 盘（不途径 C 盘）+ 对比测试看使用前后差距，自己设计实验自己验证"。起因：续③ 实跑 Debug Panel 发现 `sem≈0.00/0.08`（embedding 模型未加载，检索退回关键词兜底）→ 本轮接入 BGE-M3 + 量化它带来的提升。
+
+**① 模型下载到 D 盘**（5 文件，`D:\models\bge-m3`）：
+- 原代码 `download.rs::HF_BASE_URL` 指向 `Qdrant/bge-m3-onnx`——**已需认证（401 Unauthorized）**，hf-mirror.com 也只 308 回源 HF 主站。改用匿名可下的 **`Xenova/bge-m3`**（手动 curl 下载，绕过 app 内 download 命令）。
+- Xenova 是 **external data 格式**：`model.onnx`(607KB graph) + `model.onnx_data`(2266820608B≈2.1GB 权重) 分文件，平铺同目录，ort `commit_from_file(model.onnx)` 自动按 graph 引用加载同目录 `model.onnx_data`。另含 `tokenizer.json`(17MB) + `config.json` + `onnxruntime.dll`(1.20.1，GitHub release zip 解 `lib/onnxruntime.dll`)。
+- HF 主站中国慢+stall，切 hf-mirror.com `curl -C -` 断点续传（resume from 573MB）完成。
+- config `%APPDATA%\DesktopPet\config.toml` → `model_dir = "D:/models/bge-m3"`；**C 盘 AppData 不建 models 目录**（用户明确要求）。
+
+**② 修 embedding 加载 bug**（`model.rs`，真 bug 生产同病）：
+- 首次加载报 `Onnx("Opt level: graph_optimization_level is not valid")`。根因：ort 2.0.0-rc.12 把 `GraphOptimizationLevel::Level3` 映射到 `ORT_ENABLE_LAYOUT`（ort 源码 `session/builder/impl_options.rs:555`），**ORT 1.20 运行时不认此值**（标准只有 DISABLE/BASIC/EXTENDED/ALL）→ `SetSessionGraphOptimizationLevel` 拒绝。此前模型从未加载过，bug 一直潜伏。
+- 修：`Level3` → `All`（→ `ORT_ENABLE_ALL` 标准值；ort 文档原话 "All optimizations (i.e. Level3)"，语义一致）。api-20 = ORT 1.20 API（非 ORT 2.0），与 1.20.1 DLL 匹配——非版本不匹配，纯枚举映射错。
+
+**③ backfill 历史 episode 向量**（`store.rs::backfill_missing_vectors` + `lib.rs` setup 后台线程）：
+- 诊断：`store.rs::store` 摄入时若模型 ready 才 embed 写 `episode_vectors`（store.rs:60）；当前环境模型未加载 → 历史 episode 全无向量（真实 DB 14 episodes / **0 vectors** 印证）→ **即使现在加载模型，检索仍退回关键词**（retrieval 的 cosine 分支需 episode_vec）。
+- 修：新增 `backfill_missing_vectors(db, emb)`（LEFT JOIN 找无向量的 episode，embed summary + insert，best-effort）。`lib.rs` setup 闭包内，模型 ready 时 `std::thread::spawn` 后台跑（不阻塞启动）。新对话摄入本就自动 embed，backfill 只补历史。
+
+**④ A/B benchmark**（`tests/embedding_ab_harness.rs`，隔离 LLM 纯 CPU 推理）：
+- 受控实验：18 episode（中文桌宠场景，全同 importance=0.5/strength=0.5/time，无 emotion）→ semantic 分量成唯一排名变量。12 query（6 字面类 + 6 语义类，标注答案）。per-query fresh 内存 DB（隔离 retrieve 的 reinforce 副作用）。两模式：baseline `retrieve(emb=None)` 关键词兜底 vs `retrieve(emb=Some)` cosine。
+- 结果：**语义类 Hit@3 33%→67%（翻倍）/ MRR 0.33→0.67 / avg sem@answer 0.035→0.741（≈21×，从无到有）/ 字面类 100%→100% 不退步**。avg sem 0.035→0.741 正好印证续③ Debug Panel 的 sem≈0 诊断。test assert：embedding 严格提升语义 MRR、字面零退步。
+
+**⑤ release rebuild + 端到端验证**：`npx tauri build --no-bundle`（exe 08-03 18:25）。启动 release exe → 真实 DB `episode_vectors` **0→14**（全部历史记忆向量化，模型加载+backfill 生产链路真实跑通）。`cargo test --lib` 219 passed。
+
+**架构契合**：#1（backfill/benchmark 纯 Rust 驱动，embed 只计算）/ #8（embedding 本地 CPU 零 LLM 成本）/ #10（历史记忆也享受语义检索）/ #11（benchmark 可复跑 + backfill 日志计数 + 加载 bug 注释可追溯）。
+
+**follow-up（未做，记 backlog）**：
+- **download.rs HF_BASE_URL 仍指失效的 Qdrant（401）**：手动下载已绕过，但 app 内 Settings 下载按钮坏了。修需改 URL→Xenova + download_all 处理 `model.onnx_data` external data（REQUIRED_FILES 加它）。记忆 `bge-m3-model-location` 记详。
+- B5 Golden 评估框架（人格漂移，待 Liri 稳定）。
+
+---
+
+## §最近一轮 (2026-08-03 续③)：B4b 死表 + B4-MVP 决策链三分区 + B4-余 Cost 分区
+
+**任务**：深度审计后按优先级开发 #11/#8 Explainability 簇（未受阻、最高 ROI；Liri/Spine 受阻于资产）。三件：B4b 修死表、B4-MVP 补 Debug Panel 决策链三分区、B4-余 Cost 今日调用+token 计数。
+
+**B4b · conversations 死表修复**（`commands.rs::send_message`，~30 行）：
+- 审计确认真 Bug：`Grep conversations::(insert\|get_recent\|get_max_turn)` 于 `src-tauri/src` = 0 命中；`codegraph_callers(insert)` 显示 `conversations::insert` 仅测试调用。plan P5.3 步骤 5 明确要求写此表。
+- 实现：在 `send_message` 的 working_memory push **之前**，镜像其语义写 `conversations` 表——user turn 必写、assistant turn 仅 `!response.is_empty()` 时写（与 wm push 一致：silence=无 assistant 行）。`id = {conversation_id}_t{turn}_{role}` 保证 PRIMARY KEY 唯一（schema id 是 PK；同 turn 的 user/assistant 共享 turn 号，需 role 后缀区分）。
+- **best-effort**：`if let Err(e) = ... { log::warn }`——日志失败只 warn 不阻断聊天（#11 是调试辅力，不该坏主流程）。harness 直调 `converse()`（不经 send_message）→ 不污染生产表。
+- 效果：现在可回溯她每轮原话（07-31 幻觉若再发，能直接查 conversations 表看她到底说了什么）。
+
+**B4-MVP · Debug Panel 决策链分区**（服务"她为什么这么说"诊断链）：
+- 新增三分区（plan P16 的 Retrieved/Reflect + 额外 Intent）：
+  1. **Last Turn（Intent）**：goal/tone/action + memory_anchor + route + trigger_reason + grounding_violations 计数。
+  2. **Retrieved**：top-5 episode 摘要 + 总分 + 四分量 breakdown（sem/str/rec/emo）——#11 "检索了什么"核心。
+  3. **Reflect**：最新 reflection thought + unsurfaced thoughts 计数（DB 查）。
+- **数据流**（关键决策：改 struct 字段，不改 fn 签名，规避踩坑#4）：
+  - `converse.rs`：`ConversationResult` 加 `retrieved_scores: Vec<RetrievedScoreDebug>`（新轻量 struct：summary+score+breakdown，不带完整 Episode）。converse 内 `retrieval` 计算后投影一次（`.iter().take(5)`），两个 return 分支（silence :128 / normal :296）都用同一 binding（silence 分支 return diverge，move 不冲突）。**fn 签名零改动**——只是返回 struct 多一字段；harness 读 `.response`/`.intent` 不受影响（`cargo check --tests` ✅ 验证）。
+  - `commands.rs`：AppState 加 `last_decision: Mutex<Option<DecisionTrace>>`；`send_message` 在 wm push 后从 `result`（intent/trigger/route/violations/retrieved_scores）组装 `DecisionTrace` stash（best-effort，lock 失败只跳过）。`DecisionTrace`/`DecisionRetrieved`/`DebugReflect` 新 Serialize struct。`get_debug_snapshot` 加 `last_decision`（读 AppState）+ `reflect`（raw SQL 查 reflections/internal_thoughts）。
+  - `DebugPanel.tsx`：`DebugSnapshot` TS 接口加两字段；Timeline 后渲染三新分区（沿用 debug-section/item/bar 既有 class，零 CSS 改动）。
+- **defer 的 B4 余项**（各需独立 plumbing，#9 拆出）：~~Cost（LlmClient 插桩）~~ ✅ 本轮续做（见下）；AnimFSM（前端 fsm 状态需上抛到 panel）；Prompt 动态 token（需记 last usage）。
+
+**B4-余 · Cost 分区**（#8 成本是设计约束——必须可观测）：
+- `llm/client.rs`：`LlmClient` 加 `cost: Arc<Mutex<LlmCostStats>>` 字段（`Arc` 保 `#[derive(Clone)]`——每轮对话 clone 一份 client，计数共享同一份）。`LlmCostStats{date,calls,prompt_tokens,completion_tokens}` Serialize struct + `record()`（跨 local 日重置）+ `snapshot_today()`（过期归零）。**两处插桩点**（覆盖所有调用）：`chat_with_model`（chat/chat_reflection 都委托它）+ `chat_stream` 两个成功 return（[DONE] / 流结束），成功后 `track_usage(&result)`，失败早返回不计。lock-poison 安全（`if let Ok` 跳过）。`LlmClient::new` 是唯一构造点（grep 确认 harness 全用 new）→ 加字段只改一处字面量，零 harness 破坏。
+- `commands.rs`：`DebugSnapshot` 加 `cost`；`get_debug_snapshot` 调 `c.cost_today()`（未配置→default 空）。
+- `DebugPanel.tsx`：Counts 后加 **Cost (today)** 分区（calls + prompt/completion tok + date）。
+- **+3 单测**：record 累加 / record 跨日重置 / snapshot_today 过期归零。
+
+**架构契合**：#1（决策链捕获 + Cost 计数纯 Rust，LLM 只配音；reflect 纯 DB 查）/ #5（get_debug_snapshot/cost_today 异步读不阻塞主循环）/ #8（决策链零额外 LLM 复用同一次 converse；**Cost 成本可观测——核心**）/ #11（"她为什么这么说"全链可观测）/ 不改 fn 签名（规避踩坑#4，只改返回 struct 字段）。
+
+**验证（全绿）**：`cargo check --lib` ✅ / `cargo check --tests` ✅（harness 编译，确认 ConversationResult 加字段未破测试）/ `cargo test --lib` **219 passed**（216 + 3 Cost 单测）✅ / `tsc --noEmit` ✅ / `npm run build` ✅。
+
+**✅ 实跑确认（2026-08-03，dev 真实 LLM）**：`npm run tauri dev` 发"我今天在用spine做桌宠的形象。好繁琐"→
+- **B4b**：`conversations` 0→2 行（user+assistant 配对，turn 归位）——死表修复在生产路径验证通过。
+- **Cost (today)**：`3 LLM calls | prompt 3201 / completion 945 tok`——**单轮 3 次调用（gate+extractor+main）首次可见**，插桩点覆盖完整管道（#8 回本）。
+- **Last Turn**：`react/curious/normal` + anchor + `StoreFull` + `substantive message` 全渲染。
+- **Retrieved**：5 条 episode + 四分量 breakdown。**副产品发现**：`sem≈0.00/0.08` 暴露**当前环境未加载 embedding 模型**→检索退回关键词兜底（这是既有问题，非本轮改动）。导致 Spine 相关 episode（0.48）排在"宠物去世"（0.50）下、planner 锚到情感最强记忆。建议：Settings 下 BGE-M3 改善检索。
+- **Reflect**：unsurfaced 0 + 最新反思"今天听了很多你的开心和心事…"（与 DB 查的一致）。
+- 笔电 F12 被绑成休眠键 → 加了 **Ctrl+Shift+D 备用切换**（`App.tsx:420` keydown，HMR 即时生效）。
+
+**Scope 边界**：① 决策链只存**最后一轮**（覆盖即更新）——够诊断单轮，不需历史轨迹（要历史看 Timeline/change_log）。② reflect 只读不写。③ Cost 不含 $ 估算（模型/定价用户各异，硬编码会误导 #11；token+调用数已是成本的真实信号，$ 可后接 config 跟进）。④ B4 余 AnimFSM/Prompt-动态 token 入 follow-up。⑤ 未 rebuild release exe（前端+后端改了，桌面快捷方式要 `npx tauri build --no-bundle` 才生效；dev 模式直接热更）。
+
+**当前无进行中任务**。下一会话起点：① 实跑本轮（dev 看 4 分区 + conversations 表）→ ② B4-余余（AnimFSM 前端 / Prompt 动态 token）或 B5（Golden 评估，待 Liri 稳定）→ ③ B1b 条件触发（实跑若再现幻觉）。
+
+---
 
 ## §最近一轮 (2026-08-03)：合并 opencode 副本（B1 + B2 + A4/A5 实跑方法论）
 
@@ -65,6 +581,46 @@
 - **bounce 死代码**：gravity.ts 的弹跳逻辑在当前 1/3-飘落配置下永不触发。若用户确认"只要飘落不要弹跳"，可删 BOUNCE_* 常量+反弹分支；若两者都要，需让 1/3 规则可配置或仅对贴近 floor 的释放生效。
 - **B1 多 1 次 LLM**：已接受（#8 低频）。若要省，可让 consolidation 那次 LLM 同时输出 facts（prompt 合并），省一次往返。
 - **A6 弃测**：emotionBridge 连续表情 opencode 标"用户弃测（过渡角色）"——等最终 Live2D 角色交付后补测。
+
+---
+
+## §最近一轮 (2026-08-03 续②)：Liri 角色方向 + 人格落进 system prompt
+
+**起因**：用户指 `C:\Users\SunJialei\Desktop\形象设计\` 三份文档（设计规范/动画设计/制作规范）= Liri 角色 + Spine 制作圣经，要求读并记录要点。**重大方向确认**：最终角色 = 璃 Liri（小狐灵，6.2 头身少女），**动画走 Spine + PixiJS Runtime，不用 Live2D**（制作圣经明示"Spine 更适合程序控制"——Liri 需状态机/Emotion参数/Memory触发/动态行为）。→ 当前 `Live2DCanvas.tsx`（Live2D Haru + f00-f05 + emotionDriver）是**占位待迁移**；FSM/emotionDriver/behavior→参数映射/circadian/microBehavior 技术无关、迁移时沿用，只换渲染层。这也解释了 B3 验收时"没有 Zz"——Zz 仅在 SVG PetCharacter，Live2D 无；且 Live2D 本就临时，不宜深究其视觉。
+
+**记忆**：要点写入跨会话记忆 `liri-character-spine-direction`（方向+迁移映射）+ `liri-design-bible`（人格35/20/20/15/5/5、耳尾情绪映射、5层优先级、MVP 27 动画、Spine PSD/骨骼/Mesh/Physics/命名/验收）。
+
+**落地两件**：
+1. **文档入仓**：三份拷至 `docs/specs/liri/`（原在桌面易丢）。+CLAUDE.md 文档导航加指针。
+2. **人格落 system prompt**（用户要"把人格配比落进 system prompt / emotion 系统"）：
+   - `system.txt` 身份行 + `[Core Personality - permanent]` 块：通用占位（"Gentle, patient, playful, curious, slightly mischievous"）→ Liri（璃/小狐灵身份 + 狐狸观察者本性 + 6 维配比散文化 + NOT 话痨/卖萌/依赖/永远积极 + "表达服务人格"）。**14 条规则全保留**（尤其 rule8 `严禁编造`——grounding 测试硬断言）。
+   - `firstrun.rs::seed_persona`：core 维度（gentle/patient/curious/playful/caring）→ Liri 6 维中文 key（温柔/好奇/聪慧/安静/调皮/神秘）。**confidence=确信度（design-seeded 高），非权重%**——因 grounding 渲染 [Persona] 只取 trait_key、confidence 不进 prompt，故**配比%只能放 system.txt 散文**，种子只给维度标签。
+   - **emotion 系统不动**：EmotionState 是 homeostatic 中性模型，personality % 无自然映射；人格通过 prompt 散文驱动情绪"表达风格"。#9 分层复杂度——不过度接线。
+
+**架构契合**：#1（人格由 Rust 写进 prompt，LLM 只配音）/ #3（Liri 原则②不假记忆=既有 rule8）/ #6（core 人格永久，[Persona] 动态层叠）/ #11（system.txt 可追溯）。**未改签名**（converse/build_system_prompt 等零改动，规避踩坑#4）。
+
+**验证**：`cargo test --lib` **216 passed** ✅（grounding `test_system_prompt_contains_chinese_grounding_ban` 断言 `严禁编造` 仍在、`test_system_prompt_contains_memories` 的 "gentle" 经 system.txt「温柔 (gentle)」+ mock 双保险）。system.txt 是 `include_str!` 编译进二进制 → **待 rebuild 进 dev/release 生效**（tauri dev 监听 src-tauri，改 .txt cargo 会因 include_str! 依赖追踪重编）。
+
+**待办 / Scope 边界**：① **当前用户库 core persona_traits 仍是旧种子**（gentle/patient/curious/playful/caring，firstrun 已跑过、幂等不重种）——与 Liri 不冲突（兼容维度）但不一致；可选 reseed：`DELETE FROM persona_traits WHERE trait_type='core';` 后重启 → firstrun 用 Liri 维度重种。② seed_persona 改动**仅对新装生效**。③ 动画层 Spine 迁移是大方向（待 Liri.spine 资产 + PixiJS runtime，替换 Live2DCanvas；emotionDriver 参数映射需对接 Spine 骨骼/网格而非 Live2D param）。④ Liri 性格配比是否要进一步影响 emotion homeostasis 的反应曲线——留 follow-up，当前 prompt 驱动足够。
+
+---
+
+## §最近一轮 (2026-08-03 续)：B3 Sleeping 配套收尾（纯前端）
+
+**任务**：用户"继续完成开发任务"。HANDOFF §下一步总清单 ②待开发 下一项 = B3（Sleeping 配套收尾，小项 ×3）。前序 A4（Sleeping 入睡/唤醒机制，07-31 build 过/待实跑）已让 Sleeping 能自动触发+交互唤醒，但三处配套缺口：① 睡着仍冒「早点睡」nudge（梦话）② sleep 音效素材早就在 `public/audio/voice/sleep.mp3` 但 soundManager 没接 ③ LateNight 行为需确认。
+
+**实现**（2 文件 ~10 行，原则 #1/#5/#6/#10/#11）：
+- **① 睡着抑制 nudge**（`App.tsx` nudge effect，:682 一带）：`setInterval` 回调在 `if (awayMode) return;` 后加 `if (fsmRef.current?.state === BehaviorState.Sleeping) return;`。一处守卫同时挡住 DeepNight（早点睡）+ LateNight（还不睡呀…）两分支。**fsmRef 是 ref、effect deps `[showBubble, awayMode]` 不含它 → 无 stale-closure，每次 tick 读最新 state**。睡着是安静态（#10），不该冒泡说话。
+- **② 接 sleep 音效**（`soundManager.ts` + `App.tsx`）：
+  - `soundManager.ts`：`AssetKey` 加 `"sleep"`、`ASSET_PATH` 加 `"/audio/voice/sleep.mp3"`（素材 07-29 就在，只是没接线）、新增 `sleep()` 公开方法——**刻意 mirroring `greet()`**：两者都是**一次性状态进入 cue**（启动 hi / 入睡 sleep），不是高频交互音，所以**不走 `TRIGGERS` 加权随机表**，直接 `playSample`。区别 greet：sleep 无需 `greeted`/`greetArmed` one-shot flag + autoplay deferral——入睡必在 DeepNight + 10min 无交互后，AudioContext 早被用户之前的交互解锁（`ensureCtx` 的 resume 兜底也够），调用点（auto-sleep guard）天然保证每次入睡只调一次。mute 经 `ensureCtx` 返回 null 尊重（#6）。
+  - `App.tsx`：auto-sleep 分支 `fsm.forceState(BehaviorState.Sleeping);` 后加 `sound.sleep();`。该分支的进入条件含 `fsm.state !== Sleeping`，故**只在她从清醒→入睡的那一 tick 触发一次**（已成 Sleeping 后条件 false，不会每 2.5s tick 重响）。
+- **③ LateNight 不入睡只 yawn**（**已满足，零改动**）：auto-sleep 唯一触发点 `App.tsx:239` 的条件 `circadianRef.current.period === TimeOfDay.DeepNight` 本就把 LateNight(22-2) 排除在外；LateNight 的 sleepiness=0.6 经 Tier3 #7 的 `sleepy` 权重倍数让 yawn 占比上升（HANDOFF §历史 2026-07-29 数学验证）。即 LateNight 现状正是"不入睡只 yawn"，无需改。
+
+**架构契合**：#1 sleep 音/抑制都是纯规则无 LLM / #5 Body 层音效断网照响 / #6 mute 时 sleep() no-op / #10 睡着安静（不梦话）+ 入睡有轻 cue = 生命感 / #11 sleep() 方法 JSDoc + ASSET_PATH 集中可追溯。
+
+**验证**（build 过 ✅ / 待实跑）：`tsc --noEmit` ✅（0 error）/ `npm run build` ✅（482 modules，2.16s）。**纯前端，无 Rust 改动**（cargo 不受影响，不必重跑 --lib）。**待实跑**：改系统时间到 2-6 点（DeepNight）+ 不交互等 10min → 观察入睡（闭眼慢呼吸+Zz）+ 听 sleep 音 + 确认不冒「早点睡」nudge；戳/摸/对话 → 即时唤醒（唤醒不响 sleep 音，符合直觉）。复用 A4/A5 方法论：`Date.prototype.getHours` 重写模拟 DeepNight 可秒级切换（无需真改系统时间）。
+
+**Scope 边界**（follow-up，避免过度）：① sleep 音只入睡响、唤醒不响（现 markInteraction 唤醒无音——可接受，"醒来安静"也自然；若要 wake 音再加素材+方法）② Sleeping 时其他气泡（proactive/welcome-back 后端 emit）未守卫——但后端 proactive `trigger_proactive` 有 `MIN_BUBBLE_INTERVAL_SECS` + closeness 门，且 Sleeping 时用户大概率 awayMode/无交互，撞概率低；若实跑发现睡着仍冒后端气泡，再在 `welcome-back`/`proactive-prompt` listener 加 Sleeping 守卫（前端 fsmRef 可读）。
 
 ---
 
@@ -427,12 +983,13 @@ Kill List 三闭环已完成，现按"提升体验/生命感"→"闭环深度"�
 
 **Tier 3 — Body 完善（活着 · 生命感）**
 - ~~**B2. 完整物理**~~ ✅ **已完成（2026-08-03，合并自 opencode 副本）**：自由落体 + 任务栏弹跳（P12.1）。新 `gravity.ts`（GRAVITY/BOUNCE 常量 + `stepGravity` 纯函数）。**关键**：发现 `startDragging` 吞 webview 鼠标事件（旧 `onUp` 死代码）→ 改 `onMoved`+静止检测；petPos useState→ref 重构修卡顿。用户偏好"1/3 飘落悬停"（不真触底，bounce 当前是死代码，待确认）。详见 §最近一轮 (2026-08-03)。
-- **B3. Sleeping 配套收尾**（小项）：① 睡着抑制 DeepNight nudge（现睡着仍冒"早点睡"，像梦话）② 接 sleep 音效素材（已预留未接）③ LateNight(22-2) 不入睡只 yawn。
+- ~~**B3. Sleeping 配套收尾**~~ ✅ **已完成（2026-08-03 续，纯前端）**：① 睡着抑制 DeepNight/LateNight nudge（`App.tsx` nudge effect 加 `fsmRef.state===Sleeping` 守卫，不再梦话）② 接 sleep 音效（`soundManager.ts` 加 `"sleep"` AssetKey + `sleep()` 方法 mirroring `greet()`；入睡时 `sound.sleep()`，mute 尊重 #6）③ LateNight 不入睡只 yawn（**已满足、零改动**：auto-sleep 本就 DeepNight-only）。详见 §最近一轮 (2026-08-03 续)。**待实跑**。
 
-**Tier 4 — 开发者基建（#11 Explainability）**
-- **B4. P16 Debug Panel 补全**：Prompt token 预算 / Retrieved score breakdown / Reflect(has_thought/unsurfaced) / AnimFSM / Cost 分区。`DebugPanel.tsx` 现 6 个 section 全无这些。
-- **B5. P17 Golden 评估框架**：人格漂移 score + CI 自动跑 + `tests/evaluation.rs`。现仅 `golden_conversations.rs` 数据，无评估框架/CI。
-- **B4b. conversations 死表修复（#11 可追溯）**：生产路径调用 `conversations::insert` 写对话日志（现仅测试调用、表 0 行）。独立 bug——本次幻觉排查中因它无法回溯她原话。
+**Tier 4 — 开发者基建（#11 Explainability · ⭐ 当前最高 ROI 且未受阻）**
+- ~~**B4b. conversations 死表修复**~~ ✅ **本轮完成（2026-08-03 续③）**：审计确认真 Bug——生产路径从未调 `conversations::insert`（grep 0 / callers 仅测试）。`commands.rs::send_message` 镜像 working_memory push 写 user+assistant turn。详见 §最近一轮 (2026-08-03 续③)。
+- ~~**B4-MVP. Debug Panel 决策链分区（Retrieved+Intent+Reflect）**~~ ✅ **本轮完成（2026-08-03 续③）**：服务"她为什么这么说"诊断链。详见 §最近一轮 (2026-08-03 续③)。
+- **B4-余. Debug Panel 补全（follow-up）**：~~Cost~~ ✅ 续③；~~AnimFSM（当前态+history）~~ ✅ **续⑧**（fsm.getHistory + DebugPanel AnimFSM 分区）；~~Prompt（动态 token）~~ ✅ **续⑧**（PromptTokenDebug → DecisionTrace → Last Turn "sys N/budget M"）。**Debug Panel 9 分区全补齐**（Brain/Counts/Cost/Facts/Episodes/Pending/Timeline/Last Turn/Retrieved/Reflect/AnimFSM）。待 dev 实跑确认 AnimFSM/Prompt 渲染。
+- **B5. P17 Golden 评估框架**：✅ **MVP 完成（2026-08-03 续⑧）**——`src/mind/evaluation.rs`（personality_drift_score 规则启发式 + 7 单测）+ `tests/evaluation.rs`（Liri 人格契约回归网 4 测 + drift 端到端 2 测）。锁续② 人格。**仍待（future）**：LLM-as-judge（语义漂移）+ ≥30 对话 golden 集 + CI 自动跑——规则层是廉价第一道，LLM judge 是重的第二道，待 Liri 稳定 + 真实响应样本调阈值。
 
 **Tier 5 — 架构债务（重构 · 功能已在跑）**
 - **B6. A1 BrainState 统一快照**：converse 等改 `fn(brain: &BrainState)`，消除多参数列表（架构债）。
@@ -442,6 +999,9 @@ Kill List 三闭环已完成，现按"提升体验/生命感"→"闭环深度"�
 - **B8.** Shared World（桌面元素认知）/ Rituals / Landmarks / Adaptive Traits V2 / 混合检索 V2。
 
 ### ③ 散落 follow-up（低优先 · 可并入相关 Tier）
-Alt+Space 全局键（P11.4）/ 走路脚步声 loop（P11.5）/ 害羞慢现气泡形态（缺后端 mood 标签）/ rest_need 后端暴露（P10）/ speedModifier·energyModifier 接动画速度（circadian）/ idle_weights JSON 化（数据驱动）/ 选择性遗忘（用户请求"忘掉..."，P13 lifecycle_cleanup）。
+Alt+Space 全局键（P11.4）/ 走路脚步声 loop（P11.5）/ 害羞慢现气泡形态（缺后端 mood 标签）/ ~~rest_need 后端暴露（P10）~~ ✅ **2026-08-04**（含激活生产 homeostasis + 恢复项；详见 §最近一轮 2026-08-04）/ ~~speedModifier 接动画速度（circadian）~~ ✅ **2026-08-04**（PIXI ticker.speed；energyModifier 仍未消费——能量已是情绪维度，speed 够用）/ idle_weights JSON 化（数据驱动）/ ~~选择性遗忘（用户请求"忘掉..."，P13 lifecycle_cleanup）~~ ✅ **2026-08-04 续 episode MVP + 2026-08-05 fact/pending 扩展**（gate Forget + `forget_best_match` 三路调度 episode/fact/pending + converse 确认；详见 §最近一轮 2026-08-05。**仍留 follow-up**：多轮消歧义、fact/pending 语义级匹配需加向量）/ **loneliness 生产未激活**（apply_homeostasis_time_aware 不更新；tick_needs 死代码；影响检索/planner，激活属行为变更需评估）/ ~~**FTS5 全历史检索**~~ ❌ **2026-08-05 证伪**（bundled SQLite 三分词器对中文 MATCH 全 0——无 CJK 分词；"fts5_cjk"旧记错误；除非引入 jieba 扩展/Rust 分词否则不可行，已从 backlog 移除）。
+
+### ③ Hermes 记忆优化 follow-up（续③ 立项，按 ROI）
+~~FTS5 全历史检索~~ ❌ **2026-08-05 证伪移除**（见上，CJK 不兼容）/ ~~"关系进展摘要"（后台每 N 次对话异步总结，对应 Hermes 后台 review）~~ ✅ **2026-08-07**（relationship_reviews 表 + soul/review.rs + [Relationship] 注入 + slow_tick 调度；详见 §最近一轮）/ 记忆可视化编辑（Debug Panel 只读→可改）。
 
 > **建议下一会话起点**：先清 ① 待验收（A1-A7 逐项 rebuild+实跑，零新代码、闭环既有成果），再按 B1→B8 推进。实跑前提：`%APPDATA%\DesktopPet\config.toml` 配好 DeepSeek key + 桌面快捷方式（或 `npm run tauri dev`）。

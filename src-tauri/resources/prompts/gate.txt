@@ -5,8 +5,15 @@ Categories:
 - emotion_only: Pure emotional expression with no storable information (e.g., "hahaha", "argh").
 - pending_event: Contains a future plan, scheduled event, OR a reminder request from the user (e.g., "I have an interview tomorrow", "exam next week", "remind me to drink water in 30 minutes", "提醒我3分钟后喝水", "明天叫我起床").
 - correction: The user is correcting a previous memory (e.g., "No, I said I like milk tea").
+- forget: The user is asking the pet to FORGET or DELETE a specific memory entirely — not correct it, but erase it. This may be an event, a preference, or a reminder (e.g., "忘掉我之前说的那件事", "delete that memory", "别记着那个了", "forget what I told you about the interview", "把那条删了", "忘掉我爱喝咖啡", "忘掉我喜欢喝咖啡这件事", "忘掉咖啡", "忘掉那个提醒", "取消那个闹钟", "forget that reminder", "don't remind me about that anymore"). Distinguish from correction: correction fixes a wrong detail; forget asks to make the pet stop remembering it at all.
 - silence: Simple greeting or acknowledgment with no substance (e.g., "goodnight", "hmm", "ok").
 - discard: Pure noise, gibberish, or empty messages with no value.
+- question: The user is asking a general-knowledge, technical, or factual question — they want information, not a memory operation (e.g., "什么是地心引力", "what is gravity", "how does Rust's borrow checker work", "解释一下什么是递归", "帮我看看这个报错是什么意思"). The pet should just answer it directly.
+  Do NOT classify as question — classify these as store_full (they need the pet's memories, and store_full routes to the normal memory-aware conversation):
+  - Memory lookups about the user: "你记得...吗", "你知道我喜欢什么吗", "你记得我在忙什么吗".
+  - Personal-preference decisions: "中午吃什么好呢", "今晚喝点什么", "周末去哪玩".
+  - Personal opinions about the user: "你觉得我最近怎么样", "你觉得我是个什么样的人".
+  Only pure knowledge / factual / technical questions are question.
 
 Respond with JSON only, no other text:
-{"route": "store_full|emotion_only|pending_event|correction|silence|discard", "reason": "brief explanation"}
+{"route": "store_full|emotion_only|pending_event|correction|forget|silence|discard|question", "reason": "brief explanation"}

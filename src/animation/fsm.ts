@@ -55,6 +55,12 @@ export class AnimationFSM {
         return this.current;
     }
 
+    /// Recent behavior history (last ~5 timed microbehaviors that ended), oldest
+    /// first. Exposed for the debug panel's AnimFSM section (#11 observability).
+    getHistory(): string[] {
+        return [...this.history];
+    }
+
     onStateChange(cb: (state: BehaviorState) => void) {
         this.listeners.push(cb);
         return () => {

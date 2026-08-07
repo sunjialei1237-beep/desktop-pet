@@ -41,6 +41,26 @@ interface PickOptions {
     now: number;
 }
 
+/**
+ * Circadian sleepiness weight multiplier (design doc 6.7). Pure extraction of
+ * the formula used in pickNextBehavior so the A5 effect — yawn/stretch climb at
+ * night, look_around/peek fade, daytime untouched — is unit-testable without
+ * the weighted-random machinery.
+ *   effective = base * (1 + (sleepy - 1) * sleepiness)
+ * - sleepy omitted => treated as 1 (time-invariant).
+ * - sleepiness = 0 (day) => collapses to base (daytime mix byte-for-byte same).
+ * Result is clamped to a tiny positive floor so a behavior can never hit zero
+ * weight (keeps it in the pool, just very unlikely).
+ */
+export function applySleepyWeight(
+    baseWeight: number,
+    sleepy: number | undefined,
+    sleepiness: number,
+): number {
+    const s = sleepy ?? 1;
+    return Math.max(0.01, baseWeight * (1 + (s - 1) * sleepiness));
+}
+
 /// Picks the next microbehavior based on emotion, closeness, cooldowns, and history.
 export function pickNextBehavior(opts: PickOptions): string | null {
     const { emotionMood, emotionEnergy, closeness, sleepiness, recentHistory, cooldowns, now } = opts;
@@ -72,9 +92,7 @@ export function pickNextBehavior(opts: PickOptions): string | null {
         // Circadian sleepiness (design doc 6.7): at night she gets drowsy --
         // yawn/stretch climb, look_around/peek fade. sleepiness=0 (day) is a
         // no-op (multiplier collapses to 1), so daytime mix is unchanged.
-        const sleepy = b.sleepy ?? 1;
-        w *= 1 + (sleepy - 1) * sleepiness;
-        return Math.max(0.01, w);
+        return applySleepyWeight(w, b.sleepy, sleepiness);
     });
 
     // Weighted random pick

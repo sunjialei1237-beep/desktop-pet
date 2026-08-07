@@ -93,6 +93,7 @@ pub fn run() {
             embedding: embedding_service,
             working_memory,
             question_pacing: Default::default(),
+            last_decision: std::sync::Mutex::new(None),
         })
         .manage(db_state)
         .setup(|app| {
@@ -109,11 +110,65 @@ pub fn run() {
                 }
             }
 
+            // Backfill embeddings for episodes stored before the model was
+            // available (first time BGE-M3 is enabled on an existing DB). Runs
+            // on a background thread so it never blocks startup.
+            if let Some(app_state) = app.try_state::<crate::commands::AppState>() {
+                if app_state.embedding.is_ready() {
+                    let h = app.handle().clone();
+                    std::thread::spawn(move || {
+                        let state = h.state::<crate::commands::AppState>();
+                        let db = h.state::<db::DbState>();
+                        match crate::mind::store::backfill_missing_vectors(&db, &state.embedding) {
+                            Ok(n) if n > 0 => {
+                                log::info!("[startup] backfilled {} episode vector(s)", n)
+                            }
+                            Ok(_) => log::info!("[startup] no episode vectors needed backfilling"),
+                            Err(e) => {
+                                log::warn!("[startup] episode vector backfill failed: {}", e)
+                            }
+                        }
+                    });
+                }
+            }
+
             // Start the life loop (background timers).
             lifecycle::start_life_loop(handle.clone());
 
             // Start the global cursor poll thread for click-through (ADR Phase 2).
             let _cursor_stop = perception::cursor::start(handle.clone());
+
+            // System tray icon. Lets the pet hide to the tray ("暂时离开" in
+            // the right-click menu -> hide_to_tray) and restore on click. The
+            // Click handler re-shows the window and emits "restore-from-tray"
+            // so the front-end clears its awayMode flag.
+            let tray_icon = app.default_window_icon().cloned();
+            if let Some(icon) = tray_icon {
+                if let Err(e) = tauri::tray::TrayIconBuilder::with_id("main-tray")
+                    .icon(icon)
+                    .tooltip("桌面宠物 · 点击图标恢复")
+                    .on_tray_icon_event(|tray, event| {
+                        if let tauri::tray::TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            button_state: tauri::tray::MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                            let _ = app.emit("restore-from-tray", ());
+                        }
+                    })
+                    .build(app)
+                {
+                    log::warn!("[tray] failed to build system tray icon: {}", e);
+                }
+            } else {
+                log::warn!("[tray] no default window icon available, skipping tray");
+            }
 
             // Welcome bubble after a short delay.
             std::thread::spawn(move || {
@@ -136,11 +191,15 @@ pub fn run() {
             commands::check_proactive,
             commands::proactive_bubble,
             commands::welcome_back_bubble,
+            commands::lonely_bubble,
             commands::get_llm_status,
             commands::resolve_pending_event,
             commands::get_llm_config,
             commands::update_llm_config,
             commands::get_debug_snapshot,
+            commands::forget_fact,
+            commands::delete_episode,
+            commands::set_emotion,
             commands::get_embedding_status,
             commands::download_embedding_model,
            commands::check_cold_start,
@@ -150,6 +209,7 @@ pub fn run() {
            commands::get_user_profile,
            commands::open_devtools,
            commands::quit_app,
+           commands::hide_to_tray,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

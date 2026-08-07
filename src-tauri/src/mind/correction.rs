@@ -57,13 +57,48 @@ If the correction is unclear or does not match any known fact, respond with: {{\
         content: system_prompt,
     }];
 
-    let result = llm
-        .chat_reflection(&messages, Some(0.2), Some(2048))
-        .await
-        .map_err(|e| format!("Correction LLM call failed: {}", e))?;
+    // 4096: DeepSeek-v4 is a reasoning model, reasoning_content eats most of the
+    // budget — 2048 leaves content empty and the JSON parse fails (pitfall #3).
+    // One retry on empty/parse failure; then degrade to Ok(None) so a lost
+    // correction never kills the whole turn (mirrors gate/extractor policy).
+    let mut last_err = String::new();
+    for attempt in 1..=2 {
+        let result = llm
+            .chat_reflection(&messages.clone(), Some(0.2), Some(4096))
+            .await
+            .map_err(|e| format!("Correction LLM call failed: {}", e))?;
 
-    let parsed = parse_correction(&result.content)?;
+        match parse_correction(&result.content) {
+            Ok(parsed) => {
+                if attempt > 1 {
+                    log::info!("[correction] recovery succeeded on retry {attempt}");
+                }
+                return finish_correction(parsed, db);
+            }
+            Err(e) => {
+                last_err = e;
+                log::warn!(
+                    "[correction] parse failed (attempt {}): {}; retrying or degrading",
+                    attempt,
+                    last_err
+                );
+            }
+        }
+    }
 
+    log::warn!(
+        "[correction] failed after retries: {}; degrading to no-correction",
+        last_err
+    );
+    Ok(None)
+}
+
+/// Step 2 of correction: apply the parsed correction to the DB (LLM suggested
+/// it; Rust mutates — architecture principle #1).
+fn finish_correction(
+    parsed: CorrectionParse,
+    db: &DbState,
+) -> Result<Option<CorrectionResult>, String> {
     // Empty response means the correction didn't match any known fact.
     if parsed.category.is_empty() || parsed.key.is_empty() {
         return Ok(None);
