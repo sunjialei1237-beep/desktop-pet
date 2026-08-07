@@ -1,0 +1,198 @@
+<div align="center">
+
+# Liri · 璃
+
+### 一个有记忆、有情绪、会主动找你的 Windows 桌面陪伴宠物
+
+她不是一个"带记忆的聊天机器人"，而是一个"有生活的生命"。
+
+[特性](#-特性) · [快速开始](#-快速开始) · [技术栈](#-技术栈) · [架构](#-架构-mind--body--soul) · [文档](#-文档) · [English](#english-abstract)
+
+</div>
+
+---
+
+> 🌟 **成功标准**：你对她说"我最近准备找实习"，一周后她会主动问你"实习找得怎么样啦？"
+> —— 不靠定时器提醒，靠**记忆 + 关系 + 主动性**。
+
+**Liri（璃）** 是一只常驻你桌面的小狐灵。她会记住你们聊过的每一件事，在情绪低落时主动来找你，在你忙时安静等待，在深夜催你早点睡。所有数据都在本地，所有模型由你自己配置——她只属于你。
+
+> ⚠️ **当前状态：早期开发中（v0.1）。** 桌面形象仍是占位 Live2D 模型，最终角色"璃"（Spine + PixiJS 高保真骨骼动画）正在制作中，截图将在角色完成后补上。当前仅支持 **Windows**。
+
+---
+
+## ✨ 特性
+
+### 🧠 记住你（Memory）
+- **情景记忆**：每一段对话沉淀为 episode（带重要度、情绪、时间衰减）
+- **语义检索**：本地 BGE-M3 向量化 + sqlite-vec 向量库，按「语义 / 强度 / 时近 / 情绪」四维打分召回
+- **事实抽取与巩固**：从对话中提炼长期事实（偏好、计划、人际关系），冲突时自动过期，consolidation 反向回填
+- **可遗忘**：自然语言"忘掉我说过的 X"即可软删除，绝不复述已忘内容
+
+### 💗 懂你（Soul）
+- **关系成长**：closeness / trust 随真实相处累积——早期不黏人、熟络后更亲
+- **情绪稳态**：mood / energy / social_battery / stress / loneliness 持续漂移；loneliness 高 + 关系够熟时，她会**主动**冒一句"想你"
+- **自我反思**：离线 reflection 生成内心 thought，在恰当时机自然带进对话
+- **关系复盘**：阶段性 relationship review，她会"回想"这段关系的进展
+
+### 🐾 活着（Body）
+- **物理交互**：拖拽自由落体、摸头（降 loneliness）、戳（逗弄）、双击
+- **作息系统**：昼夜节律（circadian）驱动深夜打哈欠、自动入睡、轻声唤醒
+- **微行为**：发呆、四处张望、歪头、伸懒腰、摇摆、偷瞄、害羞……多种自发动作
+- **情绪表情**：表情随情绪**连续渐变**（非离散跳变），嘴角 / 眼形实时跟随心情
+
+### 🔒 隐私与成本
+- **全本地**：记忆存 SQLite，向量存 sqlite-vec，嵌入跑本地 BGE-M3，不传任何第三方
+- **模型自配**：默认 DeepSeek，也支持 OpenAI、或 **Ollama 完全本地**运行（一个 API key 都不用）
+- **成本可控**：budget 管控 + flash/pro 双模型分流（反思用便宜的）
+- **能力可关**：每个感知层（时间 / 在场 / 窗口）可独立关闭（Architecture Principle #6）
+
+---
+
+## 🚀 快速开始
+
+### 前置要求
+- **Windows 10/11**（一期；macOS / Linux 待后续）
+- [Node.js](https://nodejs.org/) ≥ 20
+- [Rust](https://www.rust-lang.org/) 工具链（`cargo`）
+- 一个 OpenAI 兼容的 LLM —— 推荐 [DeepSeek](https://platform.deepseek.com/)，或本地 [Ollama](https://ollama.com/)
+
+### 安装与运行
+
+```bash
+git clone https://github.com/sunjialei1237-beep/desktop-pet.git
+cd desktop-pet
+npm install
+npm run tauri dev
+```
+
+首次启动会自动在 `%APPDATA%\DesktopPet\config.toml` 生成配置模板。**编辑它填入你的 API key**，然后重启：
+
+```toml
+[llm]
+base_url = "https://api.deepseek.com/v1"   # 或 OpenAI / http://localhost:11434/v1 (Ollama)
+api_key = "sk-..."                          # ← 填这里（用 Ollama 则留空）
+main_model = "deepseek-v4-pro"
+reflection_model = "deepseek-v4-flash"
+
+[embedding]
+# 留空 = 首次运行引导下载 BGE-M3（~2.2GB）到 AppData
+model_dir = ""
+model_name = "bge-m3"
+```
+
+> 💡 嵌入模型首次运行会下载 BGE-M3（约 2.2GB），之后离线可用。完整配置项见 [`src-tauri/resources/config.example.toml`](src-tauri/resources/config.example.toml)。
+
+> ⚠️ **必须用 `npm run tauri dev` 运行**。直接用浏览器开 `localhost:1420` 会让所有 Tauri 命令（对话、记忆）失效（没有后端）。
+
+### 构建发布版
+
+```bash
+npx tauri build --no-bundle    # 产物：desktop-pet.exe（前端已嵌入）
+```
+
+### 调试
+
+- **F12** — 应用内 Debug Panel：BrainState 实时快照、记忆 / 情绪编辑器、成本统计
+- **右键桌宠 → DevTools**（仅 dev）— `window.__pet` 钩子可模拟时段 / 强制入睡，详见 [`docs/verify-checklist.md`](docs/verify-checklist.md)
+
+---
+
+## 🧱 技术栈
+
+| 层 | 选型 | 说明 |
+|---|---|---|
+| 应用框架 | **Tauri v2** | Rust 后端，常驻内存 ~30–50MB（Electron 通常 150–300MB） |
+| 前端 | **React 19 + TypeScript** | 对话 UI、渲染编排 |
+| 渲染 | **PixiJS 7** | 占位用 pixi-live2d-display；最终角色璃走 **Spine + PixiJS** |
+| 存储 | **SQLite + sqlite-vec** | 情景记忆 + 原生向量检索 |
+| 嵌入 | **BGE-M3**（本地 ONNX Runtime） | 中文语义检索，离线 |
+| LLM | **DeepSeek v4**（默认）/ OpenAI / Ollama | OpenAI 兼容，用户自配 |
+| 构建 / 测试 | Vite 6 · Vitest · cargo test | |
+
+---
+
+## 🏗️ 架构 (Mind / Body / Soul)
+
+Liri 的内核遵循 **Mind / Body / Soul** 三层架构，并有一组不可违背的[架构原则](docs/Architecture-Principles.md)：
+
+- **Mind（思维）** —— Rust 维护所有状态（记忆、情绪、计划）；LLM 只负责"表达"，绝不维护状态。
+- **Body（身体）** —— React 前端，纯渲染 + 物理交互；不持有业务真相。
+- **Soul（灵魂）** —— 关系、性格、反思；让记忆升华为"懂你"。
+
+> 北极星原则摘要：① LLM 只表达不维护状态 ② BrainState 统一快照 ⑤ Mind-Body 解耦 ⑥ 每个能力可关闭 ⑧ 成本是设计约束 ⑫ 沉默也是表达。完整 12 条见 [`docs/Architecture-Principles.md`](docs/Architecture-Principles.md)。
+
+---
+
+## 📁 项目结构
+
+```
+desktop-pet/
+├── src/                    # 前端 (React + TS)
+│   ├── animation/          # FSM、昼夜节律、微行为、物理
+│   ├── Live2DCanvas.tsx    # 渲染层（占位，待迁 Spine）
+│   └── App.tsx             # 主交互编排
+├── src-tauri/              # 后端 (Rust)
+│   ├── src/mind/           # 记忆 / 检索 / 对话 / 反思 / 遗忘
+│   ├── src/emotion/        # 情绪状态机 + 稳态
+│   ├── src/soul/           # 关系 / 反思 / 复盘
+│   ├── src/db/             # SQLite + sqlite-vec
+│   └── resources/prompts/  # 角色提示词
+└── docs/                   # 设计文档、架构原则、ADR
+```
+
+---
+
+## 🧪 测试
+
+```bash
+npm test                                            # 前端单测 (Vitest)
+cargo test --manifest-path src-tauri/Cargo.toml --lib   # 后端库单测（快，无 LLM）
+```
+
+端到端 harness（调真实 LLM，需配好 key）见 [`src-tauri/tests/`](src-tauri/tests/)。
+
+---
+
+## 🗺️ 路线图
+
+- [x] Mind 记忆闭环（情景记忆 + 向量检索 + 巩固 + 遗忘）
+- [x] Soul 关系成长 + loneliness 主动陪伴 + 反思
+- [x] Body 物理交互 + 昼夜作息 + 情绪表情
+- [ ] **角色璃 Spine 高保真迁移**（替换占位 Live2D）
+- [ ] macOS / Linux 支持
+- [ ] 用户自定义形象
+
+完整计划见 [`docs/plans/`](docs/plans/)。
+
+---
+
+## 📄 文档
+
+- [架构原则（北极星）](docs/Architecture-Principles.md)
+- [产品设计 v2](docs/specs/2026-07-14-desktop-pet-design.md)
+- [璃 · 角色圣经](docs/specs/liri/)（设计规范 / 动画设计 / 制作规范）
+- [开发交接日志](docs/HANDOFF.md)
+- [ADR 决策记录](docs/decisions/)
+
+---
+
+## 🤝 贡献
+
+欢迎 Issue / PR！请先读[贡献指南](CONTRIBUTING.md)与[架构原则](docs/Architecture-Principles.md)——所有技术决策须与之相符。
+
+---
+
+## 📜 许可证
+
+[MIT License](LICENSE) · Copyright © 2026 SunJialei
+
+---
+
+## English abstract
+
+**Liri (璃)** is a Windows desktop companion pet with long-term memory, emotion, and genuine proactivity. Stack: **Tauri v2 (Rust) + React + PixiJS + SQLite/sqlite-vec + a local BGE-M3 embedder + any OpenAI-compatible LLM** (DeepSeek by default; Ollama for a fully-offline setup).
+
+She is not "a chatbot with memory" but "a creature with a life": she remembers what you tell her, grows closer as the relationship deepens, proactively reaches out when she misses you, and nudges you to sleep late at night. All data stays local; all models are self-configured — she belongs only to you.
+
+> Status: **early v0.1.** The on-screen avatar is still a placeholder Live2D model; the final character *Liri* (high-fidelity Spine + PixiJS skeletal animation) is in production — screenshots will follow. **Windows-only** for now.

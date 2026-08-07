@@ -1,7 +1,32 @@
 {
   "name": "desktop-pet",
-  "private": true,
   "version": "0.1.0",
+  "private": true,
+  "description": "Liri (璃) — a Windows desktop companion pet with memory, emotion, and proactivity. Tauri v2 + Rust + React + PixiJS/Live2D + SQLite/sqlite-vec + BGE-M3.",
+  "license": "MIT",
+  "author": "SunJialei",
+  "homepage": "https://github.com/sunjialei1237-beep/desktop-pet#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sunjialei1237-beep/desktop-pet.git"
+  },
+  "keywords": [
+    "desktop-pet",
+    "liri",
+    "tauri",
+    "rust",
+    "react",
+    "live2d",
+    "pixijs",
+    "companion",
+    "ai-companion",
+    "llm",
+    "sqlite",
+    "sqlite-vec",
+    "bge-m3",
+    "windows",
+    "virtual-pet"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",
