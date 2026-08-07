@@ -33,6 +33,12 @@ F12                                                         # Debug Panel（仅 
 ```
 注：除 `--lib` 外的 harness 调真实 LLM，需 AppData config 配好 key，慢（reasoning 模型）。
 
+## Git 工作流（自主，无需询问）
+- **功能/任务完成即提交**：不累积大量未提交改动（2026-08-07 曾积到 8499 行一次性入库，勿重复）。每完成一个可验证单元 → 自行 `git commit`，无需等用户发话。
+- **开新功能前自动 push**：进入下一个功能时，先把上一个功能的提交 `git push`，保证远端始终齐平/领先。
+- **直接提交到 `master`**：本仓库单人单线，不开分支（历史提交均在 master）。
+- 提交信息：conventional commits + 中文 body，无 attribution 尾注（全局 `git-workflow.md` 约定）。
+
 ## 文档导航
 - `docs/HANDOFF.md` — ⭐ 跨会话进度/交接（**每次会话先读**）
 - `docs/Architecture-Principles.md` — 12 条北极星原则
