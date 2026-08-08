@@ -25,6 +25,21 @@ struct ChatRequest {
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
+    /// DeepSeek v4 thinking-mode control (top-level `thinking` field). When
+    /// `disabled`, the model skips `reasoning_content` entirely — used on the
+    /// gate/extractor steps (pure classification) to cut per-turn reasoning
+    /// latency and root-fix 踩坑#3 (reasoning ate the completion budget → empty
+    /// content). `None` = omit the field (main reply keeps default thinking).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
+}
+
+/// DeepSeek v4 `thinking` parameter: `{"type": "enabled" | "disabled"}`.
+/// Verified on deepseek-v4-flash: `{type:disabled}` → 200, no reasoning_content.
+#[derive(Debug, Serialize, Clone)]
+struct ThinkingConfig {
+    #[serde(rename = "type")]
+    type_: String,
 }
 
 /// `stream_options` for the chat request — `include_usage` so the final
@@ -210,19 +225,31 @@ impl LlmClient {
         temperature: Option<f64>,
         max_tokens: Option<u32>,
     ) -> Result<ChatResult, LlmError> {
-        self.chat_with_model(&self.main_model, messages, temperature, max_tokens)
+        self.chat_with_model(&self.main_model, messages, temperature, max_tokens, None)
             .await
     }
 
     /// Sends a chat completion request using the reflection model (cheaper/faster).
+    /// The reflection model powers the gate + extractor steps (steps 1-2 of each
+    /// turn) — pure classification, no reasoning needed. Thinking is disabled
+    /// here to remove 2/3 of per-turn reasoning latency and root-fix 踩坑#3
+    /// (reasoning ate the completion budget → empty content → parse crash).
+    /// The main reply (step 3, `chat_stream`) is left untouched.
     pub async fn chat_reflection(
         &self,
         messages: &[ChatMessage],
         temperature: Option<f64>,
         max_tokens: Option<u32>,
     ) -> Result<ChatResult, LlmError> {
-        self.chat_with_model(&self.reflection_model, messages, temperature, max_tokens)
-            .await
+        let no_thinking = ThinkingConfig { type_: "disabled".to_string() };
+        self.chat_with_model(
+            &self.reflection_model,
+            messages,
+            temperature,
+            max_tokens,
+            Some(&no_thinking),
+        )
+        .await
     }
 
     async fn chat_with_model(
@@ -231,6 +258,7 @@ impl LlmClient {
         messages: &[ChatMessage],
         temperature: Option<f64>,
         max_tokens: Option<u32>,
+        thinking: Option<&ThinkingConfig>,
    ) -> Result<ChatResult, LlmError> {
         let url = self.build_url();
 
@@ -241,6 +269,7 @@ impl LlmClient {
             max_tokens,
             stream: Some(false),
             stream_options: None,
+            thinking: thinking.cloned(),
         };
 
         let resp = self
@@ -348,6 +377,7 @@ impl LlmClient {
             max_tokens,
             stream: Some(true),
             stream_options: Some(StreamOptions { include_usage: true }),
+            thinking: None,
         };
 
         let resp = self
