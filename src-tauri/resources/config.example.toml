@@ -32,3 +32,14 @@ log_level = "info"
 enable_time = true
 enable_presence = true
 enable_window = true
+
+[scheduler]
+# Scheduled Soul/cleanup "capability" toggles (Architecture Principle 6).
+# Turning one off degrades gracefully: "关掉 reflection, 记忆照常" — she just
+# stops doing that one background job. Core aliveness (emotion homeostasis,
+# pending-event check, emotion push) is NOT listed here — disabling those kills
+# her, which is not graceful. See lifecycle/scheduler.rs + ADR 2026-08-08.
+enable_reflection = true          # daily self-reflection → internal thoughts
+enable_consolidation = true       # compress >100 episodes into landmark memories
+enable_relationship_review = true # periodic "where the relationship stands" summary
+enable_lifecycle_cleanup = true   # purge old low-importance episodes

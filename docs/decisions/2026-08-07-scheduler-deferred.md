@@ -1,7 +1,7 @@
 # 决策记录:不引入统一 Scheduler (ADR)
 
 > 日期: 2026-08-07
-> 状态: Accepted (主动搁置 / Deferred by design)
+> 状态: **Superseded（2026-08-08）** —— 核心否决（不做 trait-Tick 多态）仍成立；本 ADR 预留的"可观测/可扩展"开口已被 [`2026-08-08-scheduler-observability.md`](2026-08-08-scheduler-observability.md) 兑现（观测层 + 能力开关）。
 > 决策者: Claude（自主推进批次）
 > 触发: 实施计划 v1.1 §A2「统一 Scheduler」——原计划把所有定时任务收进 `Scheduler { ticks_1s / ticks_30s / ticks_daily / ticks_conversation }` + `trait Tick`。重新评估时发现该设计的前提与现状不符。
 

@@ -202,6 +202,7 @@ pub fn run() {
             commands::get_llm_config,
             commands::update_llm_config,
             commands::get_debug_snapshot,
+            commands::get_scheduler_stats,
             commands::forget_fact,
             commands::delete_episode,
             commands::set_emotion,

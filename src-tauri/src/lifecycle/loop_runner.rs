@@ -62,7 +62,17 @@ fn medium_tick(app: &AppHandle) {
     // Returns elapsed seconds so we can detect suspend/resume.
     let elapsed = db
         .with_conn(|conn| crate::db::emotion::apply_homeostasis_time_aware(conn, &now))
-        .unwrap_or(0.0);
+        .unwrap_or_else(|e| {
+            crate::lifecycle::scheduler::record(
+                "homeostasis",
+                true,
+                "error",
+                Some(e.clone()),
+            );
+            0.0
+        });
+
+    crate::lifecycle::scheduler::record("homeostasis", true, "ok", None);
 
     if elapsed > crate::db::emotion::SUSPEND_THRESHOLD_SECS {
         log::info!(
@@ -92,9 +102,25 @@ fn medium_tick(app: &AppHandle) {
                     }),
                 );
             }
+            crate::lifecycle::scheduler::record(
+                "pending_check",
+                true,
+                "ok",
+                Some(format!("{} due", events.len())),
+            );
         }
-        Ok(_) => {}
-        Err(e) => log::warn!("Pending event check failed: {}", e),
+        Ok(_) => {
+            crate::lifecycle::scheduler::record("pending_check", true, "ok", None);
+        }
+        Err(e) => {
+            log::warn!("Pending event check failed: {}", e);
+            crate::lifecycle::scheduler::record(
+                "pending_check",
+                true,
+                "error",
+                Some(e.to_string()),
+            );
+        }
     }
 
     // 3. Push current emotion state to frontend.
@@ -112,8 +138,17 @@ fn medium_tick(app: &AppHandle) {
                     "rest_need": emo.rest_need,
                 }),
             );
+            crate::lifecycle::scheduler::record("emotion_push", true, "ok", None);
         }
-        Err(e) => log::warn!("Emotion push failed: {}", e),
+        Err(e) => {
+            log::warn!("Emotion push failed: {}", e);
+            crate::lifecycle::scheduler::record(
+                "emotion_push",
+                true,
+                "error",
+                Some(e.to_string()),
+            );
+        }
     }
 }
 
@@ -164,6 +199,7 @@ fn check_presence_transition(
     }
 
     *last_presence = now_presence;
+    crate::lifecycle::scheduler::record("presence_watch", true, "ok", None);
 }
 
 /// Loneliness above which she may proactively reach out (matches planner Rule 4).
@@ -231,6 +267,12 @@ fn check_lonely_nudge(app: &AppHandle, last_nudge: &mut Option<std::time::Instan
         loneliness, closeness
     );
     let _ = app.emit("lonely-nudge", serde_json::json!({ "loneliness": loneliness }));
+    crate::lifecycle::scheduler::record(
+        "lonely_nudge",
+        true,
+        "ok",
+        Some(format!("loneliness={:.2}", loneliness)),
+    );
     *last_nudge = Some(now);
 }
 
@@ -257,10 +299,32 @@ fn slow_tick(app: &AppHandle) {
     };
     let now = chrono::Utc::now().to_rfc3339();
 
+    // Scheduler capability toggles (Architecture #6). Defaults all-on.
+    let sched_cfg = app
+        .try_state::<AppState>()
+        .map(|s| s.config.scheduler.clone())
+        .unwrap_or_default();
+
     // 1. Episode memory decay.
     match db.with_conn(crate::db::episodes::decay_strength) {
-        Ok(count) => log::info!("Life loop: decayed {} episodes", count),
-        Err(e) => log::warn!("Memory decay failed: {}", e),
+        Ok(count) => {
+            log::info!("Life loop: decayed {} episodes", count);
+            crate::lifecycle::scheduler::record(
+                "memory_decay",
+                true,
+                "ok",
+                Some(format!("{} episodes", count)),
+            );
+        }
+        Err(e) => {
+            log::warn!("Memory decay failed: {}", e);
+            crate::lifecycle::scheduler::record(
+                "memory_decay",
+                true,
+                "error",
+                Some(e.to_string()),
+            );
+        }
     }
 
     // 2. Relationship closeness drift (after 24h of no interaction).
@@ -277,15 +341,46 @@ fn slow_tick(app: &AppHandle) {
                     }
                 }
             }
+            crate::lifecycle::scheduler::record("closeness_drift", true, "ok", None);
         }
-        Err(e) => log::warn!("Relationship check failed: {}", e),
+        Err(e) => {
+            log::warn!("Relationship check failed: {}", e);
+            crate::lifecycle::scheduler::record(
+                "closeness_drift",
+                true,
+                "error",
+                Some(e.to_string()),
+            );
+        }
     }
 
-    // 3. Lifecycle cleanup: remove old low-importance episodes.
-    match crate::soul::consolidation::lifecycle_cleanup(&db) {
-        Ok(count) if count > 0 => log::info!("Life loop: cleaned up {} old episodes", count),
-        Ok(_) => {}
-        Err(e) => log::warn!("Lifecycle cleanup failed: {}", e),
+    // 3. Lifecycle cleanup: remove old low-importance episodes (capability #6).
+    if crate::lifecycle::scheduler::should_run(sched_cfg.enable_lifecycle_cleanup) {
+        match crate::soul::consolidation::lifecycle_cleanup(&db) {
+            Ok(count) if count > 0 => {
+                log::info!("Life loop: cleaned up {} old episodes", count);
+                crate::lifecycle::scheduler::record(
+                    "lifecycle_cleanup",
+                    true,
+                    "ok",
+                    Some(format!("{} removed", count)),
+                );
+            }
+            Ok(_) => {
+                crate::lifecycle::scheduler::record("lifecycle_cleanup", true, "ok", None);
+            }
+            Err(e) => {
+                log::warn!("Lifecycle cleanup failed: {}", e);
+                crate::lifecycle::scheduler::record(
+                    "lifecycle_cleanup",
+                    true,
+                    "error",
+                    Some(e.to_string()),
+                );
+            }
+        }
+    } else {
+        crate::lifecycle::scheduler::record("lifecycle_cleanup", false, "skipped", None);
     }
 
     // 4. Soul: reflection if due (>20h) + consolidation if threshold met.
@@ -299,24 +394,103 @@ fn slow_tick(app: &AppHandle) {
         .and_then(|s| s.llm.lock().ok().and_then(|g| g.clone()));
     if let Some(llm) = llm {
         let _ = tauri::async_runtime::block_on(async {
-            match crate::soul::reflection::maybe_run_if_due(&db, &llm).await {
-                Ok(true) => log::info!("Life loop: reflection ran (daily)"),
-                Ok(false) => {}
-                Err(e) => log::warn!("Life loop reflection failed: {}", e),
+            // Reflection (capability #6: toggleable).
+            if crate::lifecycle::scheduler::should_run(sched_cfg.enable_reflection) {
+                match crate::soul::reflection::maybe_run_if_due(&db, &llm).await {
+                    Ok(true) => {
+                        log::info!("Life loop: reflection ran (daily)");
+                        crate::lifecycle::scheduler::record("reflection", true, "ok", None);
+                    }
+                    Ok(false) => {
+                        crate::lifecycle::scheduler::record(
+                            "reflection",
+                            true,
+                            "ok",
+                            Some("not due".to_string()),
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("Life loop reflection failed: {}", e);
+                        crate::lifecycle::scheduler::record(
+                            "reflection",
+                            true,
+                            "error",
+                            Some(e.to_string()),
+                        );
+                    }
+                }
+            } else {
+                crate::lifecycle::scheduler::record("reflection", false, "skipped", None);
             }
-            // Consolidation is a no-op below the 100-episode threshold
+            // Consolidation (capability #6). No-op below the 100-episode threshold
             // (internal guard in consolidate()), so calling it hourly is cheap.
-            if let Err(e) = crate::soul::consolidation::consolidate(&db, &llm).await {
-                log::warn!("Life loop consolidation failed: {}", e);
+            if crate::lifecycle::scheduler::should_run(sched_cfg.enable_consolidation) {
+                match crate::soul::consolidation::consolidate(&db, &llm).await {
+                    Ok(count) => {
+                        crate::lifecycle::scheduler::record(
+                            "consolidation",
+                            true,
+                            "ok",
+                            if count > 0 {
+                                Some(format!("{} episodes", count))
+                            } else {
+                                None
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("Life loop consolidation failed: {}", e);
+                        crate::lifecycle::scheduler::record(
+                            "consolidation",
+                            true,
+                            "error",
+                            Some(e.to_string()),
+                        );
+                    }
+                }
+            } else {
+                crate::lifecycle::scheduler::record("consolidation", false, "skipped", None);
             }
             // Relationship review: summarize where the relationship stands every
             // N new conversation episodes. Episode-gated (rare), so the extra
             // LLM call is acceptable (Architecture #8). Failure is logged, never
-            // fatal (Principle #6).
-            match crate::soul::review::maybe_run_review_if_due(&db, &llm).await {
-                Ok(true) => log::info!("Life loop: relationship review ran"),
-                Ok(false) => {}
-                Err(e) => log::warn!("Life loop relationship review failed: {}", e),
+            // fatal (Principle #6). Capability #6: toggleable.
+            if crate::lifecycle::scheduler::should_run(sched_cfg.enable_relationship_review) {
+                match crate::soul::review::maybe_run_review_if_due(&db, &llm).await {
+                    Ok(true) => {
+                        log::info!("Life loop: relationship review ran");
+                        crate::lifecycle::scheduler::record(
+                            "relationship_review",
+                            true,
+                            "ok",
+                            None,
+                        );
+                    }
+                    Ok(false) => {
+                        crate::lifecycle::scheduler::record(
+                            "relationship_review",
+                            true,
+                            "ok",
+                            Some("not due".to_string()),
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("Life loop relationship review failed: {}", e);
+                        crate::lifecycle::scheduler::record(
+                            "relationship_review",
+                            true,
+                            "error",
+                            Some(e.to_string()),
+                        );
+                    }
+                }
+            } else {
+                crate::lifecycle::scheduler::record(
+                    "relationship_review",
+                    false,
+                    "skipped",
+                    None,
+                );
             }
         });
     }

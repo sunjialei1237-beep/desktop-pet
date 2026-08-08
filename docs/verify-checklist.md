@@ -185,6 +185,16 @@ __pet.setHour(3); __pet.sleep()        // 入睡
 // 3. 此时若有到期 pending / loneliness 高 → 不应冒主动气泡（trigger_proactive Rule1 抑制）
 ```
 **通过判据**：Focus 分区计数 ≥25min 显示深度专注；专注期间主动气泡（welcome-back/lonely-nudge/proactive-prompt）被抑制；切到非 Work app（如浏览器/游戏）或锁屏离开 → 计数归零。`enable_window=false` 时恒不专注（#6 优雅退化）。代码层 `perception/focus.rs` 6 纯函数测已覆盖累积/重置/阈值；此项验"线程采样+抑制端到端"。
+
+### D9 — Scheduler 心跳可见 + 能力开关（§A2 观测层，2026-08-08）
+前提：`npm run tauri dev` → **F12** Debug Panel → **Scheduler** 分区。
+- **观测（#11）**：分区列出全部后台任务（homeostasis / pending_check / emotion_push / presence_watch / lonely_nudge / memory_decay / closeness_drift / lifecycle_cleanup / reflection / consolidation / relationship_review）。每行显示节拍 + 状态图标（✅ok / ⏭️skipped / ⚠️error / ⏸️idle）+ 最近运行时刻 + 消息。
+- **能力开关（#6）**：在 `%APPDATA%\DesktopPet\config.toml` 的 `[scheduler]` 段把 `enable_reflection = false`（重启 dev）→ 该行显示 ⏭️ skipped（已关闭）、**不**盖时间戳、且 reflection 不再调 LLM；其余任务照常 ok。
+```
+[scheduler]
+enable_reflection = false   # 其余保持 true
+```
+**通过判据**：① 分区在 ~2s 内出现 11 行且状态随心跳刷新（如 emotion_push 每 30s ✅）；② 关闭某能力后该行转 skipped 且其 last_run_at 不变（证明真没执行，非仅显示）；③ core aliveness 任务无"可关"标记（disableable=false），关不掉。代码层 `lifecycle/scheduler.rs` 6 纯函数测已覆盖 should_run / record / skipped 不盖戳；此项验"端到端上报 + Debug Panel 渲染 + 配置门控"。
 ## 本批次不易快速验收（代码层已单测）
 | 项 | 为何难快速触发 | 代码层依据 |
 |---|---|---|

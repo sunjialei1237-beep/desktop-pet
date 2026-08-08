@@ -1075,6 +1075,15 @@ pub async fn get_debug_snapshot(
     })
 }
 
+/// Scheduler registry snapshot (plan §A2, ADR 2026-08-08): one row per
+/// scheduled job — cadence / enable flag / last-run time / last status.
+/// Surfaced in the Debug Panel for explainability (#11). Read-only: the
+/// toggles live in config ([scheduler]).
+#[tauri::command]
+pub fn get_scheduler_stats() -> Vec<crate::lifecycle::JobStat> {
+    crate::lifecycle::scheduler_snapshot()
+}
+
 // ── Memory curation commands (Debug Panel: read-only → editable) ──────────
 // These let a human correct the pet's memory directly — forget a wrong fact,
 // drop a junk episode, cancel a stray reminder, or nudge her mood to test an

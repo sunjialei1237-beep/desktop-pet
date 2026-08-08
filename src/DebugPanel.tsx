@@ -49,6 +49,16 @@ interface DebugSnapshot {
   is_deep_focus: boolean;
 }
 
+interface JobStat {
+  name: string;
+  cadence: string;
+  enabled: boolean;
+  disableable: boolean;
+  last_run_at: string | null;
+  last_status: string; // "idle" | "ok" | "skipped" | "error"
+  last_message: string | null;
+}
+
 const EMO_KEYS = ["mood", "physical_energy", "social_battery", "stress", "loneliness"] as const;
 type EmoKey = (typeof EMO_KEYS)[number];
 type EmoDraft = Record<EmoKey, number>;
@@ -59,6 +69,7 @@ export function DebugPanel({ anim, onClose, onQuit }: {
   onQuit: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<DebugSnapshot | null>(null);
+  const [jobs, setJobs] = useState<JobStat[]>([]);
   const [editError, setEditError] = useState<string | null>(null);
   // Emotion editor draft. Seeded once from the live state on first load, then
   // left alone (current values stay visible in the Brain row above) so polling
@@ -84,6 +95,7 @@ export function DebugPanel({ anim, onClose, onQuit }: {
         }
       })
       .catch(() => {});
+    invoke<JobStat[]>("get_scheduler_stats").then(setJobs).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -128,6 +140,30 @@ export function DebugPanel({ anim, onClose, onQuit }: {
         <div className="debug-bar">
           <span>{snapshot.is_deep_focus ? "🔒 深度专注中（抑制主动气泡）" : `连续工作 ${Math.floor(snapshot.continuous_work_secs / 60)} min（≥25 min 进入专注）`}</span>
         </div>
+      </div>
+
+      <div className="debug-section">
+        <span className="debug-title">Scheduler</span>
+        <span className="debug-hint">后台任务心跳（#6 可关 / #11 可观测）。能力项在 config [scheduler] 关闭后显示 skipped。</span>
+        {jobs.map((j) => {
+          const statusIcon =
+            j.last_status === "ok" ? "✅" :
+            j.last_status === "skipped" ? "⏭️" :
+            j.last_status === "error" ? "⚠️" : "⏸️";
+          return (
+            <div className="debug-bar" key={j.name}>
+              <span>
+                {statusIcon} <strong>{j.name}</strong> · {j.cadence}
+                {!j.enabled && <em>（已关闭）</em>}
+                {j.disableable && j.enabled && <sub> 可关</sub>}
+                {j.last_run_at
+                  ? ` · 最近 ${j.last_run_at.slice(11, 19)}`
+                  : " · 尚未运行"}
+                {j.last_message ? ` · ${j.last_message}` : ""}
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       <div className="debug-section">

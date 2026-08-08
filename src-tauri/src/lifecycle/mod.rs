@@ -7,7 +7,9 @@
 pub mod firstrun;
 pub mod loop_runner;
 pub mod recovery;
+pub mod scheduler;
 
 pub use firstrun::run_firstrun_checks;
 pub use loop_runner::start_life_loop;
 pub use recovery::handle_llm_error;
+pub use scheduler::{snapshot as scheduler_snapshot, JobStat};

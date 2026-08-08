@@ -10,6 +10,8 @@ pub struct AppConfig {
     pub app: AppConfigData,
     #[serde(default)]
     pub perception: PerceptionConfig,
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
 }
 
 /// LLM API configuration (OpenAI-compatible).
@@ -55,6 +57,31 @@ impl Default for PerceptionConfig {
     }
 }
 
+/// Scheduled Soul/cleanup "capability" toggles (Architecture Principle 6: every
+/// capability must be disableable, and turning it off degrades gracefully —
+/// "关掉 Reflection, 记忆照常"). Core aliveness (homeostasis / emotion push /
+/// pending check) is NOT toggleable: disabling those kills her, which is not
+/// graceful. Missing [scheduler] section in older config files uses all-enabled
+/// defaults. See `lifecycle/scheduler.rs` + ADR 2026-08-08.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerConfig {
+    pub enable_reflection: bool,
+    pub enable_consolidation: bool,
+    pub enable_relationship_review: bool,
+    pub enable_lifecycle_cleanup: bool,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        SchedulerConfig {
+            enable_reflection: true,
+            enable_consolidation: true,
+            enable_relationship_review: true,
+            enable_lifecycle_cleanup: true,
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         AppConfig {
@@ -74,6 +101,7 @@ impl Default for AppConfig {
                 log_level: "info".to_string(),
             },
             perception: PerceptionConfig::default(),
+            scheduler: SchedulerConfig::default(),
         }
     }
 }
