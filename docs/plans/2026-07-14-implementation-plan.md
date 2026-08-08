@@ -1514,7 +1514,7 @@ fn set_click_through(window: Window, ignore: bool) {
 
 enum BehaviorState {
     Idle, Blink, LookAround, Stretch,
-    Sit, Walk, Think, Sleep,
+    Sit, Think, Sleep,
     Talking, TalkingShort, TalkingLong, TalkingExcited, TalkingSad,
     BeingTouched, BeingPet, BeingPoked, BeingDragged, BeingFed,
     Falling,
@@ -1522,9 +1522,11 @@ enum BehaviorState {
     Embarrassed,   // 纠正记忆时
     Recovering,    // API 故障时
 }
+// 注: Walk 状态已砍除 (2026-08-08)——桌宠定位"桌面陪伴驻留"，自主行走非可移动 NPC
+// 行为，不服务"陪伴"北极星 (#10 优先生命感不优先功能)。
 
 // 优先级系统 (设计文档 6.1):
-// 可打断: Walking, Idle, LookAround, Sit, Stretch, Think
+// 可打断: Idle, LookAround, Sit, Stretch, Think
 // 不可打断: Talking, Falling, Ritual, BeingDragged
 // 打断时: 平滑过渡 (Live2D motion fade), 不跳帧
 
@@ -1793,11 +1795,11 @@ const audioMap = {
     pet:       'pet.wav',      // 满足的哼声
     poke:      'poke.wav',     // 惊叫
     drag:      'drag.wav',     // 挣扎声
-    walk:      'walk.wav',     // 轻轻脚步
     sit:       'sit.wav',      // 布料摩擦
     sleep:     'sleep.wav',    // 轻柔呼吸
     land:      'land.wav',     // 弹性着地
 };
+// 注: walk.wav 脚步声已砍除 (2026-08-08)——无自主行走即无脚步声（走路计划见 12.2 砍除说明）。
 
 // 音效需要美术制作或采购 (前期可用占位音效)
 // 音量可配 (右键菜单无设置入口, 通过对话 "小声点" 调节)
@@ -1867,44 +1869,15 @@ class Physics {
 
 #### 12.2 空间记忆 — 有窝 (设计文档 6.8)
 
+> **⚠️ 已砍除 (2026-08-08)**：本节核心机制（自动走回窝 / 溜回去 / `walkTowards`）依赖自主行走，
+> 随走路计划一并砍除。桌宠定位"桌面陪伴驻留"——她停在用户放置的位置，靠拖拽移动（12.1 物理），
+> 不自主行走。"窝/领地感"若将来要做，应基于"驻留锚点"（spawn 在固定角落）而非 locomotion，
+> 属新设计、非本计划范围。里程碑（住满 100 天）可保留为时间向 Self Memory，不需要走路。
+
 ```typescript
-// 她有自己的"窝"。第一次出现随机挑一个角落蹲下, 以后一直认那个地方。
-// - 聊天结束后自动走回窝
-// - 拖到别处, 她待一会儿自己溜回去
-// - 长期形成领地感
-// - 窝本身可以作为 Episode
-
-class SpatialMemory {
-    nestPosition: { x: number, y: number };  // 首次随机选择角落
-    currentPos: { x: number, y: number };
-    returnTimer: number;  // 离窝后多久开始回去
-
-    init(screenBounds: Rect) {
-        // 四个角落随机选一个
-        const corners = [
-            { x: 50, y: screenBounds.bottom - 150 },      // 左下
-            { x: screenBounds.right - 150, y: screenBounds.bottom - 150 }, // 右下
-            { x: 50, y: 50 },                              // 左上
-            { x: screenBounds.right - 150, y: 50 },        // 右上
-        ];
-        this.nestPosition = corners[Math.floor(Math.random() * 4)];
-        this.currentPos = this.nestPosition;
-    }
-
-    tick(pet: PetEntity, dt: number, isInteracting: boolean) {
-        if (!isInteracting && this.currentPos !== this.nestPosition) {
-            this.returnTimer += dt;
-            if (this.returnTimer > 30) {  // 30 秒后开始走回窝
-                // Walk 动画朝窝移动
-                this.walkTowards(this.nestPosition, dt);
-            }
-        }
-    }
-
-    // 窝的里程碑:
-    // 第 100 天 → "我在这里住了一百天了"
-    // 首次离开窝太久 → Self Memory ("今天在外面待了好久")
-}
+// (已砍除) 原 SpatialMemory 走回窝逻辑依赖 Walk 动画，随走路计划移除。
+// 保留位置感的设计空间：驻留锚点（首次随机角落 spawn）+ 拖拽后停留，
+// 不引入 walkTowards / returnTimer 等 locomotion。
 ```
 
 #### 12.3 昼夜节律 (设计文档 6.7)
@@ -2445,8 +2418,8 @@ pub struct EvaluationReport {
 
 | 桌面元素 | 她的认知 | 互动 |
 |---------|----------|------|
-| 她的小窝 (角落) | 家, 安全感 | 回巢、休息 |
-| 任务栏 | 地面, 行走路径 | 栖息、行走 |
+| 她的小窝 (角落) | 家, 安全感 | 驻留、休息 (注: 走回窝已砍除 2026-08-08，靠 spawn 锚点) |
+| 任务栏 | 栖息面 | 栖息 (注: 行走路径已砍除 2026-08-08) |
 | Recycle Bin | "好可怕" | 绕开、偷看 |
 | Chrome | "他又在看网页" | 爬到标题栏偷看 |
 | VSCode | "他在工作!" | 安静陪伴、端茶 |

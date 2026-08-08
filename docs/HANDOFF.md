@@ -35,7 +35,7 @@
 > - [x] **Item 4 Grounding B 档运行时阻断**：07-31 主动开口幻觉 A 档（prompt rule 8 软约束）已修，此为 B 档运行时后备。两段：① **`check_groundedness` 加中文 claim 模式**（你说过/你之前提到/你最喜欢…10 个高精度模式）——原 EN-only 对中文回复零命中，且修了**隐藏 panic**：`+40 字节`窗口尾在 CJK 多字节码点中间切片会崩，抽 `ceil_char_boundary` 步进到字符边界。② **运行时阻断**（仅非流式主动气泡）：新 `proactive::grounding_guard`——首遍 `check_groundedness` 标记 → 追加"这是编造，重说一句，不确定就只表达此刻感受"系统消息 `llm.chat` 重试一次 → 仍编造则**抑制**（None，不冒泡），用户永不见幻觉。三生成器（generate/generate_welcome_back/generate_lonely_bubble）同款尾部全接（replace_all）。**流式 chat 路径不守卫**（已流出的 token 无法撤回），其 grounding 保持 warn-only 可观测（Debug Panel grounding_violations）。**lib 270（+3 grounding 纯测：中文幻觉/中文 grounded/CJK 窗口不 panic）/ check --tests ✅**。→ 待实跑见 D10。纯后端，release 需 rebuild。
 > - [x] **Item 5 推进 A1 全局 BrainState**：Task#9 的 ConverseCtx 统一了 converse 的*外*参（9→1）；本轮补*内*层——新 `mind/brain_state.rs::BrainState<'a>`（text/emotion/relationship/pending_due/retrieval 五借用字段，构造即指针拷贝零 clone），`planner::plan` 签名从 5 散参 → `&BrainState`（body 用 5 行别名桥接，字节不变），converse 构造一次 `brain` 传入。**采纳边界=planner**（旗舰纯决策）；prompt builder / budget allocator 各取子集，强制单一 mega-state 反而捆绑不需要的字段（项目已否决的投机抽象，见 §A2 ADR）→ 留干净 follow-up。**踩坑#4 命中并修**：改 plan 签名断 golden(7)+questioning(3) 共 10 harness 调用点 → 全包 `BrainState::new(...)`（两 harness 加 `use BrainState`）。planner.rs 4 import 降为 `#[cfg(test)]`（仅测试用）。**lib 270 / check --tests ✅ 无警告 / planner 11 单测全过**。纯重构无行为变化，无需手感验。
 > - [x] **Item 6 personality_drift_score 语义版**：规则启发式层（GROSS 漂移：话痨/卖萌/依赖）只抓"明显的"，对"简短、无 emoji、却冷淡/粗暴"的语气漂移盲视。补**语义漂移层**（cosine over embeddings）：`evaluation.rs` 加 `LIRI_PERSONA_REFERENCE`（4 句典型璃语气，温柔/好奇/安静 archetypal）+ 纯 `cosine_similarity(a,b)`（f64 累积防精度流失、零向量兜底 0 非 NaN、mismatched 长度取 min）+ `semantic_drift_score`（cosine 经 `SEMANTIC_FLOOR=0.4` 映射 [0.4,0.95]→[0,1]，与规则层 overall 同标度）。**架构 #1 纯函数**：模块只做 cosine 数学、永不碰 embedding 模型/DB，调用方喂向量 → 合成向量单测 CI 跑（5 测：identity/orthogonal/zero-vector 不 NaN/monotonic/clamp）；真实 BGE-M3 由 `tests/evaluation.rs` 新 Layer 3 端到端测接（镜像 embedding_ab_harness 的 `EmbeddingService::new+load().expect` 模式）。**实跑信号确认**：on-persona「嗯，这么晚了。早点休息吧。」cosine **0.851** vs off-persona「行吧，随便你，我无所谓。」cosine **0.781**——两句**规则层都给 1.0（盲）**，语义层区分出 0.07 gap，断言 on>off 通过。**lib 275（+5 semantic 合成向量测）/ check --tests ✅ / `--test evaluation` 6 规则测 + 1 semantic E2E 实跑 ✅**。→ 待实跑见 D11。纯后端，release 需 rebuild。
-> - [ ] 砍掉走路相关计划（implementation-plan.md + follow-up）
+> - [x] **砍掉走路相关计划 + 代码**：核验发现走路**不只是计划**——`src/animation/spatial.ts` + `App.tsx` 有正在运行的「走回窝」代码。AskUserQuestion 确认后代码一并砍。删 `spatial.ts` 整文件 + `App.tsx` 拆全部接线（import/spatialRef/实例化/setNest/物理循环走回块/isWalking state+className）+ `styles.css` 删 walking 规则；计划/设计文档（implementation-plan 12.2 整节 + Walk 状态 + walk.wav + FSM 图 + design 走路行）全标「已砍除 2026-08-08」移除。**tsc ✅ / vitest 24 ✅ / build ✅**。详见 §最近一轮 (2026-08-08) 走路砍除小节。release 需 rebuild。
 > 详见批次末 §最近一轮 (2026-08-08) 汇总。
 
 > **2026-08-07 自主批次推进中**（用户授权长程自主："按优先级推进所有后续内容，每项自测后更新 HANDOFF，不询问；待实跑项统一整理"）。逐项推进，每项自测（cargo test --lib / check --tests / tsc）绿后勾选。**release exe 在批次末统一 rebuild**（中间项都以库单测 + check 编译通过为正确性证据；批次末 Task #14 前一次性 `npx tauri build --no-bundle`，避免每项重构都重编一次前端嵌入）：
@@ -113,7 +113,7 @@
 
 **遗漏排查（HANDOFF 未单列但核验发现）**：
 - **A7 多气泡堆叠**：旧 backlog 已正确降级（App.tsx 单气泡覆盖语义，非堆叠）✅。
-- **③散落 follow-up**（Alt+Space 全局键 / 走路脚步声 loop / 害羞慢现 / rest_need 后端暴露 / speedModifier 接动画 / idle_weights JSON 化 / 选择性遗忘）均为小项，核验仍属未做，不升优先级。
+- **③散落 follow-up**（Alt+Space 全局键 / ~~走路脚步声 loop~~（2026-08-08 随走路计划砍除）/ 害羞慢现 / rest_need 后端暴露 / speedModifier 接动画 / idle_weights JSON 化 / 选择性遗忘）均为小项，核验仍属未做，不升优先级。
 
 **重排优先级（驱动：北极星 #10 + 阶梯 活着→记住→懂你→工具砍 + #8 成本 + #11 可观测 + "是否受阻"）**：
 
@@ -150,15 +150,15 @@
 
 ---
 
-### 走路相关计划砍除（2026-08-08）
+### 走路相关计划 + 代码砍除（2026-08-08）
 
-用户指示"砍掉和走路相关的计划"。核验 `docs/plans/2026-07-14-implementation-plan.md` + HANDOFF 散落 follow-up，标记/移除走路项：
-- **P11.5 `walk.wav` 脚步声素材**：从"音频素材"清单移除（落地声 `land.mp3` 保留，走路音砍）。
-- **P12.1 行走动画（walking state）**：从 BehaviorState / 动画状态机计划移除；桌宠定位"桌面陪伴驻留"，非可移动 NPC，走路不服务北极星。
-- **③ 散落 follow-up「走路脚步声 loop」**：从 backlog 移除（HANDOFF §审计 ③ 散落项已记）。
-- **B2 物理保留**：自由落体/任务栏弹跳/拖拽是"被交互"非"自主行走"，**不**在走路范畴，保留。
+用户指示"砍掉和走路相关的计划"。核验发现走路**不只是计划**——`src/animation/spatial.ts` + `App.tsx` 里有正在运行的「走回窝」代码（离窝 ~15min 后 OS 窗口自动走回角落窝，带 walking CSS 动画）。**AskUserQuestion 确认后，代码一并砍**（默认推荐项）。砍除范围：
+- **计划/设计文档**（`implementation-plan.md` + `specs/...design.md`）：BehaviorState 的 `Walk` 状态、FSM 可打断列表的 `Walking`、audioMap 的 `walk.wav`、**12.2「空间记忆—有窝」整节**（走回窝 locomotion）、任务栏表的"行走路径"、Physical Energy 的"走路消耗"、design FSM 图的 Walk 节点 + 音效表走路行——全部带「已砍除 2026-08-08」注释移除/标记。
+- **运行代码**：**删 `src/animation/spatial.ts` 整文件**（`SpatialMemory` 类纯走回窝逻辑，无走路即死）；`App.tsx` 拆接线（import / `spatialRef` / 实例化 / `setNest` / 物理循环里的 `spatial.tick`+`isWalking`+`setPosition` 走回块 / `isWalking` state / `walking` className）+ 物理循环 deps 从 `[awayMode,isThinking,attention,inputVisible]` 收为 `[awayMode]`（三者仅服务于走回 interacting 判定）；`styles.css` 删 `.walking` 规则 + `walk-bob` keyframes + 改分区标题。
+- **保留**：B2 物理自由落体/任务栏弹跳/拖拽（被交互非自主行走）、窝的 spawn 锚点语义（init 定位仍在，只是不再走回）。
+- **③ 散落 follow-up「走路脚步声 loop」**：从 backlog 移除（§审计 ③ 散落项已划线）。
 
-砍除理由统一：走路是工具性/探索性能力，违反"优先生命感不优先功能"（#10）且无陪伴语义。
+砍除理由统一：走路是工具性/探索性能力，违反"优先生命感不优先功能"（#10）且无陪伴语义；桌宠定位"桌面陪伴驻留"，拖到哪停哪。**验证**：`tsc --noEmit` ✅ / `vitest` 24 ✅ / `npm run build` ✅（3.81s）。release 需 rebuild。
 
 ---
 

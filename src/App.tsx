@@ -11,7 +11,6 @@ import { AnimationFSM, BehaviorState } from "./animation/fsm";
 import { pickNextBehavior } from "./animation/microBehavior";
 import { AttentionState, computeAttention, type PetRect } from "./animation/attention";
 import { type PetPosition } from "./animation/physics";
-import { SpatialMemory } from "./animation/spatial";
 import { createGravity, stepGravity, type GravityState } from "./animation/gravity";
 import { getCircadianState, deepNightMessages, TimeOfDay } from "./animation/circadian";
 import { DEFAULT_EMOTION, type EmotionVector } from "./animation/emotionDriver";
@@ -112,7 +111,6 @@ const transientTimerRef = useRef<number | null>(null);
   const closenessRef = useRef(0);
   const moodRef = useRef(0.5);
   const energyRef = useRef(0.7);
- const spatialRef = useRef<SpatialMemory | null>(null);
   // B2 (P12.1): free-fall + taskbar bounce. gravityRef drives the rAF loop
   // after a release mid-air; floorYRef/winSizeRef are refreshed on every
   // release so monitor changes are picked up.
@@ -132,11 +130,10 @@ const transientTimerRef = useRef<number | null>(null);
   // The physics loop reads/writes position via refs (not state) so moved events
   // and setPosition calls never re-create the loop mid-motion — the previous
   // state-driven deps re-created it every frame, resetting `lastTime` and
-  // making dt jitter (visible as stutter while walking/falling/bouncing).
+  // making dt jitter (visible as stutter while falling/bouncing).
   const petPosRef = useRef<PetPosition | null>(null);
   const isBeingDraggedRef = useRef(false);
   const lastOriginRefreshRef = useRef(0);
- const [isWalking, setIsWalking] = useState(false);
  const [isBeingDragged, setIsBeingDragged] = useState(false);
  const [soundMuted, setSoundMuted] = useState(false);
  const circadianRef = useRef(getCircadianState());
@@ -171,10 +168,6 @@ const transientTimerRef = useRef<number | null>(null);
   const modelBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
   const modelHitBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
   const canvasRectRef = useRef<{ left: number; top: number } | null>(null);
-
- if (!spatialRef.current) {
-    spatialRef.current = new SpatialMemory();
-  }
 
   if (!fsmRef.current) {
     fsmRef.current = new AnimationFSM();
@@ -491,7 +484,6 @@ const transientTimerRef = useRef<number | null>(null);
       const initPos = { x, y };
       try { await win.setPosition(new LogicalPosition(x, y)); } catch (e) { console.warn("[Init] setPosition failed", e); }
       console.log("[Init] window placed at", x, y, "screen:", screenW, screenH);
-     spatialRef.current!.setNest(initPos);
      petPosRef.current = initPos;
      // B2 (P12.1): cache window size + work-area bottom (taskbar top) once —
      // the fall/land physics collide against this floor. Refreshed again on
@@ -631,7 +623,7 @@ const transientTimerRef = useRef<number | null>(null);
     };
   }, [applyIgnore, inputVisible, showSettings, showDebug, isBeingDragged]);
 
-  // P12: Physics + spatial + circadian loop (Body layer, independent of LLM)
+  // P12: Physics + circadian loop (Body layer, independent of LLM)
   useEffect(() => {
     let raf = 0;
     let lastTime = performance.now();
@@ -640,14 +632,12 @@ const transientTimerRef = useRef<number | null>(null);
      const dt = Math.min(0.05, (now - lastTime) / 1000); // cap at 50ms
      lastTime = now;
 
-      const spatial = spatialRef.current!;
       const gravity = gravityRef.current;
       const pos = petPosRef.current;
 
       if (pos && !isBeingDraggedRef.current && !awayMode) {
         // B2 (P12.1): free-fall toward a hover point (1/3 of the way to the
-        // taskbar). Runs until grounded; spatial return-to-nest waits for
-        // grounding (isGrounded=false keeps the timer paused).
+        // taskbar). Runs until grounded.
         if (!gravity.grounded) {
           const win = getCurrentWindow();
           const bottom = pos.y + winSizeRef.current.h;
@@ -670,7 +660,7 @@ const transientTimerRef = useRef<number | null>(null);
         } else {
           // B2 (P12.1): drag-end detection. After a native drag the window
           // goes still once the user releases; if she was left above the
-          // work-area bottom, start free-fall (spatial waits for grounding).
+          // work-area bottom, start free-fall.
           if (wasDraggedRef.current && now - lastMovedRef.current > 300) {
             wasDraggedRef.current = false;
             if (pos.y + winSizeRef.current.h < floorYRef.current - 2) {
@@ -683,20 +673,8 @@ const transientTimerRef = useRef<number | null>(null);
               sound.play("land"); // dropped right on the floor: thud now
             }
           }
-          // 方案 B: no in-window free-fall. Only spatial "return to nest" moves the
-          // OS window smoothly toward the nest position via setPosition.
-          const interacting = isThinking || attention === AttentionState.Focused || inputVisible;
-          const spatialResult = spatial.tick(pos, dt, interacting, gravity.grounded);
-          if (spatialResult.isWalking) {
-            petPosRef.current = spatialResult.newPos;
-            setIsWalking(true);
-            // Move the actual window to match (fire-and-forget; batched by the browser).
-            getCurrentWindow()
-              .setPosition(new LogicalPosition(Math.round(spatialResult.newPos.x), Math.round(spatialResult.newPos.y)))
-              .catch(() => {});
-          } else {
-            setIsWalking(false);
-          }
+          // (2026-08-08) Walk-back-to-nest removed — 桌宠驻留，拖到哪停哪，
+          // 不再自主走回角落窝。Body 层只剩自由落体 + 落地弹跳 + 昼夜节律。
         }
       }
 
@@ -708,7 +686,7 @@ const transientTimerRef = useRef<number | null>(null);
 
    raf = requestAnimationFrame(loop);
    return () => cancelAnimationFrame(raf);
-  }, [awayMode, isThinking, attention, inputVisible]);
+  }, [awayMode]);
 
   // P12: DeepNight/LateNight proactive nudge. Extracted into a callback so the
   // dev verify hook (window.__pet.probeNudge) can fire one on demand instead of
@@ -1113,7 +1091,7 @@ const handleBodyClick = useCallback(() => {
 
      <div
        ref={petRef}
-      className={`pet-char-wrapper ${isWalking ? "walking" : ""} ${isBeingDragged ? "dragging" : ""}`}
+      className={`pet-char-wrapper ${isBeingDragged ? "dragging" : ""}`}
       data-behavior={behavior}
       onDoubleClick={() => {
         markInteraction();

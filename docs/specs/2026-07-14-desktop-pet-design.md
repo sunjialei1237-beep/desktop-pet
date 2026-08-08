@@ -344,15 +344,17 @@ Body 是桌宠的第二套 UI, 持续运行, 不依赖 Mind。静止等于死亡
 Behavior States:
   Idle <-> Blink <-> Look Around <-> Stretch
     |                                     |
-    +-> Sit <-> Walk <-> Think <-> Sleep -+
+    +-> Sit <-> Think <-> Sleep -+
     +-> Talking (Short / Long / Excited / Sad Reply)
     +-> BeingTouched (摸头 / 戳脸 / 拖拽 / 喂食)
     +-> Falling (自由落体)
     +-> Ritual (仪式动画)
 ```
+> 注: Walk 状态已砍除 (2026-08-08)——桌宠定位"桌面陪伴驻留"，不自主行走（移动靠拖拽物理），
+> 走路不服务"陪伴"北极星。
 
 每个行为状态映射到一组动画。状态切换有优先级:
-- 可打断: Walking, Idle, Look Around
+- 可打断: Idle, Look Around
 - 不可打断: Talking, Falling, Ritual
 - 打断时: 平滑过渡到新状态, 不跳帧
 
@@ -403,7 +405,6 @@ Idle Variety: 加权随机 + Cooldown + Recent History 回避。刚做过打哈�
 | 摸头 | 满足的哼声 |
 | 戳脸 | 惊叫 |
 | 拖拽 | 挣扎声 |
-| 走路 | 轻轻脚步 |
 | 坐下 | 布料摩擦 |
 | 睡觉 | 轻柔呼吸 |
 | 落地 | 弹性着地 |
@@ -708,7 +709,7 @@ Emotion 是 Mind 和 Body 之间的桥梁: Mind 写入状态, Body 读取状态�
 | 维度 | 说明 |
 |------|------|
 | 亲密度 | 0-100, 对数曲线增长, 不同阶段速率不同, 可下降 |
-| Physical Energy | 体能, 蹦跳/走路消耗, 休息恢复 |
+| Physical Energy | 体能, 蹦跳消耗, 休息恢复 |
 | Social Battery | 社交电量, 连续聊天消耗, 独处恢复 |
 | Mood | 当前心情 (开心/平静/担心/调皮...) |
 | Stress | 压力值, 长时间高强度交互后升高 |
