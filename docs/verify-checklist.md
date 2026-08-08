@@ -195,6 +195,12 @@ __pet.setHour(3); __pet.sleep()        // 入睡
 enable_reflection = false   # 其余保持 true
 ```
 **通过判据**：① 分区在 ~2s 内出现 11 行且状态随心跳刷新（如 emotion_push 每 30s ✅）；② 关闭某能力后该行转 skipped 且其 last_run_at 不变（证明真没执行，非仅显示）；③ core aliveness 任务无"可关"标记（disableable=false），关不掉。代码层 `lifecycle/scheduler.rs` 6 纯函数测已覆盖 should_run / record / skipped 不盖戳；此项验"端到端上报 + Debug Panel 渲染 + 配置门控"。
+
+### D10 — Grounding B 档运行时阻断（主动气泡防编造，2026-08-08）
+> 07-31 主动开口幻觉的 A 档（prompt 软约束 rule 8）已修；此为 B 档运行时后备。仅作用于**非流式的主动气泡**（welcome-back / lonely / proactive）——流式 chat 路径无法事后撤回已显示 token，其 grounding 保持 warn-only 可观测。
+- **中文检测生效**：现 `check_groundedness` 含中文 claim 模式（你说过/你之前提到/你最喜欢…），之前 EN-only 对中文回复零命中。
+- **运行时阻断**：主动气泡首遍若被 `check_groundedness` 标记 → 追加"这是编造，重说一句，不确定就只表达此刻感受"系统消息重试一次 → 仍编造则**抑制**（返回 None，不冒泡），用户永不见幻觉。
+**通过判据**：① Debug Panel Last Turn 的 grounding_violations 在中文幻觉回复（如"你说过你每周爬山"无对应记忆）时非空（证明中文检测生效）；② 触发主动气泡时若 LLM 偶发编造，日志见 `[grounding-B] proactive bubble flagged...retrying`，最终要么冒出干净重述、要么不冒（绝不冒幻觉原文）。代码层 `grounding.rs` 3 新纯函数测（中文幻觉/中文 grounded/CJK 窗口不 panic）已覆盖检测；此项验"端到端重试+抑制"。
 ## 本批次不易快速验收（代码层已单测）
 | 项 | 为何难快速触发 | 代码层依据 |
 |---|---|---|

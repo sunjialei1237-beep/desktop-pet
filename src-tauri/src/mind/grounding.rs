@@ -340,18 +340,41 @@ pub fn check_groundedness(
         .map(|e| e.episode.summary.as_str())
         .collect();
 
-    // Check for claim patterns: "you said...", "you like...", "your..."
-    // If response contains assertion about user but no matching memory, flag it.
+    // Claim patterns: phrases that assert something about the user's past or
+    // preferences. If the response makes such a claim but no provided memory
+    // overlaps the claim window, flag it. English + Chinese — Liri replies in
+    // Chinese, so the EN-only set caught nothing. Patterns are kept
+    // high-precision (a generic "你的" would flag every normal sentence).
     let claim_patterns = [
-        "you said", "you mentioned", "you told", "you like",
-        "you prefer", "you have", "your ",
+        "you said",
+        "you mentioned",
+        "you told",
+        "you like",
+        "you prefer",
+        "you have",
+        "your ",
+        // Chinese: assert a prior statement or a stable preference.
+        "你说过",
+        "你之前说",
+        "你之前提到",
+        "你之前提过",
+        "你不是说",
+        "你告诉过我",
+        "你跟我说过",
+        "你最喜欢",
+        "你最爱的",
+        "你一直很喜欢",
     ];
     let lower = response.to_lowercase();
 
     for pattern in &claim_patterns {
         if let Some(pos) = lower.find(pattern) {
-            // Extract a window after the claim pattern.
-            let window_end = (pos + pattern.len() + 40).min(response.len());
+            // Extract a window after the claim pattern. The end offset is in
+            // BYTES; +40 into Chinese text can land inside a multi-byte CJK
+            // code point, and slicing there would panic — step up to the next
+            // char boundary (ceil_char_boundary).
+            let target = (pos + pattern.len() + 40).min(response.len());
+            let window_end = ceil_char_boundary(response, target);
             let window = &response[pos..window_end];
             let window_lower = window.to_lowercase();
 
@@ -381,6 +404,21 @@ pub fn check_groundedness(
     }
 
     violations
+}
+
+/// Smallest char-boundary byte offset `>= target`, clamped to the string
+/// length. `target` may fall inside a multi-byte (CJK) code point; slicing the
+/// string there panics, so advance to the next boundary. Mirrors the
+/// nightly `str::ceil_char_boundary` so we stay on stable Rust.
+fn ceil_char_boundary(s: &str, target: usize) -> usize {
+    if target >= s.len() {
+        return s.len();
+    }
+    let mut i = target;
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
 }
 
 #[cfg(test)]
@@ -555,6 +593,54 @@ mod tests {
             &retrieval,
         );
         assert!(!violations.is_empty(), "hiking is NOT in provided memories");
+    }
+
+    #[test]
+    fn test_groundedness_chinese_hallucination() {
+        // Liri replies in Chinese — the EN-only patterns caught nothing.
+        let retrieval = retrieval_with_data();
+        let violations =
+            check_groundedness("你说过你每个周末都去爬山，对吧？", &retrieval);
+        assert!(
+            !violations.is_empty(),
+            "爬山/hiking is NOT in provided memories"
+        );
+    }
+
+    #[test]
+    fn test_groundedness_chinese_grounded() {
+        // A Chinese claim that IS backed by a provided memory must pass.
+        let mut retrieval = empty_retrieval();
+        retrieval.facts.push(Fact {
+            id: "f_cn".to_string(),
+            category: "preference".to_string(),
+            key: "drink".to_string(),
+            value: "奶茶".to_string(),
+            confidence: 0.9,
+            valid_from: None,
+            valid_to: None,
+            source_episode: None,
+            mention_count: 1,
+            created_at: "2026-08-08T00:00:00+00:00".to_string(),
+            updated_at: "2026-08-08T00:00:00+00:00".to_string(),
+        });
+        let violations = check_groundedness("你最喜欢奶茶对吧，给你带了一杯。", &retrieval);
+        assert!(
+            violations.is_empty(),
+            "奶茶 IS in provided memories: {:?}",
+            violations
+        );
+    }
+
+    #[test]
+    fn test_groundedness_cjk_window_does_not_panic() {
+        // A long Chinese response where the claim sits deep in multi-byte text:
+        // the +40-byte window end must round up to a char boundary, not panic.
+        let retrieval = empty_retrieval();
+        let padding = "今天天气真不错呀".repeat(20);
+        let response = format!("{padding}你说过你从小就住在月球上呢。");
+        let violations = check_groundedness(&response, &retrieval);
+        assert!(!violations.is_empty(), "月球 is not in memories");
     }
 
     #[test]

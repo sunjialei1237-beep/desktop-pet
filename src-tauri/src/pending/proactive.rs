@@ -94,6 +94,64 @@ pub struct BubbleOutcome {
     pub anchor: String,
 }
 
+/// B-tier runtime grounding guard (plan B1b / Architecture #3 "memory may
+/// forget, never fabricate"). The proactive prompts already carry the rule-8
+/// "严禁编造" soft constraint (the A-tier fix); this is the runtime backstop.
+///
+/// Runs AFTER the first non-streaming LLM pass: if `check_groundedness` flags an
+/// ungrounded claim about the user, retry once with a correction instruction;
+/// if the retry is still fabricated, suppress (return `None`) so the user never
+/// sees the hallucination. Cost is bounded (#8): the extra call fires only when
+/// a violation is detected (rare).
+///
+/// The streamed chat path (`converse`) is intentionally NOT guarded here — a
+/// hallucinated reply is already token-streamed to the live bubble by the time
+/// the full text can be checked, so it can't be cleanly retracted. Its grounding
+/// stays warn-only observability (Debug Panel). Proactive bubbles return a full
+/// string with no streaming, so the block is clean — this is also where the
+/// 07-31 hallucination actually occurred.
+async fn grounding_guard(
+    reply: String,
+    retrieval: &crate::mind::retrieval::RetrievalResult,
+    messages: &[ChatMessage],
+    llm: &LlmClient,
+) -> Option<String> {
+    if reply.is_empty() {
+        return None;
+    }
+    if crate::mind::grounding::check_groundedness(&reply, retrieval).is_empty() {
+        return Some(reply);
+    }
+    log::warn!("[grounding-B] proactive bubble flagged as ungrounded; retrying once");
+    let mut retry = messages.to_vec();
+    retry.push(ChatMessage {
+        role: "assistant".to_string(),
+        content: reply.clone(),
+    });
+    retry.push(ChatMessage {
+        role: "system".to_string(),
+        content: "你上一句话把记忆里没有的事说成了关于 ta 的经历或喜好——这是编造。请重新只说一句：不要编造任何关于 ta 的记忆或偏好，不确定就只表达你此刻的感受，绝不替 ta 编过往。".to_string(),
+    });
+    match llm.chat(&retry, Some(0.8), Some(4096)).await {
+        Ok(r) => {
+            let reply2 = r.content.trim().to_string();
+            if !reply2.is_empty()
+                && crate::mind::grounding::check_groundedness(&reply2, retrieval).is_empty()
+            {
+                log::info!("[grounding-B] retry produced a clean reply");
+                Some(reply2)
+            } else {
+                log::warn!("[grounding-B] still ungrounded after retry; suppressing bubble");
+                None
+            }
+        }
+        Err(e) => {
+            log::warn!("[grounding-B] retry LLM error: {:?}; suppressing bubble", e);
+            None
+        }
+    }
+}
+
 /// Generates a proactive bubble by picking a memory anchor — a due pending
 /// event first, then an anchorable fact, then a recent episode — and running it
 /// through the same retrieval + budget + LLM pipeline as a normal turn, with
@@ -190,13 +248,13 @@ pub async fn generate(
         db.with_conn(|conn| crate::db::relationship::record_interaction(conn, "proactive", &now));
 
     let reply = chat_result.content.trim().to_string();
-    if reply.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(BubbleOutcome {
+    let reply = grounding_guard(reply, &retrieval, &messages, llm).await;
+    match reply {
+        Some(reply) => Ok(Some(BubbleOutcome {
             reply,
             anchor: memory_anchor,
-        }))
+        })),
+        None => Ok(None),
     }
 }
 
@@ -325,13 +383,13 @@ pub async fn generate_welcome_back(
     });
 
     let reply = chat_result.content.trim().to_string();
-    if reply.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(BubbleOutcome {
+    let reply = grounding_guard(reply, &retrieval, &messages, llm).await;
+    match reply {
+        Some(reply) => Ok(Some(BubbleOutcome {
             reply,
             anchor: memory_anchor,
-        }))
+        })),
+        None => Ok(None),
     }
 }
 
@@ -431,13 +489,13 @@ pub async fn generate_lonely_bubble(
     });
 
     let reply = chat_result.content.trim().to_string();
-    if reply.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(BubbleOutcome {
+    let reply = grounding_guard(reply, &retrieval, &messages, llm).await;
+    match reply {
+        Some(reply) => Ok(Some(BubbleOutcome {
             reply,
             anchor: memory_anchor,
-        }))
+        })),
+        None => Ok(None),
     }
 }
 
