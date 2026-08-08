@@ -196,7 +196,7 @@ fn format_intent(intent: &Intent) -> String {
         s.push_str("\n(be proactive: bring up the memory naturally)");
     }
     if intent.goal == "engage" {
-        s.push_str("\n(engage: react specifically to what they just shared, then ask ONE genuine follow-up question about it — not a generic '怎么样')");
+        s.push_str("\n(engage: react specifically to what they just shared — prove you listened with something concrete. You may ask ONE genuine follow-up if you're actually curious, but often a single heartfelt line with no question is more natural. Never ask a generic '怎么样'.)");
     } else if intent.goal == "react" {
         s.push_str("\n(react: react warmly and specifically to what they just shared, but do NOT ask any question this turn — just be present and show you listened)");
     }
