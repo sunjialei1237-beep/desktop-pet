@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-08（续⁶·真人感 prompt 调教——gate/extractor 关思考提速+根治空content / 150 条 A/B 诊断+复测：提问结尾率 35%→14%、G12分享 80%→30%、G5哇开场 5/10→0/10；human_like 4.24→4.11（变短非变冷）；release exe 已 rebuild `D:\cargo-target\desktop-pet\release\desktop-pet.exe` 17:48 新鲜。详见 `docs/review/realism-report-2026-08-08.md`）**
+> 最后更新：**2026-08-08（续⁷·速度+性格+幻觉根因）—— main 回复关思考(thinking-off) → 单次 FULL max 4s/mean 2.7s/0 超 5s（**option A 不做**）；system.txt round-2 无条件 soul block + 8 样例回归性格(human 4.07)；grounding.rs 空记忆显式标记根治"你上次说"编造(fresh 组全 0)，G6 越界 6/10 = 性格同源 trade 残留。代码已验证 lib 全过 + 注释修诚实。**⏳ release 待 rebuild；完整 6 轮 arc + 明天步骤见 §最近一轮 (续⁷) + `docs/review/prompt-quality-report-2026-08-08-retest6.md`**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,8 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-08（续⁷）速度+性格+幻觉根因 —— ⏳ 已暂停，明天继续**（用户"暂停任务，写进 HANDOFF，明天继续，不要丢细节"）。6 轮 A/B 已跑完、代码改完验证（lib 277 全过）+ 已提交。**明天接手三步**：① **rebuild release**（`taskkill //IM desktop-pet.exe //F`→等~3s→`npx tauri build --no-bundle`→产物 `D:\cargo-target\desktop-pet\release\desktop-pet.exe`）② **向用户完整诚实报告**：速度已解决（main 关思考，FULL max4s/mean2.7s/0超5s → **option A 不做**）/ 性格回归（round-2 soul block+8样例，human 4.07）/ 空记忆幻觉**已修**（grounding 显式标记，fresh 组全 0）/ **须披露 G6 越界 6/10 = 性格同源 trade**（样例教"上次说"framing = 用户要的"连过去"性格，不可全除）/ ~8pp run-to-run 方差。③ **可选**：用户在意 G6 → 软化 ex2/ex3 出处 framing（**削弱性格，需权衡**）或 grounding B 档运行时阻断。**完整 6 轮 arc + 根因 + 代码改动清单见 §最近一轮 (续⁷)**。
 
 > **2026-08-08 自主批次推进中**（用户授权："挨个推进 2,3,4,5,6 [审计清单里 5 个未实现/未接线项]，每完成一项自主验证、更新 HANDOFF + 新增待测试，不报告不询问；并砍掉走路相关计划"。逐项推进，每项 cargo test --lib / check --tests / tsc 绿后勾选并提交；release exe 在批次末统一 rebuild）：
 > - [x] **Item 2 接线 is_deep_focus（P14.3）**：审计发现 `commands.rs:352,446` + `proactive.rs` 全硬编码 `is_deep_focus:false` → `trigger_proactive` Rule1（深度专注抑制）永不为真、空转。新 `perception/focus.rs`：纯函数 `update_continuous`（同一 Work app 累积 / 切换 Work app 重置 / 非 Work 重置）+ 后台 30s 采样线程（镜像 cursor::start）发布 `CONTINUOUS_WORK_SECS`/`IS_DEEP_FOCUS` 全局 atomic；阈值 25min（计划 P14.3）。两生产点接真实值（`get_perception` + `check_proactive`，均按 `enable_window` 门控 #6）；消费端 `trigger_proactive` Rule1 现在真生效。DebugSnapshot + DebugPanel 加 Focus 分区（#11 可观测）。**lib 261（+6 focus 纯函数测）/ check --tests ✅ / tsc ✅**。→ 待实跑见 D8。纯后端+前端，release 需 rebuild。
@@ -143,6 +145,58 @@
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
 
 ---
+
+## §最近一轮 (2026-08-08 续⁷)：速度（主回复关思考 ≤5s）+ 性格回归 + 记忆幻觉根因修复（6 轮 A/B，⏳ 未 rebuild）
+
+**任务**：用户两条抱怨——① "消息回复速度还是有些慢" ② "现在的回复好像弱化了很多性格方面的部分…更像是通用回答，体现不出性格差异"。沿用续⁶ 的 150 条 A/B 闭环 + 分档提问率（G3/G11-G15<30%、G1/G2 直答 0%、G5 自然好奇）。**硬门（用户原话）**："等复测结果。单次回复在5S之外则做A"——A = speculative-parallel（gate+extractor `tokio::join` 并行 + 条件丢弃）。即：复测单次 ≤5s 则**不做 A**。
+
+**调研·AIRI 速度**（firecrawl+GitHub）：AIRI 快因**本地 vLLM + 流式**（本地推理零网络 RTT、首字即出）。我们 API-bound（DeepSeek 远程），每轮 = 3 次**串行** LLM 调用（gate 分类 → extractor 记忆 → main 流式回复），无法复制 AIRI 本地优势；只能砍串行链里的思考开销。
+
+**速度诊断 + 5s 门裁决**：续⁶ 已关 gate/extractor 思考（commit 8aa0d61）。剩余首字延迟杠杆 = **main reply 思考**。三档实验（150 条同 CASES 同 judge）：
+
+| 配置 | main 思考 | FULL 时延（migration→emotion-react）| >5s | 质量 |
+|---|---|---|---|---|
+| round1(post) | enabled | 慢（reasoning 独占首字） | 多 | 续⁶ 基线 |
+| retest4 | `reasoning_effort:low` | max **6s** | **破门** | 无增益（25%≈27%，方差内）|
+| retest6（终态）| **disabled** | max **4s** / mean **2.7s** / P95 4s | **0/119** | 性靠 grounding 非推理 |
+
+→ **OFF 满足 5s 门**（retest6：FULL max 4s mean 2.7s 0 超时；MAIN 流式 mean 0.9s）。**option A 不做**（用户"5s 外才做 A"，未触发）。
+
+**性格回归（system.txt round-2）**：soul block 改**无条件**注入（续⁶ 的"空记忆时不连过去"条件化 → retest3 实测**反而更差**——经典反模式，"不要编造"反而 prime 该行为，已回退）；样例 6→**8 条**，memory-threading 加重（ex2"记得你之前念叨了好久"/ex3"你上次立的早睡flag"/ex8 唯一提问"肥瘦怎么样"）。恢复"上次说/我记得你"连结 tissue——这正是续⁶ 后用户感觉"弱化"要找回的。合同锁定串（温柔/好奇/.../璃/狐/严禁编造）全保留。human_like **4.07**。
+
+**幻觉根因（grounding.rs，本轮核心发现）**：`format_memories` 空记忆时 `return String::new()` → **整段 [Memories] 不进 prompt** → 模型看到 soul block"thread memory"指令却无记忆段 → 从样例编造"你上次说…"（retest2 起空记忆组幻觉主因）。**修复**：空时返回显式内联标记 `[Memories]\n（暂无相关记忆——不要提及或编造任何过往，只就当下回应）`；非空时尾注"以上即全部记忆，不得添加未列项目、不得编造'上次说/提过/念叨'出处"（防 G6 越界）。**教训：内联信号 > 埋藏规则**（thinking-off 尤甚——模型不细读 system 规则，但读紧贴上下文的标记）。
+
+**6 轮幻觉 arc**（验证根因 + 修复路径）：
+
+| 轮 | 配置 | 总幻觉 | G6 | 备注 |
+|---|---|---|---|---|
+| round1(post) | ON + 旧 6 样例 | 9 | 4 | 续⁶ 收尾态 |
+| retest2 | OFF + round-2 8 样例 | 12 | 4 | 关思考提速，方差升 |
+| retest3 | OFF + soul 条件化 | 12 | 5 | "勿编造"反模式 → **回退** |
+| retest4 | LOW effort | **19** | 4 | 最差 + 破 5s 门 → **回退** |
+| retest5 | OFF + 空标记 | 10 | 7 | **空记忆修复**（fresh 组全 0）|
+| retest6 | OFF + 空标记 + footer | 11 | 6 | footer 几乎无效（7→6，方差内）|
+
+**方差洞察**：temp 0.8 + thinking-off → **~8pp run-to-run 方差 > 微调效果**。结论：**可靠性只能靠 grounding 层内联信号，不靠思考模式或 system 埋藏规则**。空记忆修复（结构层）是唯一稳健胜利；G6 越界压不动。
+
+**诚实权衡**：
+- ✅ **空记忆幻觉已修复**：retest5/6 所有 fresh-DB 组（G1/G2/G4/G5/G11/G13/G15）= 0 幻觉。
+- ⚠️ **G6 越界残留 6/10**：真实记忆（奶茶/火锅/猫糯米/找实习）+ 编造"上次说/念叨"**出处**（topic 有据，出处虚构）。**根因 = 样例本身**（ex2/ex3 教"上次说"framing）= **用户要的性格**（soul block"常把现在和过去连起来，这是你最像你的地方"）。**G6 越界与所求性格是同一机制，不可完全分离**——这是 trade，非 bug。footer（内联规则）压不过样例（Ali:Chat "sample outranks rules"）。
+- ✅ **提问结尾率 17%**（retest6）< 30% 达标；human 4.07 稳。
+- 其余幻觉：G7 提醒 3（提醒语境偏客服化）、G3/G10 各 1。
+
+**代码改动（lib 277 全过，client.rs 注释已修诚实）**：
+- `converse.rs`：main reply `ThinkingConfig::disabled()`（关思考）+ `reasoning_effort: None`。
+- `client.rs`：加 `reasoning_effort` 字段 + `chat_stream` 扩参 + `enabled()` 构造器——**LOW 回退后全部 dormant**（converse 传 None，`skip_serializing_if` 不上线）。注释已改"reserved plumbing / currently unused"，明天接手**勿误以为在用**。
+- `system.txt`：round-2 无条件 soul block + 8 样例。
+- `grounding.rs`：空记忆显式标记 + 非空 footer + `test_empty_memories_section` 断言更新（已过）。
+
+**⏳ 未完成（明天接手，按序）**：
+1. **rebuild release**（重操作，本轮未做）：`taskkill //IM desktop-pet.exe //F` → 等 ~3s → `npx tauri build --no-bundle` → 产物 `D:\cargo-target\desktop-pet\release\desktop-pet.exe`。
+2. **向用户完整诚实报告**：速度已解决（≤5s，不做 A）/ 性格已回归（human 4.07）/ 幻觉根因定位并修（空记忆全 0）/ **披露 G6 trade**（越界=性格同源，不可全除）+ 方差（~8pp）。
+3. **可选 follow-up（若用户在意 G6）**：① 软化 ex2/ex3 的"上次说"出处 framing（**会削弱性格，需用户权衡**——不建议默认做）② grounding B 档运行时阻断（backlog B1b：`check_groundedness` 补中文 claim 模式 + proactive/welcome_back 输出端检测丢弃）。
+
+**报告快照**：`docs/review/prompt-quality-report-2026-08-08-retest{2..6}.md` + 同名 `-raw.log`（延迟来源）。retest6 = 当前默认 `prompt-quality-report-2026-08-08.md`（已备份 -retest6）。
 
 ## §最近一轮 (2026-08-08 续⁶)：真人感 prompt 调教 —— 150 条 A/B 闭环（提问结尾率 35%→14%）
 

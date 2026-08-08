@@ -3,7 +3,7 @@
 
 use crate::db::DbState;
 use crate::embedding::EmbeddingService;
-use crate::llm::client::{ChatMessage, LlmClient};
+use crate::llm::client::{ChatMessage, LlmClient, ThinkingConfig};
 use crate::mind::gate::GateRoute;
 use crate::mind::planner::Intent;
 use rand::Rng;
@@ -405,8 +405,16 @@ pub async fn converse(
     // Step 9: LLM — generate response. Streaming: each content token is
     // forwarded to `on_token` for live bubble rendering (architecture #10),
     // while the fully accumulated text is returned for grounding / emotion.
+    // Thinking OFF for first-token latency — the 5s gate is met only with
+    // thinking off (low-effort `reasoning_effort:"low"` tested at max 6s,
+    // breaking the gate, with no quality gain over off). Reliability is not
+    // held by reasoning here: memory fabrication is rooted in the grounding
+    // layer (an empty [Memories] section used to be omitted entirely → model
+    // invented "你上次说…" threads), now addressed there with an explicit
+    // empty-marker; question-rate by the [How to talk] rules + example voice.
+    let no_thinking = ThinkingConfig::disabled();
     let mut chat_result = llm
-        .chat_stream(&messages, Some(0.8), Some(4096), &mut on_token)
+        .chat_stream(&messages, Some(0.8), Some(4096), Some(&no_thinking), None, &mut on_token)
         .await
         .map_err(|e| format!("LLM error: {:?}", e))?;
     // Retry once on empty content — the flash reasoning model occasionally eats
@@ -417,7 +425,7 @@ pub async fn converse(
     if chat_result.content.trim().is_empty() {
         log::warn!("[converse] main reply empty on first attempt; retrying once");
         chat_result = llm
-            .chat_stream(&messages, Some(0.8), Some(4096), &mut on_token)
+            .chat_stream(&messages, Some(0.8), Some(4096), Some(&no_thinking), None, &mut on_token)
             .await
             .map_err(|e| format!("LLM error on retry: {:?}", e))?;
         if chat_result.content.trim().is_empty() {

@@ -281,10 +281,26 @@ fn format_memories(retrieval: &RetrievalResult) -> String {
     }
 
     if lines.len() == 1 && sections.is_empty() {
-        return String::new(); // No memories
+        // Explicit empty marker. Without it, no [Memories] section appears in
+        // the prompt at all, so the model can't tell memory is empty and
+        // fabricates "你上次说…" threads from the personality examples — the
+        // measured hallucination root cause. An inline marker is the active
+        // signal the model actually reads; a buried rule in the system prompt
+        // does not reliably reach it (verified across 4 test rounds).
+        return "[Memories]\n（暂无相关记忆——不要提及或编造任何过往，只就当下回应用户。）".to_string();
     }
 
     if lines.len() > 1 {
+        // Inline guard, placed at the point of use (not 1700 tokens away in
+        // the system prompt): the model may ONLY cite what is listed above.
+        // Targets the G6 failure mode — wrapping a real memory in a fake
+        // "你上次说/提过" source, or inventing extra topics — which a distant
+        // rule does not stop under thinking-off, but an adjacent note does.
+        lines.push(
+            "（以上即全部记忆。只可引用已列出的内容；不得添加未列出的项目、人名、事件，"
+                .to_string()
+                + "也不得编造\"你上次说/提过/念叨\"之类的出处——记着就是记着，没有出处别硬安一个。）",
+        );
         sections.push(lines.join("\n"));
     }
 
@@ -662,11 +678,18 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_memories_section() {        let retrieval = empty_retrieval();
+    fn test_empty_memories_section() {
+        let retrieval = empty_retrieval();
         let prompt = build_system_prompt(&retrieval, &EmotionState::default(), &Intent::default());
         assert!(
             !prompt.contains("- [Fact]"),
-            "should omit memories section when empty"
+            "should list no facts when empty"
+        );
+        // Empty memory now renders an explicit marker (not omitted) so the
+        // model can't fabricate "你上次说…" threads — see format_memories.
+        assert!(
+            prompt.contains("暂无相关记忆"),
+            "empty memory must show the explicit no-fabrication marker"
         );
     }
 

@@ -29,17 +29,39 @@ struct ChatRequest {
     /// `disabled`, the model skips `reasoning_content` entirely — used on the
     /// gate/extractor steps (pure classification) to cut per-turn reasoning
     /// latency and root-fix 踩坑#3 (reasoning ate the completion budget → empty
-    /// content). `None` = omit the field (main reply keeps default thinking).
+    /// content). The main reply is also `disabled` — sub-5s latency; reliability
+    /// comes from the grounding layer, not reasoning (see converse.rs step 9).
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+    /// DeepSeek v4 reasoning depth (`reasoning_effort`), only meaningful with
+    /// `thinking:{enabled}`. Dormant: `converse` passes `None` on every call
+    /// (main reply is thinking-off). A "low"-effort main reply was tested but
+    /// broke the 5s gate with no quality gain; kept as reserved plumbing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 /// DeepSeek v4 `thinking` parameter: `{"type": "enabled" | "disabled"}`.
 /// Verified on deepseek-v4-flash: `{type:disabled}` → 200, no reasoning_content.
 #[derive(Debug, Serialize, Clone)]
-struct ThinkingConfig {
+pub struct ThinkingConfig {
     #[serde(rename = "type")]
     type_: String,
+}
+
+impl ThinkingConfig {
+    /// Disable the reasoning step. Used on every LLM call (gate, extractor,
+    /// and now the main reply) so content streams without a reasoning_content
+    /// preamble — cutting first-token latency on the reasoning model.
+    pub fn disabled() -> Self {
+        Self { type_: "disabled".to_string() }
+    }
+
+    /// Enable the reasoning step. Currently unused — every call is `disabled()`
+    /// for latency; kept to pair with `reasoning_effort` if we revisit it.
+    pub fn enabled() -> Self {
+        Self { type_: "enabled".to_string() }
+    }
 }
 
 /// `stream_options` for the chat request — `include_usage` so the final
@@ -234,7 +256,8 @@ impl LlmClient {
     /// turn) — pure classification, no reasoning needed. Thinking is disabled
     /// here to remove 2/3 of per-turn reasoning latency and root-fix 踩坑#3
     /// (reasoning ate the completion budget → empty content → parse crash).
-    /// The main reply (step 3, `chat_stream`) is left untouched.
+    /// The main reply (step 3, `chat_stream`) is also thinking-off for latency
+    /// — see converse.rs step 9.
     pub async fn chat_reflection(
         &self,
         messages: &[ChatMessage],
@@ -270,6 +293,7 @@ impl LlmClient {
             stream: Some(false),
             stream_options: None,
             thinking: thinking.cloned(),
+            reasoning_effort: None,
         };
 
         let resp = self
@@ -367,6 +391,8 @@ impl LlmClient {
         messages: &[ChatMessage],
         temperature: Option<f64>,
         max_tokens: Option<u32>,
+        thinking: Option<&ThinkingConfig>,
+        reasoning_effort: Option<&str>,
         mut on_token: F,
     ) -> Result<ChatResult, LlmError> {
         let url = self.build_url();
@@ -377,7 +403,8 @@ impl LlmClient {
             max_tokens,
             stream: Some(true),
             stream_options: Some(StreamOptions { include_usage: true }),
-            thinking: None,
+            thinking: thinking.cloned(),
+            reasoning_effort: reasoning_effort.map(|s| s.to_string()),
         };
 
         let resp = self
