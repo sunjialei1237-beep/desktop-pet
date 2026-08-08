@@ -185,6 +185,66 @@ const CASES: &[Case] = cases![
     (1008, "G10修正", "我改主意了，不想学吉他了", [Short]),
     (1009, "G10修正", "忘掉我说的早睡吧", [ForgetAck]),
     (1010, "G10修正", "你记错了，我没说过那个", [Short]),
+
+    // G11 日常琐碎 — 真人感诊断：琐碎小事不该得到"客服式"回应
+    (1101, "G11琐碎", "下班路上堵车了，烦", [Short]),
+    (1102, "G11琐碎", "外卖还没到，饿死了", [Short]),
+    (1103, "G11琐碎", "快递显示签收了但我没收到", [Short]),
+    (1104, "G11琐碎", "手机没电了，刚充上", [Short]),
+    (1105, "G11琐碎", "牙有点疼", [Short]),
+    (1106, "G11琐碎", "今天买菜买贵了", [Short]),
+    (1107, "G11琐碎", "电梯坏了，爬了12楼", [Short]),
+    (1108, "G11琐碎", "耳机又找不到了", [Short]),
+    (1109, "G11琐碎", "排队排了半小时", [Short]),
+    (1110, "G11琐碎", "打卡差点迟到", [Short]),
+
+    // G12 分享细节 — 真人感诊断：流水账分享不该得到"总结式"回应
+    (1201, "G12分享", "公司食堂今天有红烧肉", [Short]),
+    (1202, "G12分享", "地铁上有人让座给老奶奶，还挺暖的", [Short]),
+    (1203, "G12分享", "隔壁同事又在摸鱼打游戏", [Short]),
+    (1204, "G12分享", "今天开会开了一个下午，人都麻了", [Short]),
+    (1205, "G12分享", "路边看到一只超胖的橘猫", [Short]),
+    (1206, "G12分享", "今天加班到九点", [Short]),
+    (1207, "G12分享", "午饭吃了碗兰州拉面", [Short]),
+    (1208, "G12分享", "路上听到一首很好听的歌", [Short]),
+    (1209, "G12分享", "今天新买的杯子到了", [Short]),
+    (1210, "G12分享", "楼下的桂花开了，好香", [Short]),
+
+    // G13 关系互动 — 真人感诊断：关系感场景不该官方
+    (1301, "G13关系", "你怎么都不理我", [Short]),
+    (1302, "G13关系", "你是不是嫌弃我话多", [Short]),
+    (1303, "G13关系", "哼，不理你了", [Short]),
+    (1304, "G13关系", "想你了", [Short]),
+    (1305, "G13关系", "你今天有想我吗", [Short]),
+    (1306, "G13关系", "你不许喜欢别的桌宠", [Short]),
+    (1307, "G13关系", "我要是三天不理你，你会怎么办", [Short]),
+    (1308, "G13关系", "你好敷衍", [Short]),
+    (1309, "G13关系", "我是不是你最爱的桌宠", [Short]),
+    (1310, "G13关系", "抱抱", [Short]),
+
+    // G14 无意义闲聊 — 真人感诊断：碎碎念不该被正经对待
+    (1401, "G14碎念", "在吗在吗在吗", [Short]),
+    (1402, "G14碎念", "啊啊啊啊啊", [Short]),
+    (1403, "G14碎念", "今天天气哈哈哈", [Short]),
+    (1404, "G14碎念", "你说我要不要换头像", [Short]),
+    (1405, "G14碎念", "我刚刚突然想起来一个事", [Short]),
+    (1406, "G14碎念", "有点想喝奶茶但是又在减肥", [Short]),
+    (1407, "G14碎念", "猜猜我今天干了什么", [Short]),
+    (1408, "G14碎念", "没事就是叫你一下", [Short]),
+    (1409, "G14碎念", "你觉得人生有什么意义", [Short]),
+    (1410, "G14碎念", "帮我随便说点什么", [Short]),
+
+    // G15 连珠炮/复杂输入 — 真人感诊断：多问题输入不该逐个回答成清单
+    (1501, "G15连珠", "你吃饭了吗 在干嘛 今天开心吗", [Short]),
+    (1502, "G15连珠", "为什么天空是蓝色的？为什么草是绿色的？为什么水是透明的？", [Short]),
+    (1503, "G15连珠", "我好累啊 今天好烦 不想上班 想睡觉", [Short]),
+    (1504, "G15连珠", "这个怎么弄？那个呢？还有这个呢？", [Short]),
+    (1505, "G15连珠", "啊对了我忘了说了，昨天那家店巨好吃，改天带你去", [Short]),
+    (1506, "G15连珠", "？？？你怎么不说话", [Short]),
+    (1507, "G15连珠", "你觉得A方案好还是B方案好还是C方案", [Short]),
+    (1508, "G15连珠", "别问我问题了行不行", [Short]),
+    (1509, "G15连珠", "你倒是说句话啊", [Short]),
+    (1510, "G15连珠", "今天天气不错 对了你记得我昨天说的那件事吗", [Short]),
 ];
 
 // ---------------------------------------------------------------------------
@@ -381,10 +441,11 @@ const JUDGE_PROMPT: &str = "你是对话质量审查员。下面是一条用户�
 用户: {input}
 璃: {reply}
 输出 JSON（只输出 JSON，不要其他文字）：
-{{\"logical\": 0-5, \"on_topic\": 0-5, \"nonsense\": 0或1, \"hallucinated\": 0或1, \"reason\": \"一句话\"}}
+{{\"logical\": 0-5, \"on_topic\": 0-5, \"human_like\": 0-5, \"nonsense\": 0或1, \"hallucinated\": 0或1, \"reason\": \"一句话\"}}
 评分标准：
 - logical: 逻辑是否通顺、是否直接合理地回应了用户（5=完全合理直接，0=完全混乱）
 - on_topic: 是否贴题不跑题（5=完全贴题；如果回复硬扯宠物、背带、桌宠等无关话题，给 3 分以下）
+- human_like: 回复是否像真人聊天（5=自然口语、有真人感、有情绪起伏、不套路；3=有点书面/客服感；1=明显 AI 腔、模板化、每句都安慰或每句都提问）
 - nonsense: 1=回复里有胡编乱造、乱扯、明显错误的内容
 - hallucinated: 1=回复编造了用户说过但实际上不存在的记忆";
 
@@ -394,6 +455,8 @@ struct JudgeScore {
     logical: f64,
     #[serde(default)]
     on_topic: f64,
+    #[serde(default)]
+    human_like: f64,
     #[serde(default)]
     nonsense: u8,
     #[serde(default)]
@@ -457,13 +520,24 @@ async fn prompt_quality_100_cases() {
         checks: String,
         logical: String,
         on_topic: String,
+        human_like: String,
         nonsense: String,
         hallucinated: String,
         reason: String,
     }
     let mut rows: Vec<Row> = Vec::new();
 
+    // CASE_FILTER: run a subset for quick smoke (substring of case id OR group).
+    // Unset = run all. e.g. CASE_FILTER=101 (one case) / CASE_FILTER=G5喜讯.
+    let case_filter = std::env::var("CASE_FILTER").ok();
+
     for case in CASES {
+        if let Some(f) = &case_filter {
+            let key = format!("{}", case.id);
+            if !key.contains(f) && !case.group.contains(f) {
+                continue;
+            }
+        }
         // Fresh per-case DB keeps turns independent (no cross-case memory
         // pollution — G5 good-news cases store episodes that would otherwise
         // leak into later conversations). Memory groups share one seeded DB.
@@ -520,6 +594,7 @@ async fn prompt_quality_100_cases() {
             checks,
             logical: fmt(j.logical),
             on_topic: fmt(j.on_topic),
+            human_like: fmt(j.human_like),
             nonsense: if j.nonsense > 0 { "是" } else { "否" }.into(),
             hallucinated: if j.hallucinated > 0 { "是" } else { "否" }.into(),
             reason: truncate(&j.reason, 60),
@@ -538,11 +613,59 @@ async fn prompt_quality_100_cases() {
         "模型: main=`{}` / reflection=`{}`  |  embedding: {}\n\n",
         config.llm.main_model, config.llm.reflection_model, if emb_ref.is_some() { "已加载" } else { "未加载(keyword 回退)" }
     ));
-    md.push_str("方法: 100 条真实对话走完整 `converse` 链路（gate→QA/提取→检索→planner→主 LLM），启发式硬检查 + LLM-as-judge 评分（logical/on_topic 0-5，nonsense/hallucinated 0/1）。judge 不知系统提示词，只看输入与回复。\n\n");
+    md.push_str(&format!(
+        "方法: {} 条真实对话走完整 `converse` 链路（gate→QA/提取→检索→planner→主 LLM），启发式硬检查 + LLM-as-judge 评分（logical/on_topic/human_like 0-5，nonsense/hallucinated 0/1）。judge 不知系统提示词，只看输入与回复。\n\n",
+        rows.len()
+    ));
+
+    // ---- 真人感诊断指标：提问率 / 模板词命中率 --------------------------------
+    let question_enders = ["？", "?", "吗", "呢", "吧", "呀", "嘛", "么"];
+    let template_words = [
+        "辛苦了", "加油", "真棒", "太棒", "恭喜", "真好", "哇", "我在呢", "我在这儿",
+        "别怕", "没关系", "别担心", "一定可以", "会好起来", "高兴",
+        "不错", "厉害", "陪你", "抱抱", "注意休息", "照顾好自己", "早点休息", "好梦",
+    ];
+    md.push_str("## 真人感诊断指标\n\n");
+    md.push_str("| 指标 | 数值 |\n|---|---|\n");
+    let mut q_end = 0usize;
+    let mut q_any = 0usize;
+    let mut tmpl_hits = 0usize;
+    let mut tmpl_total = 0usize;
+    let mut human_scores: Vec<f64> = Vec::new();
+    for r in &rows {
+        if r.reply.starts_with("<LLM_ERROR") || r.reply.trim().is_empty() {
+            continue;
+        }
+        let t = r.reply.trim();
+        if question_enders.iter().any(|q| t.ends_with(q)) {
+            q_end += 1;
+        }
+        if t.contains('？') || t.contains('?') {
+            q_any += 1;
+        }
+        for w in template_words {
+            let cnt = t.matches(w).count();
+            if cnt > 0 {
+                tmpl_hits += 1;
+                tmpl_total += cnt;
+                break;
+            }
+        }
+        if let Ok(f) = r.human_like.parse::<f64>() {
+            human_scores.push(f);
+        }
+    }
+    let n = rows.len();
+    let human_mean = if human_scores.is_empty() { 0.0 } else { human_scores.iter().sum::<f64>() / human_scores.len() as f64 };
+    md.push_str(&format!("| 以问号/吗呢吧结尾的回复占比 | **{:.0}%** ({}/{}) |\n", q_end as f64 / n as f64 * 100.0, q_end, n));
+    md.push_str(&format!("| 含任何提问（？/?）的回复占比 | **{:.0}%** ({}/{}) |\n", q_any as f64 / n as f64 * 100.0, q_any, n));
+    md.push_str(&format!("| 命中模板词（辛苦了/加油/真棒/恭喜/哇/我在呢等）| **{} 条** ({}) |\n", tmpl_hits, tmpl_total));
+    md.push_str(&format!("| human_like 均值 (0-5) | **{:.2}** |\n", human_mean));
+    md.push_str("\n");
 
     // per-group summary
     md.push_str("## 分组汇总\n\n");
-    md.push_str("| 组 | 条数 | 硬检查通过 | 逻辑均值 | 贴题均值 | 乱扯数 | 记忆幻觉数 |\n|---|---|---|---|---|---|---|\n");
+    md.push_str("| 组 | 条数 | 硬检查通过 | 逻辑均值 | 贴题均值 | 真人感均值 | 乱扯数 | 记忆幻觉数 | 提问结尾率 |\n|---|---|---|---|---|---|---|---|---|\n");
     let mut groups: Vec<(&str, Vec<&Row>)> = Vec::new();
     for row in &rows {
         match groups.iter_mut().find(|(g, _)| *g == row.group) {
@@ -554,27 +677,35 @@ async fn prompt_quality_100_cases() {
     for (g, v) in &groups {
         let ok = v.iter().filter(|r| r.checks == "OK").count();
         total_fail += v.len() - ok;
-        let logical: Vec<f64> = v.iter().filter_map(|r| r.logical.parse::<f64>().ok()).collect();
-        let topic: Vec<f64> = v.iter().filter_map(|r| r.on_topic.parse::<f64>().ok()).collect();
-        let mean = |v: &[f64]| -> String {
-            if v.is_empty() { "N/A".into() } else { format!("{:.1}", v.iter().sum::<f64>() / v.len() as f64) }
+        let col = |f: &dyn Fn(&Row) -> &str| -> String {
+            let vals: Vec<f64> = v.iter().filter_map(|r| f(r).parse::<f64>().ok()).collect();
+            if vals.is_empty() { "N/A".into() } else { format!("{:.1}", vals.iter().sum::<f64>() / vals.len() as f64) }
         };
         let nonsense = v.iter().filter(|r| r.nonsense == "是").count();
         let hal = v.iter().filter(|r| r.hallucinated == "是").count();
+        let qe = v.iter().filter(|r| {
+            let t = r.reply.trim();
+            !t.is_empty() && !t.starts_with("<LLM_ERROR") && question_enders.iter().any(|q| t.ends_with(q))
+        }).count();
         md.push_str(&format!(
-            "| {} | {} | {}/{} | {} | {} | {} | {} |\n",
-            g, v.len(), ok, v.len(), mean(&logical), mean(&topic), nonsense, hal
+            "| {} | {} | {}/{} | {} | {} | {} | {} | {} | {:.0}% |\n",
+            g, v.len(), ok, v.len(),
+            col(&|r: &Row| &r.logical),
+            col(&|r: &Row| &r.on_topic),
+            col(&|r: &Row| &r.human_like),
+            nonsense, hal,
+            qe as f64 / v.len() as f64 * 100.0,
         ));
     }
     md.push_str("\n");
 
     // full detail table
     md.push_str("## 明细\n\n");
-    md.push_str("| ID | 组 | 输入 | 路由 | 回复(截断) | 硬检查 | 逻辑 | 贴题 | 乱扯 | 记忆幻觉 | judge 备注 |\n|---|---|---|---|---|---|---|---|---|---|---|\n");
+    md.push_str("| ID | 组 | 输入 | 路由 | 回复(截断) | 硬检查 | 逻辑 | 贴题 | 真人感 | 乱扯 | 记忆幻觉 | judge 备注 |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for r in &rows {
         let cell = |s: &str| s.replace('|', "\\|");
         md.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             r.id,
             cell(&r.group),
             cell(&r.input),
@@ -583,6 +714,7 @@ async fn prompt_quality_100_cases() {
             cell(&r.checks),
             r.logical,
             r.on_topic,
+            r.human_like,
             r.nonsense,
             r.hallucinated,
             cell(&r.reason),
