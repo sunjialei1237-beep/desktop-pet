@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-08（续⁵·本批 2,3 全部收尾——B5 三层评估 / Alt+Space / 害羞慢现气泡 / idle_weights JSON 化 / BrainState follow-up 经评估关闭[ADR]；release exe 已 rebuild `D:\cargo-target\desktop-pet\release\desktop-pet.exe` 11:40 新鲜；待用户实跑 D12-D14）**
+> 最后更新：**2026-08-08（续⁶·真人感 prompt 调教——gate/extractor 关思考提速+根治空content / 150 条 A/B 诊断+复测：提问结尾率 35%→14%、G12分享 80%→30%、G5哇开场 5/10→0/10；human_like 4.24→4.11（变短非变冷）；release exe 已 rebuild `D:\cargo-target\desktop-pet\release\desktop-pet.exe` 17:48 新鲜。详见 `docs/review/realism-report-2026-08-08.md`）**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -45,6 +45,8 @@
 > - [x] **3c idle_weights JSON 化（数据驱动）**：`microBehavior.ts` 的 `IDLE_BEHAVIORS` 8 条微行为（weight/cooldown/emotion_modifier/min_closeness/sleepy）原本是硬编码 const 数组、数据和逻辑混在一个 .ts。抽成纯数据资产 `src/animation/idle-behaviors.json`，`microBehavior.ts` 改 `import ... from "./idle-behaviors.json"` + `as IdleBehavior[]` 类型断言（tsconfig `resolveJsonModule:true` 早开），`pickNextBehavior`/`applySleepyWeight` 逻辑零改动。**好处**：调权重/冷却/昼夜倍率只改 JSON 不碰逻辑（数据↔逻辑解耦，便于后续手感微调）。**纯前端行为不变重构**：vitest 24（含 7 microBehavior 测，A5 yawn/look_around 日夜比断言仍过——证 JSON 数据字节等价）/ tsc ✅ / vite build ✅（JSON import 打包正常）。**release 需 rebuild**（前端）。无需手感验收（代码层单测已覆盖，见 §最近一轮 续⁴）。
 > - [x] **3d 架构债 BrainState 扩到 prompt builder+budget（B6 follow-up）—— 经评估主动关闭**（ADR: `docs/decisions/2026-08-08-brainstate-prompt-budget.md`）。Item 5 把 `BrainState` 采纳边界定在 planner，留此为"干净 follow-up"。复核五个目标函数（`build_system_prompt`/`build_qa_system_prompt`/`allocate_and_compress`/`allocate_qa`/`compress_system_prompt`）的实际签名与字段消费：① 它们都吃 `(retrieval, emotion, intent)`，而 **`intent` 是 planner 的 *输出***（`plan(&brain)→Intent`），不能入 BrainState（循环依赖）→ 强行扩留个 `(brain, intent)` 半 bundle 比现状更别扭，**省不掉 intent 参数**；② BrainState 的 `text`/`relationship`/`pending_due` 三字段这五个函数**一个不用** → 扩进去正是 `brain_state.rs` 注释 + §A2 ADR 已否决的「投机 mega-state」；③ 纯化妆重写 + 踩坑#4 级（5 函数签名 + 多 harness 调用点），零用户/正确性价值。**决策：不扩，follow-up 关闭，采纳边界终态=planner。** 也评估了方案 B（窄类型 `PromptCtx{retrieval,emotion,intent}`）：比方案 A 干净但不捆绑问题、边际收益不抵新类型 + 截断 retrieval 碍事，现状 3 参紧签名已自解释。同步更新 `brain_state.rs` 顶部注释指向 ADR。**纯决策无代码行为变更**，无需 rebuild。详见 §最近一轮 (2026-08-08 续⁵)。
 > - [x] **批次末 rebuild release exe**：3a/3b/3c 改了前后端 → `npx tauri build --no-bundle`（踩坑#6，先确认 desktop-pet.exe 未运行）。**exit 0**，产物 `D:\cargo-target\desktop-pet\release\desktop-pet.exe`（11:40:31 新鲜，51.8s Rust release + 2.1s 前端，CSS hash `index-HCg0t6XF.css` 含新 bubble-shy）。桌面快捷方式同路径免改。**3a-d 全部完成 + release 已重建 = 本批（2，3）收尾。** 待用户实跑 D12-D14（B5 benchmark / Alt+Space / 害羞气泡）。
+
+> **2026-08-08（续⁶）真人感 prompt 调教（用户驱动，已收尾）**：用户"回复不够真人感、不需要每问都加提问"。四步闭环：① `client.rs` `thinking:{type:disabled}` 关 gate/extractor 思考（提速+根治空 content 踩坑#3，commit 8aa0d61）② harness 扩到 150 例+真人感指标+`CASE_FILTER`（eec094c）③ 基线 150 条诊断：提问结尾率 35%，G12分享 80%/G11琐碎 60%/G3闲聊 50% 严重超标，G5 喜讯"哇"克隆开场 5/10 ④ 改 prompt A/B/C（b5afac6）：system.txt 话术 engage"可不问"+4 条反 AI 味（禁客服收尾/禁情绪标签/允许自己的状态/像随手发消息）；样例 4→6 条仅 1 问；`grounding.rs` format_intent engage"then ask ONE"→"may ask ONE… often no question"。**复测**：提问结尾率 35%→**14%**，G3 50%→10%、G12 80%→30%（−50pp）、G5 哇开场 5/10→0/10、"想听细一点的我可以再讲"消失。**诚实权衡**：human_like 4.24→4.11（judge 一致"稍显简短"=变短非变冷）；模板词 23→23（构成迁移哇→恭喜，喜讯道恭喜属正常非 AI 味）；G14 碎念残留 40% 提问皆对天然邀请追问的输入（在吗在吗/啊啊啊），压低反损自然。**对比报告** `docs/review/realism-report-2026-08-08.md`；评测快照 `-baseline`/`-post`。**release exe 已 rebuild 17:48**。→ 待用户实跑验收手感；若嫌 G5 偏冷可微调 A3"一个字"措辞（见报告可选微调）。
 
 > **2026-08-07 自主批次推进中**（用户授权长程自主："按优先级推进所有后续内容，每项自测后更新 HANDOFF，不询问；待实跑项统一整理"）。逐项推进，每项自测（cargo test --lib / check --tests / tsc）绿后勾选。**release exe 在批次末统一 rebuild**（中间项都以库单测 + check 编译通过为正确性证据；批次末 Task #14 前一次性 `npx tauri build --no-bundle`，避免每项重构都重编一次前端嵌入）：
 > - [x] **Task #8 鲁棒性加固**：① main 空回复重试——converse `chat_stream` 把 `on_token` 改 `mut`、传 `&mut on_token` 复用，content 空时重试一次（镜像 extractor 重试；flash reasoning 吃光预算 finish_reason=length 空 content 的坑#3 瞬态）。② harness 启发式误报——Acknowledge/ForgetAck 关键词表加现实同义措辞（记着/记心里/放心吧/帮你记 + 不提/不会再/抹掉/清掉），治 705/1002「语义对无关键词」误报。**lib 259 / check --tests ✅**。纯后端 + 测试，release 需 rebuild。
@@ -141,6 +143,28 @@
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
 
 ---
+
+## §最近一轮 (2026-08-08 续⁶)：真人感 prompt 调教 —— 150 条 A/B 闭环（提问结尾率 35%→14%）
+
+**任务**：用户指出"回复不够真人感、找不出原因"，明确线索"回复中不需要每个问题都加上最后的提问"。要求：先调研（firecrawl/GitHub/humanizer/opencode）→ 汇报 → 列前后对比 → 用户批准后才改 → 同题复测对比。用户额外设**分档指标**（非全局阈值）：G3/G11-G15 提问结尾率 <30%（核心战场），G5 喜讯不设硬指标（自然好奇，换看开场去重），G1/G2 直答 0%，并强调"避免为了达标牺牲自然"。
+
+**诊断（基线 150 条）**：全局提问结尾率 **35%**（52/150）。核心战场全超标——G12 分享 **80%**、G11 琐碎 60%、G3 闲聊 50%、G14 碎念 50%。G5 喜讯提问率 90%（不计）但"哇"克隆开场 5/10（502/503/505/507/508）。G1 知识 case 101 残留"想听细一点的我可以再讲"AI 客服尾巴。human_like 均值 4.24。
+
+**调研收敛**：firecrawl/GitHub 陪伴+人机恋+真人感 + humanizer（去 AI 味 33 规则取 ~7 条 chat 相关）+ opencode 方案。跨源共识——① Ali:Chat 法：example 对话教人格优于 trait 描述（"sample outranks rules"）② humanizer 统计均值洞察：LLM 默认最高频/最通用的回复，真人感=偏离均值 ③ 反模式：每条收尾提问（客服感）、客服式尾巴（humanizer #20）、谄媚（#22）、过度共情=AI tell。
+
+**改动 A/B/C（commit b5afac6，合同锁定串温柔/好奇/聪慧/安静/调皮/神秘·璃/狐·话痨/卖萌/依赖·严禁编造 全保留）**：
+- **A `system.txt` 话术**：engage 条"再问一个问题"→"可不问，一句接得住的话就够"；"想问只问一个"加"更多时候陈述/感叹/观察让对话停住"；新增 4 条反 AI 味（禁客服式收尾"想听细一点的我可以再讲"/禁情绪标签"我理解你的感受"/允许自己的状态可困可懒可没话说/像随手发消息嗯哎半句话欲言又止）。
+- **B `system.txt` 样例**：4→6 条混合，仅 1 条提问（喜讯 ~17%），删"想听细一点的我可以再讲"，破 G5"哇"开场克隆。
+- **C `grounding.rs` format_intent engage**：`then ask ONE genuine follow-up` → `you may ask ONE… but often a single heartfelt line with no question is more natural. Never ask a generic '怎么样'`（提问可选且必须内容相关）。
+
+**复测 150 条（同 CASES 同 judge 同模型）**：提问结尾率 **35%→14%**（−21pp）；G3 闲聊 50%→**10%**（达标）、G12 分享 80%→**30%**（−50pp）、G11 琐碎 60%→30%、G5 哇开场 5/10→**0/10**（开场变多样：满分！/赢了？/涨工资啦？）、"想听细一点的我可以再讲"消失；当提问出现时全内容相关（1207"汤头喝干净了没"/1208"有记下名字吗"，无套路"怎么样"）。G7 提醒 human_like 反升 3.7→3.9。
+
+**诚实权衡（用户"别为达标牺牲自然"原则的实践）**：
+- human_like 4.24→**4.11**（−0.13）：judge 备注一致"稍显简短"——回复**变短非变冷**（logical/on_topic 全 5.0），A3"可以一个字"被用足。仍稳 4+。
+- 模板词 23→**23** 持平：但构成迁移"哇"(5→0)→"恭喜/棒/厉害"，而喜讯道恭喜是正常人类反应非 AI 味，真病灶（克隆开场）已除。
+- G14 碎念残留 **40%**：4 个提问全对天然邀请追问的输入（在吗在吗在吗→什么事 / 啊啊啊啊→怎么了 / 想起来个事→什么事 / 猜猜我→猜测），压到 0 等于对"啊啊啊"回"嗯"，反人类——**保留正确**。
+
+**交付**：对比报告 `docs/review/realism-report-2026-08-08.md`；评测快照 `prompt-quality-report-2026-08-08-baseline.md`/`-post.md`；harness `tests/prompt_quality_harness.rs`（150 例 + `CASE_FILTER` 环境变量按 id/组过滤）。**release exe 已 rebuild** 17:48（1m05s，0 警告）。→ 待用户实跑验收手感；可选微调见报告末尾（若嫌 G5 偏冷，软化 A3"一个字"为"别只剩一个字"）。
 
 ## §最近一轮 (2026-08-08 续⁵)：BrainState 扩到 prompt builder/budget —— 经评估关闭（ADR）
 
