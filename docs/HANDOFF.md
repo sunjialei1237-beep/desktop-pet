@@ -29,6 +29,15 @@
 
 ## §当前任务（接手者先看这）
 
+> **2026-08-08 自主批次推进中**（用户授权："挨个推进 2,3,4,5,6 [审计清单里 5 个未实现/未接线项]，每完成一项自主验证、更新 HANDOFF + 新增待测试，不报告不询问；并砍掉走路相关计划"。逐项推进，每项 cargo test --lib / check --tests / tsc 绿后勾选并提交；release exe 在批次末统一 rebuild）：
+> - [x] **Item 2 接线 is_deep_focus（P14.3）**：审计发现 `commands.rs:352,446` + `proactive.rs` 全硬编码 `is_deep_focus:false` → `trigger_proactive` Rule1（深度专注抑制）永不为真、空转。新 `perception/focus.rs`：纯函数 `update_continuous`（同一 Work app 累积 / 切换 Work app 重置 / 非 Work 重置）+ 后台 30s 采样线程（镜像 cursor::start）发布 `CONTINUOUS_WORK_SECS`/`IS_DEEP_FOCUS` 全局 atomic；阈值 25min（计划 P14.3）。两生产点接真实值（`get_perception` + `check_proactive`，均按 `enable_window` 门控 #6）；消费端 `trigger_proactive` Rule1 现在真生效。DebugSnapshot + DebugPanel 加 Focus 分区（#11 可观测）。**lib 261（+6 focus 纯函数测）/ check --tests ✅ / tsc ✅**。→ 待实跑见 D8。纯后端+前端，release 需 rebuild。
+> - [ ] **Item 3 推进 A2 Scheduler**（架构对齐版，重评 08-07 deferral ADR）
+> - [ ] **Item 4 Grounding B 档运行时阻断**
+> - [ ] **Item 5 推进 A1 全局 BrainState**
+> - [ ] **Item 6 personality_drift_score 语义版**
+> - [ ] 砍掉走路相关计划（implementation-plan.md + follow-up）
+> 详见批次末 §最近一轮 (2026-08-08) 汇总。
+
 > **2026-08-07 自主批次推进中**（用户授权长程自主："按优先级推进所有后续内容，每项自测后更新 HANDOFF，不询问；待实跑项统一整理"）。逐项推进，每项自测（cargo test --lib / check --tests / tsc）绿后勾选。**release exe 在批次末统一 rebuild**（中间项都以库单测 + check 编译通过为正确性证据；批次末 Task #14 前一次性 `npx tauri build --no-bundle`，避免每项重构都重编一次前端嵌入）：
 > - [x] **Task #8 鲁棒性加固**：① main 空回复重试——converse `chat_stream` 把 `on_token` 改 `mut`、传 `&mut on_token` 复用，content 空时重试一次（镜像 extractor 重试；flash reasoning 吃光预算 finish_reason=length 空 content 的坑#3 瞬态）。② harness 启发式误报——Acknowledge/ForgetAck 关键词表加现实同义措辞（记着/记心里/放心吧/帮你记 + 不提/不会再/抹掉/清掉），治 705/1002「语义对无关键词」误报。**lib 259 / check --tests ✅**。纯后端 + 测试，release 需 rebuild。
 > - [x] **Task #9 B6 BrainState**：converse 9 参 → `ConverseCtx<'a>` 统一快照（8 个引用字段 + `on_token` 留作独立泛型 `FnMut`——回调是流式旁路非状态，塞进 struct 会让整体变泛型）。函数体用 8 行别名桥接（`let text = ctx.text;`…），400 行 body 字节不变，最低风险。6 处调用全改：commands.rs（生产）+ memory_recall(×3)/conversation_harness/prompt_quality_harness。harness 里的 `get_context()` 临时 Vec 绑定本地避免跨 await 临时生命周期问题。**check --tests ✅ + lib 259 ✅**。纯机械包装，行为不变。

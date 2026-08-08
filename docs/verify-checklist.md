@@ -178,6 +178,13 @@ __pet.setHour(3); __pet.sleep()        // 入睡
 ```
 **通过判据**：低 energy → rest_need 增长 → 半眯/疲惫眼（连续渐变，非离散跳变）。energy 拉回 0.7 → rest_need 衰减 → 眼睛重新睁开。
 
+### D8 — 深度专注抑制主动气泡（P14.3 is_deep_focus 接线，2026-08-08）
+```
+// 1. dev 模式打开一个 Work 类前台 app（如 VSCode/终端）连续 ≥25 min 不切换
+// 2. F12 Debug Panel → Focus 分区看「连续工作 N min」增长，到 25min 变「🔒 深度专注中」
+// 3. 此时若有到期 pending / loneliness 高 → 不应冒主动气泡（trigger_proactive Rule1 抑制）
+```
+**通过判据**：Focus 分区计数 ≥25min 显示深度专注；专注期间主动气泡（welcome-back/lonely-nudge/proactive-prompt）被抑制；切到非 Work app（如浏览器/游戏）或锁屏离开 → 计数归零。`enable_window=false` 时恒不专注（#6 优雅退化）。代码层 `perception/focus.rs` 6 纯函数测已覆盖累积/重置/阈值；此项验"线程采样+抑制端到端"。
 ## 本批次不易快速验收（代码层已单测）
 | 项 | 为何难快速触发 | 代码层依据 |
 |---|---|---|

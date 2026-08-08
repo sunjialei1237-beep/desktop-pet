@@ -342,14 +342,26 @@ pub async fn get_perception(
         (None, crate::perception::AppCategory::Other)
     };
 
+    // Deep-focus tracking is derived from window perception (P14.3): same
+    // Work-category foreground app held >= 25 min. Disabled when window
+    // perception is off (Principle 6: degrade to "never deep focus").
+    let (continuous_work_secs, is_deep_focus) = if cfg.enable_window {
+        (
+            crate::perception::focus::continuous_work_secs(),
+            crate::perception::focus::is_deep_focus(),
+        )
+    } else {
+        (0, false)
+    };
+
     Ok(crate::perception::PerceptionSnapshot {
         time_of_day: crate::perception::time::current_time_of_day(),
         since_last_interaction_secs: since_last,
         presence,
         active_app: proc,
         app_category: category,
-        continuous_work_secs: 0,
-        is_deep_focus: false,
+        continuous_work_secs,
+        is_deep_focus,
     })
 }
 
@@ -421,7 +433,7 @@ pub async fn poke(db: State<'_, DbState>, count: Option<i32>) -> Result<bool, St
 /// Checks for due pending events and returns a proactive action if appropriate.
 #[tauri::command]
 pub async fn check_proactive(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
     db: State<'_, DbState>,
 ) -> Result<Option<crate::pending::ProactiveAction>, String> {
     let events = crate::pending::check_due(&db)?;
@@ -442,8 +454,16 @@ pub async fn check_proactive(
         .map(|r| r.closeness)
         .unwrap_or(0.0);
 
+    // Deep-focus suppression (P14.3): stay quiet during sustained work. Disabled
+    // when window perception is off (Principle 6).
+    let is_deep_focus = if state.config.perception.enable_window {
+        crate::perception::focus::is_deep_focus()
+    } else {
+        false
+    };
+
     let perception = crate::pending::PerceptionState {
-        is_deep_focus: false,
+        is_deep_focus,
         closeness,
     };
 
@@ -889,6 +909,9 @@ pub struct DebugSnapshot {
     /// Today's LLM call count + token totals (Architecture #8).
     pub cost: crate::llm::client::LlmCostStats,
     pub llm_configured: bool,
+    /// Deep-focus tracking (P14.3): sustained same-Work-app foreground time.
+    pub continuous_work_secs: u64,
+    pub is_deep_focus: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1038,6 +1061,16 @@ pub async fn get_debug_snapshot(
             reflect,
             cost,
             llm_configured: state.llm.lock().map(|g| g.is_some()).unwrap_or(false),
+            continuous_work_secs: if state.config.perception.enable_window {
+                crate::perception::focus::continuous_work_secs()
+            } else {
+                0
+            },
+            is_deep_focus: if state.config.perception.enable_window {
+                crate::perception::focus::is_deep_focus()
+            } else {
+                false
+            },
         })
     })
 }

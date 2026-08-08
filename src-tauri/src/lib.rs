@@ -138,6 +138,11 @@ pub fn run() {
             // Start the global cursor poll thread for click-through (ADR Phase 2).
             let _cursor_stop = perception::cursor::start(handle.clone());
 
+            // Start the deep-focus sampler (plan P14.3): tracks sustained same
+            // Work-app foreground time so proactive bubbles stay quiet during
+            // deep focus. Independent of Mind/LLM (Principle 5).
+            perception::focus::start();
+
             // System tray icon. Lets the pet hide to the tray ("暂时离开" in
             // the right-click menu -> hide_to_tray) and restore on click. The
             // Click handler re-shows the window and emits "restore-from-tray"

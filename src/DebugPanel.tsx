@@ -45,6 +45,8 @@ interface DebugSnapshot {
     completion_tokens: number;
   };
   llm_configured: boolean;
+  continuous_work_secs: number;
+  is_deep_focus: boolean;
 }
 
 const EMO_KEYS = ["mood", "physical_energy", "social_battery", "stress", "loneliness"] as const;
@@ -119,6 +121,13 @@ export function DebugPanel({ anim, onClose, onQuit }: {
             <span>Recent: {anim.history.slice().reverse().join(" ← ")}</span>
           </div>
         )}
+      </div>
+
+      <div className="debug-section">
+        <span className="debug-title">Focus</span>
+        <div className="debug-bar">
+          <span>{snapshot.is_deep_focus ? "🔒 深度专注中（抑制主动气泡）" : `连续工作 ${Math.floor(snapshot.continuous_work_secs / 60)} min（≥25 min 进入专注）`}</span>
+        </div>
       </div>
 
       <div className="debug-section">
