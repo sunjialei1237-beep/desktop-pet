@@ -20,16 +20,12 @@ export interface IdleBehavior {
     sleepy?: number;
 }
 
-export const IDLE_BEHAVIORS: IdleBehavior[] = [
-    { name: "blink", weight: 3.0, cooldown_ms: 3000, emotion_modifier: {}, min_closeness: 0 },
-    { name: "look_around", weight: 2.0, cooldown_ms: 15000, emotion_modifier: { happy: 1.5, curious: 2.0 }, min_closeness: 0, sleepy: 0.3 },
-    { name: "tilt_head", weight: 1.5, cooldown_ms: 12000, emotion_modifier: { curious: 2.0 }, min_closeness: 0, sleepy: 0.6 },
-    { name: "yawn", weight: 0.8, cooldown_ms: 60000, emotion_modifier: { tired: 3.0 }, min_closeness: 0, sleepy: 5.0 },
-    { name: "stretch", weight: 1.0, cooldown_ms: 45000, emotion_modifier: { happy: 1.5 }, min_closeness: 0, sleepy: 2.0 },
-    { name: "sway", weight: 0.7, cooldown_ms: 30000, emotion_modifier: { happy: 2.0 }, min_closeness: 10, sleepy: 0.5 },
-    { name: "hum", weight: 0.5, cooldown_ms: 60000, emotion_modifier: { happy: 2.5 }, min_closeness: 20, sleepy: 0.8 },
-    { name: "peek", weight: 0.8, cooldown_ms: 20000, emotion_modifier: { curious: 1.5 }, min_closeness: 0, sleepy: 0.4 },
-];
+// The behavior table is pure data (weights / cooldowns / modifiers / circadian
+// multipliers), kept in a sibling JSON asset so tuning does not touch logic.
+// Loaded at build time via resolveJsonModule and cast to the typed shape below.
+import idleBehaviorsData from "./idle-behaviors.json";
+
+export const IDLE_BEHAVIORS: IdleBehavior[] = idleBehaviorsData as IdleBehavior[];
 
 interface PickOptions {
     emotionMood: number;

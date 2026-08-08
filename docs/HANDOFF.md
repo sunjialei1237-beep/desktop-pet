@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-08（续³·害羞慢现气泡——后端 closeness-aware mood 标签：低 closeness(<20) 时中性/正向情绪产出「害羞」，loop_runner 持久化重发；前端 bubble-shy 1.2s 慢浮现先半透明；lib 277 / check --tests / tsc 全绿）**
+> 最后更新：**2026-08-08（续⁴·idle_weights JSON 化——microBehavior IDLE_BEHAVIORS 抽成 idle-behaviors.json 纯数据，逻辑零改；vitest 24 / tsc / build 全绿，行为不变）**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -42,7 +42,8 @@
 > - [x] **B5-深化 三层人格评估 benchmark**（B5 重第三线落地）：规则层(续⑧) + 语义 cosine 层(Item6) 是廉价可 CI 跑的两道线、各有盲区；补**重第三线 LLM-as-judge**——读人格圣经给 persona_fit 0-10 + 命名漂移维度，是唯一能抓「客服腔/鸡汤/动作描写」语气漂移的线。新 `tests/personality_judge_harness.rs`（永久评测资产）：`PERSONA_JUDGE_PROMPT`（璃 6 维度 + NOT 清单）+ `judge_persona`（`chat_reflection` 0.1/2048 踩坑#3 + JSON 提取 + **3 次指数退避重试**——30 连发撞 rate limit，无重试会静默零分"假通过"）+ 30 golden 集（On 10 / Gross 10[chatty×3/cloying×3/clingy×4] / Subtle 10[cold/mech×2/preachy×2/over_pos×2/action/套宠物]）+ 三层聚合断言 + **judge 可靠性闸**（失败>3 即 fail）。**实跑（全 30 真实评分 0 失败 65s）**：judge On **10.0** vs Gross **1.3** vs Subtle **2.0**；规则层对 Subtle **0/10 盲**、cosine 0.66 vs 0.59。**check --tests ✅ / 实跑 ✅**。→ 待实跑见 D12。**纯测试资产无生产变更，release 无需 rebuild**。详见 §最近一轮 (2026-08-08 续)。
 > - [x] **3a Alt+Space 全局唤醒（P11.4）**：真·系统级全局快捷键——任何 app 前台按 Alt+Space 都把桌宠召出来对话。新依赖 `tauri-plugin-global-shortcut` v2.3.2 + `lib.rs` plugin（handler：`w.show()`+`set_focus()`+`emit("show-input")`）+ setup 里 `register(Shortcut::new(ALT, Space))`（失败仅 warn，非致命）；前端新 `show-input` listener（镜像 restore-from-tray：`setAwayMode(false)`+`setInputVisible(true)`+rAF focus 输入框）。**cargo check ✅ / tsc ✅ / lib 275 ✅**。→ 待实跑见 D13。**⚠️ 权衡**：Alt+Space 会**全局接管** Windows 窗口系统菜单键（键盘开 Move/Size/Minimize/Maximize 失效，所有窗口）——设计文档钦定此键，若嫌扰可在 setup 改 `Shortcut`。后端 `.register()` 是 Rust 直调不走 IPC，**无需 capabilities 权限**。release 需 rebuild（新依赖 + 前后端）。
 > - [x] **3b 害羞慢现气泡（后端 mood 标签）**：设计 §6.3 把「害羞」列为情绪→气泡样式表里 开心/调皮/平静/难过/担心/疲惫 的同级条目（"慢慢浮现, 先半透明"），§6.2 又说低亲密度（陌生）→ 拘谨。**后端落 mood 标签**：`emotion/state.rs` 新 `derive_mood_label_with_closeness(state, closeness)`——以 `label_for_mood_full` 为单一真相源算 base label，再在 **closeness < `SHY_CLOSENESS_THRESHOLD=20.0`**（镜像 lonely-nudge / planner-Rule4 的 `closeness>=20` 门，取反）时把**中性/正向**标签（平静/开心/调皮）覆盖为「害羞」，但**不掩盖真实 distress**（担心/疲惫/难过照常——她和陌生人也会担心/累/难过）。**不改 `derive_mood_label` 签名**（踩坑#4：5 调用点 + 测试零波及，纯加法新 fn）。`converse.rs` 两处 emotion 落库点（silence:224 / normal:460）改调新 fn——closeness 从已读的 `relationship`（:176）取，标签写进 DB，loop_runner 30s 重发的是这份持久化标签，故害羞会自然驻留到下次对话。set_emotion 调试命令保留原 `derive_mood_label`（debug 覆写应字面）。**前端**：`bubbleClassForMood` 加 害羞→`bubble-shy`；`styles.css` 新 `bubble-shy` + `@keyframes bubble-shy-reveal`（1.2s 慢浮现，30% 处 opacity 0.35「先半透明」，终态 opacity 1 可读——对比 happy/playful 的 0.3s 弹出，shy 是迟疑试探的慢揭幕）。**lib 277（+2 shy 单测：低 closeness 中性→害羞 / 不掩盖 distress）/ check --tests ✅ / tsc ✅**。→ 待实跑见 D14。**纯后端标签 + 前端样式，release 需 rebuild**。详见 §最近一轮 (2026-08-08 续³)。
-> - [ ] **3c–d 散落项 + 架构债**（剩余）：idle_weights JSON 化 / BrainState 扩到 prompt builder+budget(B6 follow-up)。
+> - [x] **3c idle_weights JSON 化（数据驱动）**：`microBehavior.ts` 的 `IDLE_BEHAVIORS` 8 条微行为（weight/cooldown/emotion_modifier/min_closeness/sleepy）原本是硬编码 const 数组、数据和逻辑混在一个 .ts。抽成纯数据资产 `src/animation/idle-behaviors.json`，`microBehavior.ts` 改 `import ... from "./idle-behaviors.json"` + `as IdleBehavior[]` 类型断言（tsconfig `resolveJsonModule:true` 早开），`pickNextBehavior`/`applySleepyWeight` 逻辑零改动。**好处**：调权重/冷却/昼夜倍率只改 JSON 不碰逻辑（数据↔逻辑解耦，便于后续手感微调）。**纯前端行为不变重构**：vitest 24（含 7 microBehavior 测，A5 yawn/look_around 日夜比断言仍过——证 JSON 数据字节等价）/ tsc ✅ / vite build ✅（JSON import 打包正常）。**release 需 rebuild**（前端）。无需手感验收（代码层单测已覆盖，见 §最近一轮 续⁴）。
+> - [ ] **3d 架构债 BrainState 扩到 prompt builder+budget**（B6 follow-up，剩余）。
 
 > **2026-08-07 自主批次推进中**（用户授权长程自主："按优先级推进所有后续内容，每项自测后更新 HANDOFF，不询问；待实跑项统一整理"）。逐项推进，每项自测（cargo test --lib / check --tests / tsc）绿后勾选。**release exe 在批次末统一 rebuild**（中间项都以库单测 + check 编译通过为正确性证据；批次末 Task #14 前一次性 `npx tauri build --no-bundle`，避免每项重构都重编一次前端嵌入）：
 > - [x] **Task #8 鲁棒性加固**：① main 空回复重试——converse `chat_stream` 把 `on_token` 改 `mut`、传 `&mut on_token` 复用，content 空时重试一次（镜像 extractor 重试；flash reasoning 吃光预算 finish_reason=length 空 content 的坑#3 瞬态）。② harness 启发式误报——Acknowledge/ForgetAck 关键词表加现实同义措辞（记着/记心里/放心吧/帮你记 + 不提/不会再/抹掉/清掉），治 705/1002「语义对无关键词」误报。**lib 259 / check --tests ✅**。纯后端 + 测试，release 需 rebuild。
@@ -137,6 +138,21 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-08 续⁴)：idle_weights JSON 化 —— 数据驱动微行为表
+
+**任务**：用户"2，3 按顺序跑"——3 的第三子项（3c）。`microBehavior.ts::IDLE_BEHAVIORS` 8 条微行为（blink/look_around/tilt_head/yawn/stretch/sway/hum/peek）的 weight/cooldown_ms/emotion_modifier/min_closeness/sleepy 全硬编码在 const 数组里，**数据和逻辑混居**——调手感要在一个塞满 import/函数的 .ts 里翻找数值。
+
+**完成**：纯数据抽离，行为字节不变。
+- 新 `src/animation/idle-behaviors.json`：8 条行为表（纯数据，字段与原 const 一一对应）。
+- `microBehavior.ts`：`import idleBehaviorsData from "./idle-behaviors.json"` + `export const IDLE_BEHAVIORS = idleBehaviorsData as IdleBehavior[]`。`IdleBehavior` interface / `applySleepyWeight` / `pickNextBehavior` **逻辑零改动**——它们本就消费 `IDLE_BEHAVIORS`，数据源从内联换成 JSON import 对它们透明。
+- tsconfig `resolveJsonModule:true` 早开（circadian/sleepLogic 等 .ts 同款），无需改配置。
+
+**向北星靠拢**：服务"#10 生命感"——微行为权重是手感微调的高频旋钮（哪个动作常出现/夜里多打哈欠），数据↔逻辑解耦后**调参只动 JSON**，降低手感迭代摩擦（原则 #9 刚够用：不引入运行时配置/后端下发——权重是调谐常数非用户配置，那是投机灵活性）。
+
+**验证**：`vitest` **24 passed**（含 7 `microBehavior.test.ts`——A5 yawn 日夜比 >2×、look_around 夜里下降、sleepiness=0 白天不变、0.01 floor 钳位**全仍过**，证 JSON 数据与原 const 字节等价）/ `tsc --noEmit` ✅（`as IdleBehavior[]` 断言通过）/ `npm run build` ✅（Vite 打包 JSON import 正常，2.50s）。**纯前端，release 需 rebuild**。**无需手感验收**（行为不变重构，代码层单测已覆盖；类比 A1 BrainState 重构入"不易快速验收"类）。
 
 ---
 
