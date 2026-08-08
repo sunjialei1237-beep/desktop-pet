@@ -556,6 +556,21 @@ html, body, #root {
   border-radius: 16px;
 }
 
+/* 害羞 (shy) — design §6.3: "慢慢浮现, 先半透明". A slow, tentative reveal
+   (vs the snappy 0.3s pop of happy/playful): she hovers semi-transparent for a
+   beat before settling fully visible — reserved with someone she barely knows
+   (§6.2 "陌生时拘谨"). Fires at low closeness (see derive_mood_label_with_closeness). */
+.chat-bubble.bubble-shy {
+  animation: bubble-shy-reveal 1.2s ease-out;
+  border-radius: 16px;
+}
+
+@keyframes bubble-shy-reveal {
+  0% { transform: translateY(6px) scale(0.96); opacity: 0; }
+  30% { transform: translateY(4px) scale(0.97); opacity: 0.35; } /* 先半透明 */
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
 @keyframes bubble-pop-happy {
   0% { transform: scale(0.7) translateY(10px); opacity: 0; }
   60% { transform: scale(1.05) translateY(0); opacity: 1; }

@@ -222,6 +222,12 @@ cargo test --test personality_judge_harness -- --nocapture --test-threads=1
 **通过判据**：桌宠窗口立即置顶显示 + 输入框弹出 + 光标已在输入框（直接打字无需点）。再验：右键「暂时离开」→ 窗口进托盘 → 切别的窗口 → `Alt+Space` → 窗口从托盘恢复 + 输入框弹出（验证 show+focus 覆盖隐藏态）。
 **注意**：Alt+Space 接管了 Windows 窗口系统菜单键（桌宠运行时键盘开窗口 Move/Size/Minimize 失效，所有窗口）——设计钦定此键，若扰在 `lib.rs` setup 改 `Shortcut::new(...)` 换键。启动日志应有 `[global-shortcut] Alt+Space registered`（注册失败会是 `[global-shortcut] failed to register...` warn，此时快捷键不生效但桌宠正常）。
 
+### D14 — 害羞慢现气泡（后端 closeness-aware mood 标签 / 2026-08-08 续³）
+> 低亲密度（closeness<20，早期关系）时，璃的中性/正向情绪产出「害羞」标签 → 气泡 1.2s 慢浮现、先半透明（设计 §6.3/§6.2 陌生拘谨）。需 dev 或 release exe。
+**步骤**：① `npm run tauri dev` 起桌宠（**新库/初期 closeness 应为 0~低**，天然触发）；② F12 开 Debug Panel 看 **Brain 分区 closeness 值 < 20**；③ 发一条中性消息（如「在吗」/「嗨」）触发对话。
+**通过判据**：回复气泡**慢慢浮现**（约 1.2s，明显比平时的 0.3s 弹出慢）、**先半透明再变实**（迟疑试探感，非瞬现）；Debug Panel Last Turn 的 mood_label 显「害羞」。**对照**：把 closeness 拉到 ≥20（Debug Panel 多次摸头/对话累积，或直接 SQL 改 relationship.closeness）后再发中性消息 → 气泡恢复爽快弹出（开心/调皮/平静），不再害羞——验证亲密度里程碑的两面（与 lonely-nudge 的 `closeness>=20` 门同阈值）。
+**边界**：distress 不被害羞掩盖——低 closeness 下若情绪是 担心/疲惫/难过（Debug Panel Emotion 编辑器把 stress 拉高/ social_battery 拉低/ mood 拉低后对话），标签仍是 担心/疲惫/难过 而非 害羞（单测 `test_shy_does_not_mask_distress` 钉）。
+
 ## 本批次不易快速验收（代码层已单测）
 | 项 | 为何难快速触发 | 代码层依据 |
 |---|---|---|

@@ -29,6 +29,28 @@ pub fn derive_mood_label(state: &EmotionState) -> &'static str {
     label_for_mood_full(state.mood, state.stress, state.social_battery)
 }
 
+/// Closeness (0..100) below which Liri is still reserved with the user — the
+/// "陌生时拘谨" early-relationship demeanor (design §6.2). Mirrors the
+/// lonely-nudge / planner-Rule-4 gate (closeness >= 20 to reach out warmly),
+/// inverted: below this she holds back.
+pub const SHY_CLOSENESS_THRESHOLD: f64 = 20.0;
+
+/// Like [`derive_mood_label`], but factors in relationship closeness. At low
+/// closeness the neutral/positive moods surface as 害羞 (shy) instead of the
+/// usual 平静/开心/调皮 — she holds back with someone she barely knows (design
+/// §6.2 "陌生时拘谨"). Genuine distress (担心/疲惫/难过) is NOT masked: she can
+/// be worried, tired, or sad regardless of how close you are. The base label
+/// still comes from [`label_for_mood_full`], so there is a single source of
+/// truth for the mood bands — this only adds a closeness override on top.
+pub fn derive_mood_label_with_closeness(state: &EmotionState, closeness: f64) -> &'static str {
+    let base = label_for_mood_full(state.mood, state.stress, state.social_battery);
+    if closeness < SHY_CLOSENESS_THRESHOLD && !matches!(base, "担心" | "疲惫" | "难过") {
+        "害羞"
+    } else {
+        base
+    }
+}
+
 /// Derives a mood label from a single mood value (0..1).
 /// Used by the homeostasis tick when only mood is available.
 pub fn label_for_mood(mood: f64) -> &'static str {
@@ -89,5 +111,34 @@ mod tests {
         s.stress = 0.2;
         s.social_battery = 0.1;
         assert_eq!(derive_mood_label(&s), "疲惫");
+    }
+
+    #[test]
+    fn test_shy_label_at_low_closeness() {
+        let mut s = EmotionState::default();
+        // Neutral/positive moods -> 害羞 in the early relationship.
+        s.mood = 0.5; // would be 调皮
+        assert_eq!(derive_mood_label_with_closeness(&s, 0.0), "害羞");
+        assert_eq!(derive_mood_label_with_closeness(&s, 19.9), "害羞");
+        s.mood = 0.4; // would be 平静
+        assert_eq!(derive_mood_label_with_closeness(&s, 10.0), "害羞");
+        s.mood = 0.8; // would be 开心
+        assert_eq!(derive_mood_label_with_closeness(&s, 5.0), "害羞");
+        // At/above the threshold the usual label returns.
+        assert_eq!(derive_mood_label_with_closeness(&s, 20.0), "开心");
+        assert_eq!(derive_mood_label_with_closeness(&s, 100.0), "开心");
+    }
+
+    #[test]
+    fn test_shy_does_not_mask_distress() {
+        let mut s = EmotionState::default();
+        s.stress = 0.8; // 担心
+        assert_eq!(derive_mood_label_with_closeness(&s, 0.0), "担心");
+        s.stress = 0.2;
+        s.social_battery = 0.1; // 疲惫
+        assert_eq!(derive_mood_label_with_closeness(&s, 0.0), "疲惫");
+        s.social_battery = 0.8;
+        s.mood = 0.2; // 难过
+        assert_eq!(derive_mood_label_with_closeness(&s, 0.0), "难过");
     }
 }

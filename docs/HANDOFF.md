@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-07（续·激活 loneliness——接通最后一个死情绪字段，璃会在你离开后主动找你：tick_loneliness 进 homeostasis 唤醒 planner Rule 4 + lonely-nudge 气泡；lib 259 / harness / tsc / build / vitest 全绿）**
+> 最后更新：**2026-08-08（续³·害羞慢现气泡——后端 closeness-aware mood 标签：低 closeness(<20) 时中性/正向情绪产出「害羞」，loop_runner 持久化重发；前端 bubble-shy 1.2s 慢浮现先半透明；lib 277 / check --tests / tsc 全绿）**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -41,7 +41,8 @@
 > **2026-08-08（续）自主推进中**（用户授权："2，3 按顺序跑，跑完用之前的策略——每项自主验证 + 更新 HANDOFF + 新增待测试 + commit，不报告不询问"。2=B5 语义评估深化[LLM-as-judge + ≥30 golden 集]，3=散落小项 + 架构债收尾）：
 > - [x] **B5-深化 三层人格评估 benchmark**（B5 重第三线落地）：规则层(续⑧) + 语义 cosine 层(Item6) 是廉价可 CI 跑的两道线、各有盲区；补**重第三线 LLM-as-judge**——读人格圣经给 persona_fit 0-10 + 命名漂移维度，是唯一能抓「客服腔/鸡汤/动作描写」语气漂移的线。新 `tests/personality_judge_harness.rs`（永久评测资产）：`PERSONA_JUDGE_PROMPT`（璃 6 维度 + NOT 清单）+ `judge_persona`（`chat_reflection` 0.1/2048 踩坑#3 + JSON 提取 + **3 次指数退避重试**——30 连发撞 rate limit，无重试会静默零分"假通过"）+ 30 golden 集（On 10 / Gross 10[chatty×3/cloying×3/clingy×4] / Subtle 10[cold/mech×2/preachy×2/over_pos×2/action/套宠物]）+ 三层聚合断言 + **judge 可靠性闸**（失败>3 即 fail）。**实跑（全 30 真实评分 0 失败 65s）**：judge On **10.0** vs Gross **1.3** vs Subtle **2.0**；规则层对 Subtle **0/10 盲**、cosine 0.66 vs 0.59。**check --tests ✅ / 实跑 ✅**。→ 待实跑见 D12。**纯测试资产无生产变更，release 无需 rebuild**。详见 §最近一轮 (2026-08-08 续)。
 > - [x] **3a Alt+Space 全局唤醒（P11.4）**：真·系统级全局快捷键——任何 app 前台按 Alt+Space 都把桌宠召出来对话。新依赖 `tauri-plugin-global-shortcut` v2.3.2 + `lib.rs` plugin（handler：`w.show()`+`set_focus()`+`emit("show-input")`）+ setup 里 `register(Shortcut::new(ALT, Space))`（失败仅 warn，非致命）；前端新 `show-input` listener（镜像 restore-from-tray：`setAwayMode(false)`+`setInputVisible(true)`+rAF focus 输入框）。**cargo check ✅ / tsc ✅ / lib 275 ✅**。→ 待实跑见 D13。**⚠️ 权衡**：Alt+Space 会**全局接管** Windows 窗口系统菜单键（键盘开 Move/Size/Minimize/Maximize 失效，所有窗口）——设计文档钦定此键，若嫌扰可在 setup 改 `Shortcut`。后端 `.register()` 是 Rust 直调不走 IPC，**无需 capabilities 权限**。release 需 rebuild（新依赖 + 前后端）。
-> - [ ] **3b–d 散落项 + 架构债**（剩余）：害羞慢现气泡(后端 mood 标签) / idle_weights JSON 化 / BrainState 扩到 prompt builder+budget(B6 follow-up)。
+> - [x] **3b 害羞慢现气泡（后端 mood 标签）**：设计 §6.3 把「害羞」列为情绪→气泡样式表里 开心/调皮/平静/难过/担心/疲惫 的同级条目（"慢慢浮现, 先半透明"），§6.2 又说低亲密度（陌生）→ 拘谨。**后端落 mood 标签**：`emotion/state.rs` 新 `derive_mood_label_with_closeness(state, closeness)`——以 `label_for_mood_full` 为单一真相源算 base label，再在 **closeness < `SHY_CLOSENESS_THRESHOLD=20.0`**（镜像 lonely-nudge / planner-Rule4 的 `closeness>=20` 门，取反）时把**中性/正向**标签（平静/开心/调皮）覆盖为「害羞」，但**不掩盖真实 distress**（担心/疲惫/难过照常——她和陌生人也会担心/累/难过）。**不改 `derive_mood_label` 签名**（踩坑#4：5 调用点 + 测试零波及，纯加法新 fn）。`converse.rs` 两处 emotion 落库点（silence:224 / normal:460）改调新 fn——closeness 从已读的 `relationship`（:176）取，标签写进 DB，loop_runner 30s 重发的是这份持久化标签，故害羞会自然驻留到下次对话。set_emotion 调试命令保留原 `derive_mood_label`（debug 覆写应字面）。**前端**：`bubbleClassForMood` 加 害羞→`bubble-shy`；`styles.css` 新 `bubble-shy` + `@keyframes bubble-shy-reveal`（1.2s 慢浮现，30% 处 opacity 0.35「先半透明」，终态 opacity 1 可读——对比 happy/playful 的 0.3s 弹出，shy 是迟疑试探的慢揭幕）。**lib 277（+2 shy 单测：低 closeness 中性→害羞 / 不掩盖 distress）/ check --tests ✅ / tsc ✅**。→ 待实跑见 D14。**纯后端标签 + 前端样式，release 需 rebuild**。详见 §最近一轮 (2026-08-08 续³)。
+> - [ ] **3c–d 散落项 + 架构债**（剩余）：idle_weights JSON 化 / BrainState 扩到 prompt builder+budget(B6 follow-up)。
 
 > **2026-08-07 自主批次推进中**（用户授权长程自主："按优先级推进所有后续内容，每项自测后更新 HANDOFF，不询问；待实跑项统一整理"）。逐项推进，每项自测（cargo test --lib / check --tests / tsc）绿后勾选。**release exe 在批次末统一 rebuild**（中间项都以库单测 + check 编译通过为正确性证据；批次末 Task #14 前一次性 `npx tauri build --no-bundle`，避免每项重构都重编一次前端嵌入）：
 > - [x] **Task #8 鲁棒性加固**：① main 空回复重试——converse `chat_stream` 把 `on_token` 改 `mut`、传 `&mut on_token` 复用，content 空时重试一次（镜像 extractor 重试；flash reasoning 吃光预算 finish_reason=length 空 content 的坑#3 瞬态）。② harness 启发式误报——Acknowledge/ForgetAck 关键词表加现实同义措辞（记着/记心里/放心吧/帮你记 + 不提/不会再/抹掉/清掉），治 705/1002「语义对无关键词」误报。**lib 259 / check --tests ✅**。纯后端 + 测试，release 需 rebuild。
@@ -136,6 +137,30 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-08 续³)：害羞慢现气泡 —— 后端 closeness-aware mood 标签
+
+**任务**：用户"2，3 按顺序跑"——3 的第二子项（3b）。设计 §6.3 情绪→气泡样式表里「害羞 = 慢慢浮现, 先半透明」是同级条目，但代码从未产出此标签、前端无对应样式。
+
+**架构决策（关键）**：害羞的触发信号是什么？
+- `derive_mood_label(&EmotionState)` 只看 mood/stress/social_battery——EmotionState **没有** attention/closeness 维度。设计 §6.6 把害羞系于「被注视（Focused attention）」、§6.2 系于「陌生拘谨（低 closeness）」，**两者都不是情绪向量属性**。
+- 强行塞进 `label_for_mood_full` 会构造一条无信号支撑的任意规则（违反 Karpathy #1）。
+- 后端**唯一可知**的害羞信号 = **closeness（亲密度，DB 里 0..100）**——而产出气泡 mood 标签的 `converse` 两处落库点已经读了 `relationship`（含 closeness）。
+- 故：害羞 = **低 closeness（<20）时的中性/正向情绪**（§6.2 陌生拘谨）。closeness≥20 后自然解除（她放松了）。这是后端可知、设计支持、且**随关系进展真实变化**的信号。
+
+**完成**：
+- **后端** `emotion/state.rs`：新 `pub const SHY_CLOSENESS_THRESHOLD: f64 = 20.0`（镜像 lonely-nudge/planner-Rule4 的 `closeness>=20` 门，取反——同一个亲密度里程碑的两面）+ 新 `derive_mood_label_with_closeness(state, closeness)`：先 `label_for_mood_full` 算 base（单一真相源，零分叉），再 `closeness < 阈值 && !matches!(base, "担心"|"疲惫"|"难过")` → 覆盖「害羞」。distress 不掩盖（她和陌生人也会担心/累/难过）。**不改 `derive_mood_label` 签名**——5 调用点（commands×2 / converse×2 / grounding / retrieval）+ 测试零波及，纯加法。+2 单测（低 closeness 中性/正向→害羞、阈值边界、不掩盖 distress 三类）。
+- **后端** `mind/converse.rs`：两处 emotion 落库点（silence:224 / normal:460）`derive_mood_label` → `derive_mood_label_with_closeness`。closeness 在 `planner::plan` 后算一次（`relationship.as_ref().map(|r|r.closeness).unwrap_or(0.0)`），两处共用。标签写进 DB → loop_runner 30s 重发的是这份持久化标签 → 害羞自然驻留到下次对话改写。set_emotion 调试命令保留原 fn（debug 手动覆写应字面反映所设情绪）。
+- **前端** `App.tsx`：`bubbleClassForMood` 加 `害羞→bubble-shy`。
+- **前端** `styles.css`：新 `.chat-bubble.bubble-shy` + `@keyframes bubble-shy-reveal`——1.2s ease-out（vs happy/playful 的 0.3s 弹出），0%→30% 停在 opacity 0.35（"先半透明"的迟疑）→100% opacity 1（可读）。慢揭幕 = 害羞试探。
+
+**向北星靠拢**：服务"陪伴"核心——早期关系她**拘谨慢现**、亲密度上来后**自然放开**（气泡节奏从 1.2s 慢浮现 → 0.3s 爽快弹出），关系进展**肉眼可感**（原则 #10 生命感优先）。**架构 #1**（纯函数，标签 = 已有数据的投影）/ **#5**（情绪标签是 Mind 投影，closeness 是 Relationship 事实，不混入 EmotionState 向量）。
+
+**验证**：`cargo test --lib emotion::state` 4 passed（+2 shy）/ `cargo check --tests` ✅（无踩坑#4）/ `cargo test --lib` **277 passed**（275+2）/ `tsc --noEmit` ✅。运行时手感验收属手动 → verify-checklist **D14**。**release 需 rebuild**（后端标签 + 前端样式都改）。
+
+**遗留 / follow-up**：§6.6 的「被注视→害羞」**反应式**触发（attention===Focused 瞬间害羞）未做——那是前端 attention 驱动的瞬时态，与本次「关系阶段」驱动的稳态害羞是两个正交维度；当前稳态版已交付完整 §6.3 害羞气泡，反应式版留作增强。
 
 ---
 

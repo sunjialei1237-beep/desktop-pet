@@ -185,6 +185,11 @@ pub async fn converse(
     );
     let mut intent = crate::mind::planner::plan(&brain);
 
+    // Closeness (0..100) feeds the mood label: at low closeness neutral/positive
+    // moods surface as 害羞 (design §6.2 "陌生时拘谨"). Computed once, used by both
+    // emotion-write sites below.
+    let closeness = relationship.as_ref().map(|r| r.closeness).unwrap_or(0.0);
+
     // QA mode: strip planner directives that would steer the reply toward
     // memories or follow-up questions — just answer the question.
     if qa_mode {
@@ -216,7 +221,7 @@ pub async fn converse(
             loneliness: new_loneliness,
             rest_need: emotion.rest_need,
         };
-        let new_label = crate::emotion::state::derive_mood_label(&new_state);
+        let new_label = crate::emotion::state::derive_mood_label_with_closeness(&new_state, closeness);
         let _ = db.with_conn(|conn| {
             crate::db::emotion::update_fields(
                 conn,
@@ -452,7 +457,7 @@ pub async fn converse(
         loneliness: new_loneliness,
         rest_need: emotion.rest_need,
     };
-    let new_label = crate::emotion::state::derive_mood_label(&new_state);
+    let new_label = crate::emotion::state::derive_mood_label_with_closeness(&new_state, closeness);
     let _ = db.with_conn(|conn| {
         crate::db::emotion::update_fields(
             conn,
