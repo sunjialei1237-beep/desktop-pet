@@ -38,6 +38,10 @@
 > - [x] **砍掉走路相关计划 + 代码**：核验发现走路**不只是计划**——`src/animation/spatial.ts` + `App.tsx` 有正在运行的「走回窝」代码。AskUserQuestion 确认后代码一并砍。删 `spatial.ts` 整文件 + `App.tsx` 拆全部接线（import/spatialRef/实例化/setNest/物理循环走回块/isWalking state+className）+ `styles.css` 删 walking 规则；计划/设计文档（implementation-plan 12.2 整节 + Walk 状态 + walk.wav + FSM 图 + design 走路行）全标「已砍除 2026-08-08」移除。**tsc ✅ / vitest 24 ✅ / build ✅**。详见 §最近一轮 (2026-08-08) 走路砍除小节。release 需 rebuild。
 > 详见批次末 §最近一轮 (2026-08-08) 汇总。
 
+> **2026-08-08（续）自主推进中**（用户授权："2，3 按顺序跑，跑完用之前的策略——每项自主验证 + 更新 HANDOFF + 新增待测试 + commit，不报告不询问"。2=B5 语义评估深化[LLM-as-judge + ≥30 golden 集]，3=散落小项 + 架构债收尾）：
+> - [x] **B5-深化 三层人格评估 benchmark**（B5 重第三线落地）：规则层(续⑧) + 语义 cosine 层(Item6) 是廉价可 CI 跑的两道线、各有盲区；补**重第三线 LLM-as-judge**——读人格圣经给 persona_fit 0-10 + 命名漂移维度，是唯一能抓「客服腔/鸡汤/动作描写」语气漂移的线。新 `tests/personality_judge_harness.rs`（永久评测资产）：`PERSONA_JUDGE_PROMPT`（璃 6 维度 + NOT 清单）+ `judge_persona`（`chat_reflection` 0.1/2048 踩坑#3 + JSON 提取 + **3 次指数退避重试**——30 连发撞 rate limit，无重试会静默零分"假通过"）+ 30 golden 集（On 10 / Gross 10[chatty×3/cloying×3/clingy×4] / Subtle 10[cold/mech×2/preachy×2/over_pos×2/action/套宠物]）+ 三层聚合断言 + **judge 可靠性闸**（失败>3 即 fail）。**实跑（全 30 真实评分 0 失败 65s）**：judge On **10.0** vs Gross **1.3** vs Subtle **2.0**；规则层对 Subtle **0/10 盲**、cosine 0.66 vs 0.59。**check --tests ✅ / 实跑 ✅**。→ 待实跑见 D12。**纯测试资产无生产变更，release 无需 rebuild**。详见 §最近一轮 (2026-08-08 续)。
+> - [ ] **3 散落项 + 架构债**（下一项）：Alt+Space 全局键(P11.4) / 害羞慢现气泡(后端 mood 标签) / idle_weights JSON 化 / BrainState 扩到 prompt builder+budget(B6 follow-up)。
+
 > **2026-08-07 自主批次推进中**（用户授权长程自主："按优先级推进所有后续内容，每项自测后更新 HANDOFF，不询问；待实跑项统一整理"）。逐项推进，每项自测（cargo test --lib / check --tests / tsc）绿后勾选。**release exe 在批次末统一 rebuild**（中间项都以库单测 + check 编译通过为正确性证据；批次末 Task #14 前一次性 `npx tauri build --no-bundle`，避免每项重构都重编一次前端嵌入）：
 > - [x] **Task #8 鲁棒性加固**：① main 空回复重试——converse `chat_stream` 把 `on_token` 改 `mut`、传 `&mut on_token` 复用，content 空时重试一次（镜像 extractor 重试；flash reasoning 吃光预算 finish_reason=length 空 content 的坑#3 瞬态）。② harness 启发式误报——Acknowledge/ForgetAck 关键词表加现实同义措辞（记着/记心里/放心吧/帮你记 + 不提/不会再/抹掉/清掉），治 705/1002「语义对无关键词」误报。**lib 259 / check --tests ✅**。纯后端 + 测试，release 需 rebuild。
 > - [x] **Task #9 B6 BrainState**：converse 9 参 → `ConverseCtx<'a>` 统一快照（8 个引用字段 + `on_token` 留作独立泛型 `FnMut`——回调是流式旁路非状态，塞进 struct 会让整体变泛型）。函数体用 8 行别名桥接（`let text = ctx.text;`…），400 行 body 字节不变，最低风险。6 处调用全改：commands.rs（生产）+ memory_recall(×3)/conversation_harness/prompt_quality_harness。harness 里的 `get_context()` 临时 Vec 绑定本地避免跨 await 临时生命周期问题。**check --tests ✅ + lib 259 ✅**。纯机械包装，行为不变。
@@ -105,7 +109,7 @@
 |---|---|---|---|
 | **B4b conversations 死表** | backlog 普通项 | ❌ **确认真 Bug（#11 可追溯受损）** | `Grep conversations::(insert\|get_recent\|get_max_turn)` 于 `src-tauri/src` = **0 命中**；`codegraph_callers(insert)` 显示 `conversations::insert` 仅被测试 `test_insert_and_get_recent` 调用。plan P5.3 步骤 5 明确要求"原始对话日志写 conversations 表"。影响：无法回溯她原话（07-31 幻觉即因此无法定位）。 |
 | **B4 Debug Panel** | "缺 5 分区" | ⚠️ **确认 6/9 分区** | `DebugPanel.tsx` = Brain/Counts/Facts/Episodes/Pending/Timeline。plan P16 还要 Prompt token / Retrieved score / Reflect / AnimFSM / Cost。后端 `DebugSnapshot`(commands.rs:689) 无对应字段。 |
-| **B5 Golden 评估** | "框架不完整" | ❌ **确认无框架** | `tests/` 有 `golden_conversations.rs`（数据，42 符号）但**无 `evaluation.rs`**（plan P17 点名）。无 `personality_drift_score`、无 CI。Liri 人格刚落 system.txt → 缺回归网。 |
+| **B5 Golden 评估** | "框架不完整" | ❌ **确认无框架** | `tests/` 有 `golden_conversations.rs`（数据，42 符号）但**无 `evaluation.rs`**（plan P17 点名）。无 `personality_drift_score`、无 CI。Liri 人格刚落 system.txt → 缺回归网。**→ 已修复（2026-08-08 续）**：三层评估[规则/cosine/LLM-judge] + 30 golden 集全落地，见 §最近一轮 (2026-08-08 续)。 |
 | **B6 A1 BrainState** | "架构债" | ⚠️ **确认债** | `converse()` = 10 参数（plan A1 要 `fn(brain:&BrainState)`），违反原则 #2 信号"参数>3"。在跑、重构触踩坑#4。 |
 | **B7 A2 Scheduler** | "架构债" | ⚠️ **确认债** | `loop_runner.rs` = `std::thread::spawn`+`sleep`（medium 30s / slow 1h），非 plan A2 的 Scheduler trait。在跑。 |
 | **B1b Grounding 阻断** | "条件触发" | ⏳ **确认条件成立、未触发** | `check_groundedness`(grounding.rs:235) 仅挂 converse、只 warn、`claim_patterns`(:256) 全英文（中文漏检）、未挂 proactive/welcome_back 输出端。07-31 A 档 prompt 收紧后**无复发报告** → 维持观察，不升级。 |
@@ -124,13 +128,40 @@
 | **P1** | **B4b conversations 死表** | 真 Bug、小、外科手术式、解锁 #11 可追溯 | ✅ 本轮 |
 | **P1** | **B4-MVP 决策链分区（Retrieved+Intent+Reflect）** | #11 核心、诊断幻觉/漂移、中等工作量、未受阻 | ✅ 本轮 |
 | P2 | B4 余项（AnimFSM 前端 / Cost LLM 计数 / Prompt 动态 token） | #11 补全，但需前端 plumbing 或 LlmClient 插桩 | ⏳ follow-up |
-| P2 | B5 Golden 评估框架 | 锁 Liri 人格防漂移；重（需真 LLM、≥30 对话、CI） | ⏳ 待 Liri 稳定后 |
+| P2 | B5 Golden 评估框架 | 锁 Liri 人格防漂移；重（需真 LLM、≥30 对话、CI） | ✅ **完成（2026-08-08 续）** 三层[规则/cosine/judge] + 30 golden 集 |
 | P3 | B1b Grounding B 档 | 条件触发（A 档后无复发） | ⏳ 观察 |
 | P4 | B6 A1 BrainState / B7 A2 Scheduler | 在跑的架构债、重构风险高 | ⏳ 顺带改 |
 | P5 | Liri/Spine 迁移 | #10 真正下一步，**受阻于资产** | ⏳ 等资产 |
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-08 续)：B5 三层人格评估 —— LLM-as-judge 第三线落地
+
+**任务**：用户"2，3 按顺序跑"（2=B5 语义评估深化）。B5 规则层(续⑧) + 语义 cosine 层(Item6) 是廉价可 CI 两道线、各有盲区；本项补**重第三线 LLM-as-judge**——读人格圣经、给 persona_fit 0-10、命名漂移维度，是唯一能抓「客服腔 / 鸡汤 / 动作描写」等细微语气漂移的线。30 条永久标注 golden 集三层交叉验证。
+
+**完成**：新 `tests/personality_judge_harness.rs`（永久评测资产，镜像 prompt_quality/embedding_ab 的"真 LLM 手动跑"模式）：
+- **PERSONA_JUDGE_PROMPT**：璃人格定义（温柔/好奇/聪慧/安静/调皮/神秘 + NOT 话痨/卖萌/依赖/强行乐观 + 短/口语/直接/无动作描写/无服务式寒暄/陪伴非助手），输出 JSON `{persona_fit:0-10, drift:none|chatty|cloying|clingy|cold|mechanical|preachy|over_positive|action_desc, reason}`。
+- **judge_persona**：`chat_reflection` temp 0.1 / max_tokens 2048（踩坑#3），JSON `{...}` 提取。**关键鲁棒性**：3 次指数退避重试（2s/4s）返回 `Result<_, String>`——30 连发 judge 撞 provider rate limit（实测无重试时 ~8 条连续 Err 被 `.ok()?` 静默零分、测试"假通过"），重试让失败可见可数。
+- **30 条 golden 集**（三组各 10，永久回归资产）：On=璃典型语气；Gross=规则层必抓（chatty×3 >200CJK / cloying×3 emoji 堆 / clingy×4 marker）；Subtle=规则层必盲（cold / mechanical×2 客服腔 / preachy×2 说教 / over_positive×2 鸡汤 / action_desc 动作描写 / 套宠物）。每条标 expected_drift。
+- **三层聚合 + 断言**：On/Gross/Subtle 各算 rule/cosine/judge 均值；断言 judge On>Gross & On>Subtle（judge 抓全部漂移）、cosine On>Subtle（语义层抓语气）、rule Gross 全 flag & Subtle 0 flag（规则层边界）、rule On>Gross。**judge 可靠性闸**：失败>3 即 fail，防零分假通过。
+- **样本调试实跑发现**（首轮暴露，已修）：① 原 chatty 样本 ~150 CJK 未过 200 阈值→规则层漏（实测确认规则层盲区，延长到 >200）；② over_positive 样本用「！」被规则层当 cloying 抓→去感叹号使其成纯语气漂移（规则层真盲）；③ 模糊 On 样本"你最近在忙什么呀"被 judge 误判服务式寒暄、模糊 cold"哦"被 judge 误判高分→换清晰样本。调试本身即验证了三层各自真实边界。
+
+**实跑信号（全 30 真实评分，0 失败，65s）**：
+
+| 层 | On | Gross | Subtle | 覆盖边界 |
+|---|---|---|---|---|
+| 规则 | 1.000 | 0.660 (10/10 flag) | 1.000 (**0/10 盲**) | 只抓 GROSS 风格（长/emoji/marker） |
+| cosine | 0.660 | 0.627 | 0.592 | 抓规则漏的语气漂移 |
+| judge | **10.0** | 1.3 | 2.0 | 抓全部 + 命名维度 |
+
+→ judge 是唯一抓「客服腔/鸡汤/动作描写/套宠物」的线；cosine 也区分出 0.66 vs 0.59 语气 gap 但 judge 给明确低分 + 维度名。
+
+**向北星靠拢**：#11 可观测/可解释（"她像不像璃"三层可量化 + 漂移维度可命名）；锁 Liri 人格防未来 system.txt 改动回归。**架构 #1**：规则层纯函数 CI 跑（evaluation.rs 合成向量测 + 规则测），judge 是重手动线。
+
+**验证**：`cargo check --tests` ✅ / `--test personality_judge_harness` 实跑 ✅。**纯后端测试资产，无生产代码变更，release 无需 rebuild。** → 待实跑见 verify-checklist D12。
 
 ---
 
@@ -1026,7 +1057,7 @@ Kill List 三闭环已完成，现按"提升体验/生命感"→"闭环深度"�
 - ~~**B4b. conversations 死表修复**~~ ✅ **本轮完成（2026-08-03 续③）**：审计确认真 Bug——生产路径从未调 `conversations::insert`（grep 0 / callers 仅测试）。`commands.rs::send_message` 镜像 working_memory push 写 user+assistant turn。详见 §最近一轮 (2026-08-03 续③)。
 - ~~**B4-MVP. Debug Panel 决策链分区（Retrieved+Intent+Reflect）**~~ ✅ **本轮完成（2026-08-03 续③）**：服务"她为什么这么说"诊断链。详见 §最近一轮 (2026-08-03 续③)。
 - **B4-余. Debug Panel 补全（follow-up）**：~~Cost~~ ✅ 续③；~~AnimFSM（当前态+history）~~ ✅ **续⑧**（fsm.getHistory + DebugPanel AnimFSM 分区）；~~Prompt（动态 token）~~ ✅ **续⑧**（PromptTokenDebug → DecisionTrace → Last Turn "sys N/budget M"）。**Debug Panel 9 分区全补齐**（Brain/Counts/Cost/Facts/Episodes/Pending/Timeline/Last Turn/Retrieved/Reflect/AnimFSM）。待 dev 实跑确认 AnimFSM/Prompt 渲染。
-- **B5. P17 Golden 评估框架**：✅ **MVP 完成（2026-08-03 续⑧）**——`src/mind/evaluation.rs`（personality_drift_score 规则启发式 + 7 单测）+ `tests/evaluation.rs`（Liri 人格契约回归网 4 测 + drift 端到端 2 测）。锁续② 人格。**仍待（future）**：LLM-as-judge（语义漂移）+ ≥30 对话 golden 集 + CI 自动跑——规则层是廉价第一道，LLM judge 是重的第二道，待 Liri 稳定 + 真实响应样本调阈值。
+- **B5. P17 Golden 评估框架**：✅ **三层完成**——① 规则启发式层（2026-03 续⑧，`personality_drift_score` 抓 GROSS 话痨/卖萌/依赖）+ ② 语义 cosine 层（2026-08-08 Item6，`semantic_drift_score` 抓语气漂移）+ ③ **LLM-as-judge 层（2026-08-08 续，`tests/personality_judge_harness.rs`：30 条 golden 集 + persona_fit 0-10 + 漂移维度命名 + 3 次退避重试）**。规则/cosine 是廉价 CI 线（合成向量 + 规则单测），judge 是重手动线（同 prompt_quality/embedding_ab 模式）。三层交叉验证各覆盖边界：规则层对 Subtle(cold/客服腔/鸡汤/动作描写) **0/10 盲**、judge 是唯一抓这些的线。详见 §最近一轮 (2026-08-08 续)。
 
 **Tier 5 — 架构债务（重构 · 功能已在跑）**
 - **B6. A1 BrainState 统一快照**：converse 等改 `fn(brain: &BrainState)`，消除多参数列表（架构债）。

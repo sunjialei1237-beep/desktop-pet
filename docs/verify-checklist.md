@@ -209,6 +209,13 @@ cargo test --test evaluation semantic_drift_end_to_end -- --nocapture
 ```
 **通过判据**：on-persona 回复（"嗯，这么晚了。早点休息吧。"）cosine ≈ **0.851** 严格高于 off-persona（"行吧，随便你，我无所谓。"）cosine ≈ **0.781**——证明语义层能区分规则层无法区分的语气漂移（两句规则层都判 1.0 干净）。日志会打印两组 cosine + overall + "rule layer gave both overall=1.0 (blind to tone)"。若未来把语义分接进运行时（当前仅评估资产，未挂对话路径），此项转为人感验收。
 
+### D12 — B5 三层人格评估 benchmark（LLM-as-judge 第三线 / 2026-08-08 续）
+> 规则层 + 语义 cosine 层之外补**重第三线 LLM-as-judge**：30 条标注 golden 集（On/Gross/Subtle 各 10），三层交叉验证各覆盖边界。judge 是唯一能抓「客服腔 / 鸡汤 / 动作描写」语气漂移的线。需真 reflection LLM + BGE-M3（~65s，30 judge 调用 + 31 embed）。
+```
+cargo test --test personality_judge_harness -- --nocapture --test-threads=1
+```
+**通过判据**：① 0 个 `[judge FAIL id=...]`（judge 可靠性闸：失败>3 即 fail，防 rate-limit 零分假通过）；② 三层表打印并断言通过——judge On **≈10** > Gross **≈1.3** > Subtle **≈2.0**、规则层对 Subtle **0/10 盲**（cold/客服腔/鸡汤/动作描写全 1.0）、cosine On **≈0.66** > Subtle **≈0.59**。**用途**：改 `system.txt` 人格后重跑此 benchmark——On 组 judge 均值掉 = 人格回归（永久回归资产）。纯测试资产，无生产代码，不动 release exe。
+
 ## 本批次不易快速验收（代码层已单测）
 | 项 | 为何难快速触发 | 代码层依据 |
 |---|---|---|
