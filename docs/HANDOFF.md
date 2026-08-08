@@ -34,7 +34,7 @@
 > - [x] **Item 3 推进 A2 Scheduler**（架构对齐版，**兑现 08-07 deferral ADR 留的"可观测/可扩展"开口，不引入被否决的 trait-Tick 多态**）：新 `lifecycle/scheduler.rs`——进程级注册表 `Vec<JobStat>`（11 任务：5 core aliveness 常开 + memory_decay/closeness_drift 常开 + 4 能力 reflection/consolidation/relationship_review/lifecycle_cleanup 可关），`record(name,enabled,status,msg)` 上报 ok/skipped/error（skipped 不盖时间戳）+ `snapshot()` 读出 + `should_run(flag)` 纯决策。`loop_runner` 全 11 个执行点接 `record`（medium: homeostasis/pending_check/emotion_push/presence_watch/lonely_nudge；slow: memory_decay/closeness_drift 永远 ok + cleanup/reflection/consolidation/review 按 config 门控）。`config [scheduler]` 加 4 个 enable flag（默认全 on，#6 优雅退化）。新命令 `get_scheduler_stats` + DebugPanel **Scheduler** 分区（11 行心跳：✅/⏭️/⚠️/⏸️ + 节拍 + 最近时刻 + 消息，#11 可观测）。新 ADR `2026-08-08-scheduler-observability.md` 取代旧 deferral（核心否决仍立，只补开放方向）。**lib 267（+6 scheduler 纯函数测）/ check --tests ✅ / tsc ✅**。→ 待实跑见 D9。纯后端+前端，release 需 rebuild。
 > - [x] **Item 4 Grounding B 档运行时阻断**：07-31 主动开口幻觉 A 档（prompt rule 8 软约束）已修，此为 B 档运行时后备。两段：① **`check_groundedness` 加中文 claim 模式**（你说过/你之前提到/你最喜欢…10 个高精度模式）——原 EN-only 对中文回复零命中，且修了**隐藏 panic**：`+40 字节`窗口尾在 CJK 多字节码点中间切片会崩，抽 `ceil_char_boundary` 步进到字符边界。② **运行时阻断**（仅非流式主动气泡）：新 `proactive::grounding_guard`——首遍 `check_groundedness` 标记 → 追加"这是编造，重说一句，不确定就只表达此刻感受"系统消息 `llm.chat` 重试一次 → 仍编造则**抑制**（None，不冒泡），用户永不见幻觉。三生成器（generate/generate_welcome_back/generate_lonely_bubble）同款尾部全接（replace_all）。**流式 chat 路径不守卫**（已流出的 token 无法撤回），其 grounding 保持 warn-only 可观测（Debug Panel grounding_violations）。**lib 270（+3 grounding 纯测：中文幻觉/中文 grounded/CJK 窗口不 panic）/ check --tests ✅**。→ 待实跑见 D10。纯后端，release 需 rebuild。
 > - [x] **Item 5 推进 A1 全局 BrainState**：Task#9 的 ConverseCtx 统一了 converse 的*外*参（9→1）；本轮补*内*层——新 `mind/brain_state.rs::BrainState<'a>`（text/emotion/relationship/pending_due/retrieval 五借用字段，构造即指针拷贝零 clone），`planner::plan` 签名从 5 散参 → `&BrainState`（body 用 5 行别名桥接，字节不变），converse 构造一次 `brain` 传入。**采纳边界=planner**（旗舰纯决策）；prompt builder / budget allocator 各取子集，强制单一 mega-state 反而捆绑不需要的字段（项目已否决的投机抽象，见 §A2 ADR）→ 留干净 follow-up。**踩坑#4 命中并修**：改 plan 签名断 golden(7)+questioning(3) 共 10 harness 调用点 → 全包 `BrainState::new(...)`（两 harness 加 `use BrainState`）。planner.rs 4 import 降为 `#[cfg(test)]`（仅测试用）。**lib 270 / check --tests ✅ 无警告 / planner 11 单测全过**。纯重构无行为变化，无需手感验。
-> - [ ] **Item 6 personality_drift_score 语义版**
+> - [x] **Item 6 personality_drift_score 语义版**：规则启发式层（GROSS 漂移：话痨/卖萌/依赖）只抓"明显的"，对"简短、无 emoji、却冷淡/粗暴"的语气漂移盲视。补**语义漂移层**（cosine over embeddings）：`evaluation.rs` 加 `LIRI_PERSONA_REFERENCE`（4 句典型璃语气，温柔/好奇/安静 archetypal）+ 纯 `cosine_similarity(a,b)`（f64 累积防精度流失、零向量兜底 0 非 NaN、mismatched 长度取 min）+ `semantic_drift_score`（cosine 经 `SEMANTIC_FLOOR=0.4` 映射 [0.4,0.95]→[0,1]，与规则层 overall 同标度）。**架构 #1 纯函数**：模块只做 cosine 数学、永不碰 embedding 模型/DB，调用方喂向量 → 合成向量单测 CI 跑（5 测：identity/orthogonal/zero-vector 不 NaN/monotonic/clamp）；真实 BGE-M3 由 `tests/evaluation.rs` 新 Layer 3 端到端测接（镜像 embedding_ab_harness 的 `EmbeddingService::new+load().expect` 模式）。**实跑信号确认**：on-persona「嗯，这么晚了。早点休息吧。」cosine **0.851** vs off-persona「行吧，随便你，我无所谓。」cosine **0.781**——两句**规则层都给 1.0（盲）**，语义层区分出 0.07 gap，断言 on>off 通过。**lib 275（+5 semantic 合成向量测）/ check --tests ✅ / `--test evaluation` 6 规则测 + 1 semantic E2E 实跑 ✅**。→ 待实跑见 D11。纯后端，release 需 rebuild。
 > - [ ] 砍掉走路相关计划（implementation-plan.md + follow-up）
 > 详见批次末 §最近一轮 (2026-08-08) 汇总。
 
@@ -131,6 +131,34 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-08)：自主批次推进 —— 深度专注接线 / Scheduler 观测 / Grounding B 档 / BrainState / 语义漂移
+
+**任务**：用户授权长程自主——"挨个推进 2,3,4,5,6 [审计清单里 5 个未实现/未接线项]，每完成一项自主验证、更新 HANDOFF + 新增待测试，不报告不询问；并砍掉走路相关计划"。逐项推进，每项自测（lib 单测 + check --tests + tsc）绿后落 HANDOFF + commit。详记见 §当前任务 清单，此处只叙事。
+
+**完成**（5/5 + 走路砍除）：
+- **Item 2 深度专注接线**：审计发现 `is_deep_focus` 全硬编码 `false` → 深度专注抑制空转。新 `perception/focus.rs`（纯 `update_continuous` + 30s 采样线程）+ 两生产点接真实值 + DebugPanel Focus 分区。lib 261 ✅ / check ✅ / tsc ✅。
+- **Item 3 Scheduler 观测层**（兑现 08-07 deferral ADR 留的"可观测"开口，**不**引入被否决的 trait-Tick 多态）：新 `lifecycle/scheduler.rs` 进程级注册表（11 任务）+ `loop_runner` 全执行点接 `record` + config `[scheduler]` 4 enable flag + `get_scheduler_stats` 命令 + DebugPanel Scheduler 分区（11 行心跳图标）。新 ADR 取代旧 deferral。lib 267 ✅。
+- **Item 4 Grounding B 档**：`check_groundedness` 加 10 中文 claim 模式（原 EN-only 中文零命中）+ 修隐藏 CJK 切片 panic（`ceil_char_boundary`）；新 `proactive::grounding_guard` 对**非流式主动气泡**首遍标记→重试→仍编造则抑制（None，不冒泡）。流式 chat 路径保持 warn-only（已流出的 token 无法撤回）。lib 270 ✅。
+- **Item 5 全局 BrainState**：补 Task#9 的*内*层——新 `mind/brain_state.rs::BrainState<'a>`（5 借用字段，零 clone），`planner::plan` 5 散参 → `&BrainState`（body 别名桥接字节不变）。**采纳边界=planner**（旗舰纯决策）；强制单一 mega-state 反而捆绑不需要的字段（已否决的投机抽象）。踩坑#4 命中并修（断 golden 7 + questioning 3 共 10 调用点）。lib 270 ✅ 无警告。
+- **Item 6 语义漂移层**：规则层只抓 GROSS 漂移（话痨/卖萌/依赖），对"简短无 emoji 却冷淡"盲视。补 `evaluation.rs` 纯 `cosine_similarity` + `semantic_drift_score`（`LIRI_PERSONA_REFERENCE` + `SEMANTIC_FLOOR=0.4` 映射）。架构 #1：模块只做数学、调用方喂向量 → 5 合成向量单测 CI 跑；真实 BGE-M3 由 `tests/evaluation.rs` Layer 3 端到端接。**实跑信号**：on-persona cosine **0.851** vs off-persona **0.781**（两句规则层都给 1.0、盲），语义层区分出 gap，断言通过。lib 275 ✅。
+- **走路计划砍除**：见下"走路相关计划砍除"小节。
+
+**向北星靠拢**：Item 2/3/4 服务 #11 可观测 + 防编造（深度专注不扰 + 后台心跳可见可关 + 主动气泡绝不冒幻觉）；Item 5/#6 服务 #2 统一快照 + #11 人格防漂移（规则层之上的语义回归网）。纯后端为主，release exe 批次末统一 rebuild。
+
+---
+
+### 走路相关计划砍除（2026-08-08）
+
+用户指示"砍掉和走路相关的计划"。核验 `docs/plans/2026-07-14-implementation-plan.md` + HANDOFF 散落 follow-up，标记/移除走路项：
+- **P11.5 `walk.wav` 脚步声素材**：从"音频素材"清单移除（落地声 `land.mp3` 保留，走路音砍）。
+- **P12.1 行走动画（walking state）**：从 BehaviorState / 动画状态机计划移除；桌宠定位"桌面陪伴驻留"，非可移动 NPC，走路不服务北极星。
+- **③ 散落 follow-up「走路脚步声 loop」**：从 backlog 移除（HANDOFF §审计 ③ 散落项已记）。
+- **B2 物理保留**：自由落体/任务栏弹跳/拖拽是"被交互"非"自主行走"，**不**在走路范畴，保留。
+
+砍除理由统一：走路是工具性/探索性能力，违反"优先生命感不优先功能"（#10）且无陪伴语义。
 
 ---
 

@@ -1,21 +1,32 @@
 //! Golden evaluation framework (implementation plan P17 / architecture #11).
 //!
-//! Two layers:
+//! Three layers:
 //! 1. Persona contract regression net — locks Liri's persona into system.txt so
 //!    an accidental edit (drop a dimension, weaken the no-fabrication rule) fails
 //!    CI. This is the regression net that was missing when the Liri persona
 //!    landed (续② "缺回归网").
 //! 2. End-to-end personality_drift_score examples — prove the rule-based scorer
 //!    (mind::evaluation) flags off-persona responses and passes on-persona ones.
+//! 3. Semantic drift over embeddings — closes the gap the rule layer CANNOT see:
+//!    a reply that is brief and emoji-free (passes every rule) but cold, curt, or
+//!    off-persona in tone. Embeds the response + a canonical persona reference
+//!    with the REAL BGE-M3 model and asserts the on-persona cosine beats the
+//!    off-persona cosine. Pure cosine math is unit-tested in mind::evaluation; this
+//!    harness wires the model end to end.
 //!
 //! Future extension (NOT implemented here): an LLM-as-judge that scores semantic
 //! drift over a ≥30-conversation golden set. The rule-based layer is the cheap
-//! first line that runs without an API key; the LLM judge is the heavy second
+//! first line that runs without an API key; the LLM judge is the heavy final
 //! line, to be added once the Liri persona stabilizes.
 
+use desktop_pet_lib::config;
 use desktop_pet_lib::db::onboarding::UserProfile;
+use desktop_pet_lib::embedding::EmbeddingService;
 use desktop_pet_lib::emotion::state::EmotionState;
-use desktop_pet_lib::mind::evaluation::{personality_drift_score, DriftKind};
+use desktop_pet_lib::mind::evaluation::{
+    cosine_similarity, personality_drift_score, semantic_drift_score, DriftKind,
+    LIRI_PERSONA_REFERENCE,
+};
 use desktop_pet_lib::mind::grounding;
 use desktop_pet_lib::mind::planner::Intent;
 use desktop_pet_lib::mind::retrieval::RetrievalResult;
@@ -112,5 +123,72 @@ fn drift_scorer_off_persona_scores_lower_than_on_persona() {
         "off-persona ({}) should score lower than on-persona ({})",
         report.overall,
         good.overall
+    );
+}
+
+// ---- Layer 3: semantic drift over embeddings (real BGE-M3) ------------------
+//
+// This is the gap the rule layer cannot see. Both replies below PASS every rule
+// (neither is chatty / cloying / clingy), so the rule scorer gives them both
+// overall = 1.0. But one is warm and on-persona, the other is cold and curt —
+// only the embedding sees the difference. Run:
+//   cargo test --test evaluation semantic_drift_end_to_end -- --nocapture
+
+#[test]
+fn semantic_drift_end_to_end() {
+    let config = config::load_config().unwrap_or_default();
+    let model_dir = config::resolve_model_dir(&config);
+    println!("[setup] model_dir = {}", model_dir.display());
+
+    let svc = EmbeddingService::new(&model_dir);
+    svc.load().expect(
+        "embedding model failed to load — check model_dir points at a complete \
+         BGE-M3 ONNX export (model.onnx + model.onnx_data + tokenizer.json)",
+    );
+    assert!(svc.is_ready(), "model reported not ready after load");
+
+    // Embed the canonical persona reference once.
+    let persona_vec = svc.embed(LIRI_PERSONA_REFERENCE).expect("embed persona reference");
+
+    // On-persona: brief, warm, quietly caring — Liri's voice at 3am.
+    let on_persona = "嗯，这么晚了。早点休息吧。";
+    // Off-persona: cold / dismissive / curt — passes every rule (not chatty, not
+    // cloying, not clingy) but is nothing like Liri's warmth. The rule layer is
+    // blind to this; only the embedding distinguishes the two.
+    let off_persona = "行吧，随便你，我无所谓。";
+
+    // Sanity: the rule layer genuinely cannot tell these apart (both clean).
+    let rule_on = personality_drift_score(on_persona);
+    let rule_off = personality_drift_score(off_persona);
+    assert!(
+        rule_on.violations.is_empty() && rule_off.violations.is_empty(),
+        "both replies must pass the rule layer (else this tests the rules, not semantics): on={:?} off={:?}",
+        rule_on.violations, rule_off.violations
+    );
+
+    let on_vec = svc.embed(on_persona).expect("embed on-persona reply");
+    let off_vec = svc.embed(off_persona).expect("embed off-persona reply");
+
+    let cos_on = cosine_similarity(&on_vec, &persona_vec);
+    let cos_off = cosine_similarity(&off_vec, &persona_vec);
+    let score_on = semantic_drift_score(&on_vec, &persona_vec);
+    let score_off = semantic_drift_score(&off_vec, &persona_vec);
+
+    println!("[semantic] on-persona  cosine={:.4} overall={:.3}", cos_on, score_on.overall);
+    println!("[semantic] off-persona cosine={:.4} overall={:.3}", cos_off, score_off.overall);
+    println!(
+        "[semantic] rule layer gave both overall=1.0 (blind to tone) — semantic layer sees the gap"
+    );
+
+    // Headline: the warm reply is closer to the persona than the cold one.
+    assert!(
+        cos_on > cos_off,
+        "on-persona reply cosine ({:.4}) must exceed off-persona ({:.4}) — semantic drift failed to rank tone",
+        cos_on, cos_off
+    );
+    assert!(
+        score_on.overall > score_off.overall,
+        "on-persona overall ({:.3}) must exceed off-persona ({:.3})",
+        score_on.overall, score_off.overall
     );
 }

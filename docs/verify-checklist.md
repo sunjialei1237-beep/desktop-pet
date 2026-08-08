@@ -201,6 +201,14 @@ enable_reflection = false   # 其余保持 true
 - **中文检测生效**：现 `check_groundedness` 含中文 claim 模式（你说过/你之前提到/你最喜欢…），之前 EN-only 对中文回复零命中。
 - **运行时阻断**：主动气泡首遍若被 `check_groundedness` 标记 → 追加"这是编造，重说一句，不确定就只表达此刻感受"系统消息重试一次 → 仍编造则**抑制**（返回 None，不冒泡），用户永不见幻觉。
 **通过判据**：① Debug Panel Last Turn 的 grounding_violations 在中文幻觉回复（如"你说过你每周爬山"无对应记忆）时非空（证明中文检测生效）；② 触发主动气泡时若 LLM 偶发编造，日志见 `[grounding-B] proactive bubble flagged...retrying`，最终要么冒出干净重述、要么不冒（绝不冒幻觉原文）。代码层 `grounding.rs` 3 新纯函数测（中文幻觉/中文 grounded/CJK 窗口不 panic）已覆盖检测；此项验"端到端重试+抑制"。
+
+### D11 — 语义漂移层（personality_drift_score 语义版，Item 6 / 2026-08-08）
+> 规则层（话痨/卖萌/依赖 GROSS 检测）对"简短、无 emoji、却冷淡/粗暴"的语气漂移盲视——两句都给 1.0。语义层用 BGE-M3 cosine 对比人格参考向量补这个缺口。**纯函数 + 合成向量单测已 CI 覆盖**（identity/orthogonal/zero-vector/monotonic/clamp 5 测）；此项是真实模型的端到端断言，需模型加载（~6s）。
+```
+cargo test --test evaluation semantic_drift_end_to_end -- --nocapture
+```
+**通过判据**：on-persona 回复（"嗯，这么晚了。早点休息吧。"）cosine ≈ **0.851** 严格高于 off-persona（"行吧，随便你，我无所谓。"）cosine ≈ **0.781**——证明语义层能区分规则层无法区分的语气漂移（两句规则层都判 1.0 干净）。日志会打印两组 cosine + overall + "rule layer gave both overall=1.0 (blind to tone)"。若未来把语义分接进运行时（当前仅评估资产，未挂对话路径），此项转为人感验收。
+
 ## 本批次不易快速验收（代码层已单测）
 | 项 | 为何难快速触发 | 代码层依据 |
 |---|---|---|

@@ -121,6 +121,75 @@ pub fn personality_drift_score(response: &str) -> DriftReport {
     DriftReport { overall, violations }
 }
 
+// ── Semantic drift layer (cosine over embeddings) ─────────────────────────
+//
+// The rule layer above catches GROSS style violations cheaply (no model, runs
+// in CI). It cannot see subtle drift — a reply that is brief and emoji-free
+// (passes every rule) but cold, curt, or off-persona in tone. The semantic
+// layer closes that gap: embed the response and compare it to a canonical
+// persona-reference embedding via cosine similarity.
+//
+// Architecture #1 (pure functions): this module never touches the embedding
+// model or DB. The caller embeds both texts and hands the vectors in, so the
+// cosine math unit-tests with synthetic vectors and runs in CI. The harness
+// (tests/evaluation.rs) wires the real BGE-M3 model for the end-to-end check.
+
+/// Canonical Liri voice: a handful of brief, warm, quietly curious utterances
+/// embodying 温柔 / 好奇 / 聪慧 / 安静 (and deliberately NOT 话痨 / 卖萌 / 依赖).
+/// The semantic drift score embeds this once and treats cosine closeness to it
+/// as "on-persona". Keep it short and archetypal — the embedding averages over
+/// the whole text.
+pub const LIRI_PERSONA_REFERENCE: &str = "\
+嗯，我在听，你慢慢说。\
+今天有什么好玩的事吗？我有点好奇。\
+早点休息吧，别太累了。\
+嗯……让我想想。";
+
+/// Cosine similarity in [-1, 1]. Pure over inputs (#1); the caller supplies the
+/// embedding vectors, so this never depends on the model and unit-tests cheaply.
+/// Vectors of mismatched length compare over the shared prefix (defensive —
+/// well-formed embeddings share a dimensionality).
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    let n = a.len().min(b.len());
+    let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
+    for i in 0..n {
+        let av = a[i] as f64;
+        let bv = b[i] as f64;
+        dot += av * bv;
+        na += av * av;
+        nb += bv * bv;
+    }
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    (dot / (na.sqrt() * nb.sqrt())).clamp(-1.0, 1.0)
+}
+
+/// BGE-M3 cosine for same-domain Chinese text typically sits in roughly
+/// [0.4, 0.95]. We map that band onto [0, 1] so the semantic score is readable
+/// alongside the rule layer's 0..1 `overall`. Below the floor (strongly
+/// dissimilar) floors at 0. Tunable after sampling real replies.
+const SEMANTIC_FLOOR: f64 = 0.4;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SemanticDriftReport {
+    /// 0.0 (semantically far from the persona reference) .. 1.0 (close),
+    /// mapped from cosine via [`SEMANTIC_FLOOR`].
+    pub overall: f64,
+    /// Raw cosine similarity [-1, 1], exposed for observability (#11).
+    pub cosine: f64,
+}
+
+/// Semantic drift over the rule-heuristic baseline. Takes pre-computed
+/// embedding vectors (the caller embeds the response and the
+/// [`LIRI_PERSONA_REFERENCE`]); returns a 0..1 score where 1.0 = on-persona,
+/// plus the raw cosine. Pure over inputs (#1).
+pub fn semantic_drift_score(response_vec: &[f32], persona_vec: &[f32]) -> SemanticDriftReport {
+    let cosine = cosine_similarity(response_vec, persona_vec);
+    let overall = ((cosine - SEMANTIC_FLOOR) / (1.0 - SEMANTIC_FLOOR)).clamp(0.0, 1.0);
+    SemanticDriftReport { overall, cosine }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +257,53 @@ mod tests {
         assert!(kinds.contains(&&DriftKind::Chatty), "chatty should fire: {:?}", kinds);
         assert!(kinds.contains(&&DriftKind::Cloying), "cloying should fire: {:?}", kinds);
         assert_eq!(r.overall, 0.0);
+    }
+
+    // ---- Semantic (cosine) drift layer --------------------------------------
+
+    #[test]
+    fn cosine_identical_vectors_is_one() {
+        let v = [0.1, 0.2, 0.3, 0.0];
+        assert!((cosine_similarity(&v, &v) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cosine_orthogonal_vectors_is_zero() {
+        let a = [1.0, 0.0];
+        let b = [0.0, 1.0];
+        assert!(cosine_similarity(&a, &b).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cosine_zero_vector_is_zero_no_nan() {
+        let a = [0.0, 0.0, 0.0];
+        let b = [1.0, 2.0, 3.0];
+        // Must not panic / NaN on zero-magnitude input.
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn semantic_score_monotonic_in_closeness() {
+        // Persona reference vector along one axis; replies progressively closer.
+        let persona = [1.0, 0.0, 0.0];
+        let far = [0.0, 1.0, 0.0]; // orthogonal → cosine 0
+        let near = [0.9, 0.1, 0.0]; // nearly aligned → cosine ~0.99
+        let s_far = semantic_drift_score(&far, &persona);
+        let s_near = semantic_drift_score(&near, &persona);
+        assert!(
+            s_near.overall > s_far.overall,
+            "on-persona reply ({:.3}) should score higher than off-persona ({:.3})",
+            s_near.overall,
+            s_far.overall
+        );
+        assert!(s_far.overall <= 0.0 + 1e-9, "orthogonal reply floors at 0");
+    }
+
+    #[test]
+    fn semantic_score_clamps_to_unit_range() {
+        let persona = [1.0, 0.0];
+        // Identical → overall 1.0; opposite → cosine -1 → clamps to 0.
+        assert!((semantic_drift_score(&[1.0, 0.0], &persona).overall - 1.0).abs() < 1e-9);
+        assert_eq!(semantic_drift_score(&[-1.0, 0.0], &persona).overall, 0.0);
     }
 }
