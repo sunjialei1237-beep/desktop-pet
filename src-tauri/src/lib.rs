@@ -14,6 +14,7 @@ pub mod perception;
 use commands::AppState;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -87,6 +88,23 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        // P11.4 Alt+Space: a true system-wide global shortcut that summons the
+        // pet to talk from any app. The handler shows+focuses the window (in
+        // case it's hidden to the tray) and tells the frontend to open the chat
+        // input. The shortcut itself is registered in setup() below.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                        let _ = app.emit("show-input", ());
+                    }
+                })
+                .build(),
+        )
         .manage(AppState {
             config,
             llm: std::sync::Mutex::new(llm_client),
@@ -130,6 +148,17 @@ pub fn run() {
                         }
                     });
                 }
+            }
+
+            // Register the Alt+Space global shortcut (P11.4). The handler was
+            // wired in the plugin builder above; this binds the actual key combo.
+            // Failure is non-fatal (logged) — the pet still works, just without
+            // the hotkey (e.g. if another app already owns Alt+Space).
+            let alt_space = Shortcut::new(Some(Modifiers::ALT), Code::Space);
+            if let Err(e) = app.global_shortcut().register(alt_space) {
+                log::warn!("[global-shortcut] failed to register Alt+Space: {}", e);
+            } else {
+                log::info!("[global-shortcut] Alt+Space registered (summon pet to talk)");
             }
 
             // Start the life loop (background timers).

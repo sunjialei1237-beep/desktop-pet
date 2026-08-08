@@ -216,6 +216,12 @@ cargo test --test personality_judge_harness -- --nocapture --test-threads=1
 ```
 **通过判据**：① 0 个 `[judge FAIL id=...]`（judge 可靠性闸：失败>3 即 fail，防 rate-limit 零分假通过）；② 三层表打印并断言通过——judge On **≈10** > Gross **≈1.3** > Subtle **≈2.0**、规则层对 Subtle **0/10 盲**（cold/客服腔/鸡汤/动作描写全 1.0）、cosine On **≈0.66** > Subtle **≈0.59**。**用途**：改 `system.txt` 人格后重跑此 benchmark——On 组 judge 均值掉 = 人格回归（永久回归资产）。纯测试资产，无生产代码，不动 release exe。
 
+### D13 — Alt+Space 全局唤醒（P11.4，2026-08-08 续²）
+> 真·系统级全局快捷键：任何 app 前台按 Alt+Space 召出桌宠 + 焦点跳进输入框。需 dev 或 release exe 运行。
+**步骤**：① `npm run tauri dev` 起桌宠；② **切到别的窗口**（浏览器/编辑器，让桌宠窗口失焦）；③ 按 `Alt+Space`。
+**通过判据**：桌宠窗口立即置顶显示 + 输入框弹出 + 光标已在输入框（直接打字无需点）。再验：右键「暂时离开」→ 窗口进托盘 → 切别的窗口 → `Alt+Space` → 窗口从托盘恢复 + 输入框弹出（验证 show+focus 覆盖隐藏态）。
+**注意**：Alt+Space 接管了 Windows 窗口系统菜单键（桌宠运行时键盘开窗口 Move/Size/Minimize 失效，所有窗口）——设计钦定此键，若扰在 `lib.rs` setup 改 `Shortcut::new(...)` 换键。启动日志应有 `[global-shortcut] Alt+Space registered`（注册失败会是 `[global-shortcut] failed to register...` warn，此时快捷键不生效但桌宠正常）。
+
 ## 本批次不易快速验收（代码层已单测）
 | 项 | 为何难快速触发 | 代码层依据 |
 |---|---|---|

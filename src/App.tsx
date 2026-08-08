@@ -1045,6 +1045,26 @@ const handleBodyClick = useCallback(() => {
     return () => { cancelled = true; unlisten?.(); };
   }, [showBubble]);
 
+  // Alt+Space global shortcut (P11.4): backend registered Alt+Space system-wide;
+  // pressing it anywhere shows+focuses the window (Rust) and emits this event.
+  // Summon the pet to talk — clear away mode, open the chat input, focus it.
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    (async () => {
+      unlisten = await listen("show-input", () => {
+        setAwayMode(false);
+        setInputVisible(true);
+        // setInputVisible is async; wait a frame for the input to mount, then focus.
+        requestAnimationFrame(() => {
+          document.querySelector<HTMLInputElement>(".input-bubble input")?.focus();
+        });
+      });
+      if (cancelled) unlisten();
+    })();
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
   const handleQuit = useCallback(() => {
     showBubble("再见…", 3000, "bubble-sad");
     // FIX: previously only showed the bubble and never closed. We now call a

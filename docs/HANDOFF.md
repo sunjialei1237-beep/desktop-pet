@@ -40,7 +40,8 @@
 
 > **2026-08-08（续）自主推进中**（用户授权："2，3 按顺序跑，跑完用之前的策略——每项自主验证 + 更新 HANDOFF + 新增待测试 + commit，不报告不询问"。2=B5 语义评估深化[LLM-as-judge + ≥30 golden 集]，3=散落小项 + 架构债收尾）：
 > - [x] **B5-深化 三层人格评估 benchmark**（B5 重第三线落地）：规则层(续⑧) + 语义 cosine 层(Item6) 是廉价可 CI 跑的两道线、各有盲区；补**重第三线 LLM-as-judge**——读人格圣经给 persona_fit 0-10 + 命名漂移维度，是唯一能抓「客服腔/鸡汤/动作描写」语气漂移的线。新 `tests/personality_judge_harness.rs`（永久评测资产）：`PERSONA_JUDGE_PROMPT`（璃 6 维度 + NOT 清单）+ `judge_persona`（`chat_reflection` 0.1/2048 踩坑#3 + JSON 提取 + **3 次指数退避重试**——30 连发撞 rate limit，无重试会静默零分"假通过"）+ 30 golden 集（On 10 / Gross 10[chatty×3/cloying×3/clingy×4] / Subtle 10[cold/mech×2/preachy×2/over_pos×2/action/套宠物]）+ 三层聚合断言 + **judge 可靠性闸**（失败>3 即 fail）。**实跑（全 30 真实评分 0 失败 65s）**：judge On **10.0** vs Gross **1.3** vs Subtle **2.0**；规则层对 Subtle **0/10 盲**、cosine 0.66 vs 0.59。**check --tests ✅ / 实跑 ✅**。→ 待实跑见 D12。**纯测试资产无生产变更，release 无需 rebuild**。详见 §最近一轮 (2026-08-08 续)。
-> - [ ] **3 散落项 + 架构债**（下一项）：Alt+Space 全局键(P11.4) / 害羞慢现气泡(后端 mood 标签) / idle_weights JSON 化 / BrainState 扩到 prompt builder+budget(B6 follow-up)。
+> - [x] **3a Alt+Space 全局唤醒（P11.4）**：真·系统级全局快捷键——任何 app 前台按 Alt+Space 都把桌宠召出来对话。新依赖 `tauri-plugin-global-shortcut` v2.3.2 + `lib.rs` plugin（handler：`w.show()`+`set_focus()`+`emit("show-input")`）+ setup 里 `register(Shortcut::new(ALT, Space))`（失败仅 warn，非致命）；前端新 `show-input` listener（镜像 restore-from-tray：`setAwayMode(false)`+`setInputVisible(true)`+rAF focus 输入框）。**cargo check ✅ / tsc ✅ / lib 275 ✅**。→ 待实跑见 D13。**⚠️ 权衡**：Alt+Space 会**全局接管** Windows 窗口系统菜单键（键盘开 Move/Size/Minimize/Maximize 失效，所有窗口）——设计文档钦定此键，若嫌扰可在 setup 改 `Shortcut`。后端 `.register()` 是 Rust 直调不走 IPC，**无需 capabilities 权限**。release 需 rebuild（新依赖 + 前后端）。
+> - [ ] **3b–d 散落项 + 架构债**（剩余）：害羞慢现气泡(后端 mood 标签) / idle_weights JSON 化 / BrainState 扩到 prompt builder+budget(B6 follow-up)。
 
 > **2026-08-07 自主批次推进中**（用户授权长程自主："按优先级推进所有后续内容，每项自测后更新 HANDOFF，不询问；待实跑项统一整理"）。逐项推进，每项自测（cargo test --lib / check --tests / tsc）绿后勾选。**release exe 在批次末统一 rebuild**（中间项都以库单测 + check 编译通过为正确性证据；批次末 Task #14 前一次性 `npx tauri build --no-bundle`，避免每项重构都重编一次前端嵌入）：
 > - [x] **Task #8 鲁棒性加固**：① main 空回复重试——converse `chat_stream` 把 `on_token` 改 `mut`、传 `&mut on_token` 复用，content 空时重试一次（镜像 extractor 重试；flash reasoning 吃光预算 finish_reason=length 空 content 的坑#3 瞬态）。② harness 启发式误报——Acknowledge/ForgetAck 关键词表加现实同义措辞（记着/记心里/放心吧/帮你记 + 不提/不会再/抹掉/清掉），治 705/1002「语义对无关键词」误报。**lib 259 / check --tests ✅**。纯后端 + 测试，release 需 rebuild。
@@ -135,6 +136,23 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-08 续²)：Alt+Space 全局唤醒（P11.4）
+
+**任务**：用户"2，3 按顺序跑"——3 的第一子项。设计文档 §6.4/§9.1「Alt+Space 快捷唤醒，直接开始说话」。
+
+**完成**：真·系统级全局快捷键（任何 app 前台按 Alt+Space 即召出桌宠对话），非窗口内热键。
+- **后端** `lib.rs`：新依赖 `tauri-plugin-global-shortcut` v2.3.2；`.plugin(Builder::new().with_handler(...))` —— handler 在 `ShortcutState::Pressed` 时 `get_webview_window("main").show()+set_focus()`（覆盖托盘隐藏态）+ `emit("show-input")`；setup 里 `app.global_shortcut().register(Shortcut::new(Some(Modifiers::ALT), Code::Space))`（失败仅 `log::warn!` 非致命——被别的 app 占了就降级，桌宠照常）。
+- **前端** `App.tsx`：新 `show-input` listener（镜像 restore-from-tray 的自包含 useEffect + `cancelled` 防 StrictMode 泄漏）：`setAwayMode(false)` + `setInputVisible(true)` + `requestAnimationFrame` 后 `querySelector(".input-bubble input")?.focus()`（setInputVisible 异步，等一帧再 focus）。
+- **权限**：后端 `.register()` 是 Rust 直调、不走 IPC，**无需 capabilities 权限**（IPC 权限只门前端 JS API）。
+
+**⚠️ 权衡（设计钦定，已知）**：Alt+Space 是 Windows 窗口系统菜单键（键盘开 Move/Size/Minimize/Maximize/Close）。全局注册会**接管所有窗口的该键**——桌宠运行时键盘调窗口系统菜单失效。设计文档明确选此键；若用户嫌扰，setup 里改一行 `Shortcut` 即换键（如 `Ctrl+Space` / `Super+Space`）。
+
+**向北星靠拢**：服务"无面板"原则（§3.4）+ 输入 UX（§6.4）——随时一句话唤起，降低对话门槛，陪伴更即时。**架构 #6**：失败非致命降级。
+
+**验证**：`cargo check` ✅（新 plugin v2.3.2 编译过）/ `tsc --noEmit` ✅ / `cargo test --lib` 275 ✅。运行时按键验收属手动 → verify-checklist **D13**。**release 需 rebuild**（新依赖 + 前后端都改）。
 
 ---
 
