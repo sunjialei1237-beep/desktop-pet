@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-08（续⁴·idle_weights JSON 化——microBehavior IDLE_BEHAVIORS 抽成 idle-behaviors.json 纯数据，逻辑零改；vitest 24 / tsc / build 全绿，行为不变）**
+> 最后更新：**2026-08-08（续⁵·BrainState 扩 prompt builder/budget——经评估主动关闭[ADR]：intent 是 planner 输出不能入 BrainState + 捆绑 3 无用字段，扩进去即已否决的 mega-state；采纳边界终态=planner；3a-d 全部完成，待批次末 rebuild）**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -43,7 +43,7 @@
 > - [x] **3a Alt+Space 全局唤醒（P11.4）**：真·系统级全局快捷键——任何 app 前台按 Alt+Space 都把桌宠召出来对话。新依赖 `tauri-plugin-global-shortcut` v2.3.2 + `lib.rs` plugin（handler：`w.show()`+`set_focus()`+`emit("show-input")`）+ setup 里 `register(Shortcut::new(ALT, Space))`（失败仅 warn，非致命）；前端新 `show-input` listener（镜像 restore-from-tray：`setAwayMode(false)`+`setInputVisible(true)`+rAF focus 输入框）。**cargo check ✅ / tsc ✅ / lib 275 ✅**。→ 待实跑见 D13。**⚠️ 权衡**：Alt+Space 会**全局接管** Windows 窗口系统菜单键（键盘开 Move/Size/Minimize/Maximize 失效，所有窗口）——设计文档钦定此键，若嫌扰可在 setup 改 `Shortcut`。后端 `.register()` 是 Rust 直调不走 IPC，**无需 capabilities 权限**。release 需 rebuild（新依赖 + 前后端）。
 > - [x] **3b 害羞慢现气泡（后端 mood 标签）**：设计 §6.3 把「害羞」列为情绪→气泡样式表里 开心/调皮/平静/难过/担心/疲惫 的同级条目（"慢慢浮现, 先半透明"），§6.2 又说低亲密度（陌生）→ 拘谨。**后端落 mood 标签**：`emotion/state.rs` 新 `derive_mood_label_with_closeness(state, closeness)`——以 `label_for_mood_full` 为单一真相源算 base label，再在 **closeness < `SHY_CLOSENESS_THRESHOLD=20.0`**（镜像 lonely-nudge / planner-Rule4 的 `closeness>=20` 门，取反）时把**中性/正向**标签（平静/开心/调皮）覆盖为「害羞」，但**不掩盖真实 distress**（担心/疲惫/难过照常——她和陌生人也会担心/累/难过）。**不改 `derive_mood_label` 签名**（踩坑#4：5 调用点 + 测试零波及，纯加法新 fn）。`converse.rs` 两处 emotion 落库点（silence:224 / normal:460）改调新 fn——closeness 从已读的 `relationship`（:176）取，标签写进 DB，loop_runner 30s 重发的是这份持久化标签，故害羞会自然驻留到下次对话。set_emotion 调试命令保留原 `derive_mood_label`（debug 覆写应字面）。**前端**：`bubbleClassForMood` 加 害羞→`bubble-shy`；`styles.css` 新 `bubble-shy` + `@keyframes bubble-shy-reveal`（1.2s 慢浮现，30% 处 opacity 0.35「先半透明」，终态 opacity 1 可读——对比 happy/playful 的 0.3s 弹出，shy 是迟疑试探的慢揭幕）。**lib 277（+2 shy 单测：低 closeness 中性→害羞 / 不掩盖 distress）/ check --tests ✅ / tsc ✅**。→ 待实跑见 D14。**纯后端标签 + 前端样式，release 需 rebuild**。详见 §最近一轮 (2026-08-08 续³)。
 > - [x] **3c idle_weights JSON 化（数据驱动）**：`microBehavior.ts` 的 `IDLE_BEHAVIORS` 8 条微行为（weight/cooldown/emotion_modifier/min_closeness/sleepy）原本是硬编码 const 数组、数据和逻辑混在一个 .ts。抽成纯数据资产 `src/animation/idle-behaviors.json`，`microBehavior.ts` 改 `import ... from "./idle-behaviors.json"` + `as IdleBehavior[]` 类型断言（tsconfig `resolveJsonModule:true` 早开），`pickNextBehavior`/`applySleepyWeight` 逻辑零改动。**好处**：调权重/冷却/昼夜倍率只改 JSON 不碰逻辑（数据↔逻辑解耦，便于后续手感微调）。**纯前端行为不变重构**：vitest 24（含 7 microBehavior 测，A5 yawn/look_around 日夜比断言仍过——证 JSON 数据字节等价）/ tsc ✅ / vite build ✅（JSON import 打包正常）。**release 需 rebuild**（前端）。无需手感验收（代码层单测已覆盖，见 §最近一轮 续⁴）。
-> - [ ] **3d 架构债 BrainState 扩到 prompt builder+budget**（B6 follow-up，剩余）。
+> - [x] **3d 架构债 BrainState 扩到 prompt builder+budget（B6 follow-up）—— 经评估主动关闭**（ADR: `docs/decisions/2026-08-08-brainstate-prompt-budget.md`）。Item 5 把 `BrainState` 采纳边界定在 planner，留此为"干净 follow-up"。复核五个目标函数（`build_system_prompt`/`build_qa_system_prompt`/`allocate_and_compress`/`allocate_qa`/`compress_system_prompt`）的实际签名与字段消费：① 它们都吃 `(retrieval, emotion, intent)`，而 **`intent` 是 planner 的 *输出***（`plan(&brain)→Intent`），不能入 BrainState（循环依赖）→ 强行扩留个 `(brain, intent)` 半 bundle 比现状更别扭，**省不掉 intent 参数**；② BrainState 的 `text`/`relationship`/`pending_due` 三字段这五个函数**一个不用** → 扩进去正是 `brain_state.rs` 注释 + §A2 ADR 已否决的「投机 mega-state」；③ 纯化妆重写 + 踩坑#4 级（5 函数签名 + 多 harness 调用点），零用户/正确性价值。**决策：不扩，follow-up 关闭，采纳边界终态=planner。** 也评估了方案 B（窄类型 `PromptCtx{retrieval,emotion,intent}`）：比方案 A 干净但不捆绑问题、边际收益不抵新类型 + 截断 retrieval 碍事，现状 3 参紧签名已自解释。同步更新 `brain_state.rs` 顶部注释指向 ADR。**纯决策无代码行为变更**，无需 rebuild。详见 §最近一轮 (2026-08-08 续⁵)。
 
 > **2026-08-07 自主批次推进中**（用户授权长程自主："按优先级推进所有后续内容，每项自测后更新 HANDOFF，不询问；待实跑项统一整理"）。逐项推进，每项自测（cargo test --lib / check --tests / tsc）绿后勾选。**release exe 在批次末统一 rebuild**（中间项都以库单测 + check 编译通过为正确性证据；批次末 Task #14 前一次性 `npx tauri build --no-bundle`，避免每项重构都重编一次前端嵌入）：
 > - [x] **Task #8 鲁棒性加固**：① main 空回复重试——converse `chat_stream` 把 `on_token` 改 `mut`、传 `&mut on_token` 复用，content 空时重试一次（镜像 extractor 重试；flash reasoning 吃光预算 finish_reason=length 空 content 的坑#3 瞬态）。② harness 启发式误报——Acknowledge/ForgetAck 关键词表加现实同义措辞（记着/记心里/放心吧/帮你记 + 不提/不会再/抹掉/清掉），治 705/1002「语义对无关键词」误报。**lib 259 / check --tests ✅**。纯后端 + 测试，release 需 rebuild。
@@ -138,6 +138,37 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-08 续⁵)：BrainState 扩到 prompt builder/budget —— 经评估关闭（ADR）
+
+**任务**：用户"2，3 按顺序跑"——3 的第四子项（3d，架构债收尾）。Item 5（2026-08-08）把 `BrainState` 采纳边界定为 planner，`brain_state.rs` 注释留「prompt builder / budget allocator 取重叠子集，是干净 follow-up」。本轮复核该 follow-up 是否真的该做。
+
+**复核（证据驱动）**：读五个目标函数实际签名 + 字段消费：
+
+| 函数 | 签名 | 实际消费 |
+|---|---|---|
+| `build_system_prompt` | `(retrieval, emotion, intent)` | retrieval.{persona_traits,relationship,user_profile} + emotion + intent |
+| `build_qa_system_prompt` | `(retrieval, emotion, intent)` | 同上（QA 版） |
+| `allocate_and_compress` | `(retrieval, working_memory, emotion, intent)` | 上述 + working_memory |
+| `allocate_qa` | `(retrieval, working_memory, emotion, intent)` | 同上（QA 版） |
+| `compress_system_prompt` | `(prompt, retrieval, emotion, intent)` | 超预算时用**截断 retrieval** 重建 |
+
+两个**致命不相容**：
+1. **`intent` 是 planner 输出**（`planner::plan(&brain) → Intent`），不是规划输入——**不能入 BrainState**（brain 喂 planner、planner 产 intent，output 塞回 input = 循环依赖）。强行扩留个 `(brain, intent)` 两参，没比现状 `(retrieval, emotion, intent)` 三参更短，**省不掉 intent**。
+2. BrainState 的 `text` / `relationship` / `pending_due` 这三个字段，五个函数**一个都不用** → 扩进去正是注释 + §A2 ADR 已否决的「投机 mega-state」。
+
+**方案评估**：
+- **方案 A（字面扩 BrainState）**：不相容（intent 循环）+ 捆绑 3 无用字段 + 踩坑#4 级（5 签名 + harness 调用点）+ 零价值。否决。
+- **方案 B（窄类型 `PromptCtx{retrieval,emotion,intent}`）**：比 A 干净（不捆绑、不碰循环），但 `compress_system_prompt` 内部用截断 retrieval 重建（bundle 要先拆再组），且 3 字段都被每函数全用、本就是紧签名——为新类型 + 间接层消除 3 处重复，是「为单一用途加抽象」。边际，不采纳。
+- **方案 C（保持现状）**：采纳。`(retrieval, emotion, intent)` 紧签名每参必用，自解释。
+
+**决策**：follow-up 关闭，`BrainState` 采纳边界终态 = planner。ADR `docs/decisions/2026-08-08-brainstate-prompt-budget.md`（镜像 scheduler-deferred 先例：调研→结论不做→写 ADR→债标"已决策"）。同步更新 `brain_state.rs` 顶部注释从「干净 follow-up」改为「已调研并主动关闭，见 ADR」。
+
+**向北星靠拢**：原则 #9（just-enough，不为对齐计划文本而加抽象）/ Karpathy 简单性（不为单一用途加抽象）/ #1+#2（intent 是输出非状态，不能强行入 BrainState）。**这是"不做"的正确决策**——与 B7 Scheduler 同款纪律：调研充分、证据确凿时，"决定不重构"也是债的合法收尾。
+
+**验证**：纯决策，无代码行为变更（仅 ADR + 一处文档注释）。`cargo check --lib` ✅（注释改动）。**无需 rebuild**。**何时复议**：见 ADR 末（intent 下游消费者 ≥5 处重复且各自加字段 / planner 输入维度翻倍时，再考虑方案 B 窄类型）。
 
 ---
 

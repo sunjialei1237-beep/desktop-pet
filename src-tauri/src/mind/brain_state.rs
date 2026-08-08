@@ -10,12 +10,14 @@
 //! inputs (the 9 params into the turn). `BrainState` is the complementary
 //! *internal* snapshot — the per-turn context that converse computes (emotion /
 //! relationship / retrieval / pending) and feeds to its decision steps. This is
-//! plan §A1's "global BrainState", adopted incrementally: the planner (the
-//! flagship pure decision) consumes it now; the system-prompt builder and budget
-//! allocator take overlapping subsets and are a clean follow-up — forcing one
-//! mega-state across all three would bundle fields each doesn't need, the kind
-//! of speculative abstraction this project has already rejected (see ADR
-//! 2026-08-07/08 on §A2).
+//! plan §A1's "global BrainState". The adoption boundary is **planner only**
+//! (the flagship pure decision): the system-prompt builder and budget allocator
+//! consume `(retrieval, emotion, intent)` — and `intent` is the planner's
+//! *output*, so it cannot live in BrainState without a circular dependency,
+//! while `text`/`relationship`/`pending_due` would be bundled unused. Extending
+//! BrainState into them is the speculative mega-state this project has rejected.
+//! The follow-up was investigated and deliberately closed; see ADR
+//! `docs/decisions/2026-08-08-brainstate-prompt-budget.md`.
 
 use crate::db::pending::PendingEvent;
 use crate::db::relationship::Relationship;
