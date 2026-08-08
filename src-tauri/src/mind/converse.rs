@@ -170,17 +170,20 @@ pub async fn converse(
         })
         .collect();
 
-    // Step 6: Planner — produce Intent.
+    // Step 6: Planner — produce Intent. The per-turn context is bundled into
+    // one BrainState snapshot (Architecture #2) — one coherent handle instead
+    // of five loose references threaded into the decision.
     let relationship = db
         .with_conn(crate::db::relationship::get)
         .ok();
-    let mut intent = crate::mind::planner::plan(
+    let brain = crate::mind::brain_state::BrainState::new(
         text,
         &emotion,
         relationship.as_ref(),
         &pending_due,
         &retrieval,
     );
+    let mut intent = crate::mind::planner::plan(&brain);
 
     // QA mode: strip planner directives that would steer the reply toward
     // memories or follow-up questions — just answer the question.

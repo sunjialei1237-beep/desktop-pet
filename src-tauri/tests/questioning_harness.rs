@@ -10,6 +10,7 @@ use desktop_pet_lib::db::DbState;
 use desktop_pet_lib::llm::client::{ChatMessage, LlmClient};
 use desktop_pet_lib::mind::budget;
 use desktop_pet_lib::mind::planner;
+use desktop_pet_lib::mind::BrainState;
 use desktop_pet_lib::mind::pacing::{throttle, QuestionPacing, ASK_THRESHOLD};
 use desktop_pet_lib::mind::retrieval;
 
@@ -36,7 +37,7 @@ async fn shared_statements_get_engaged_questions() {
     // Part A: planner classifies shared statements as "engage".
     let calm = desktop_pet_lib::emotion::state::EmotionState::default();
     for input in SHARE_INPUTS {
-        let intent = planner::plan(input, &calm, None, &[], &empty_retrieval());
+        let intent = planner::plan(&BrainState::new(input, &calm, None, &[], &empty_retrieval()));
         assert_eq!(
             intent.goal, "engage",
             "planner should engage on shared statement {:?}, got goal={}", input, intent.goal
@@ -45,7 +46,7 @@ async fn shared_statements_get_engaged_questions() {
     println!("[planner] all {} shared inputs -> engage", SHARE_INPUTS.len());
 
     // Part B: planner does NOT engage on a direct question (must answer instead).
-    let q_intent = planner::plan("你是谁？", &calm, None, &[], &empty_retrieval());
+    let q_intent = planner::plan(&BrainState::new("你是谁？", &calm, None, &[], &empty_retrieval()));
     assert_ne!(q_intent.goal, "engage", "planner must not engage on a question");
     println!("[planner] question input -> {} (not engage)", q_intent.goal);
 
@@ -68,7 +69,7 @@ async fn shared_statements_get_engaged_questions() {
 
     for input in ["我最近在练卧推", "今天也好热啊"] {
         let retrieval = retrieval::retrieve(input, &emotion, None, &db, 3).unwrap();
-        let intent = planner::plan(input, &emotion, None, &[], &retrieval);
+        let intent = planner::plan(&BrainState::new(input, &emotion, None, &[], &retrieval));
         assert_eq!(intent.goal, "engage");
         let mut messages = budget::allocate_and_compress(&retrieval, &[], &emotion, &intent);
         messages.push(ChatMessage { role: "user".to_string(), content: input.to_string() });

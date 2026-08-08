@@ -208,6 +208,7 @@ enable_reflection = false   # 其余保持 true
 | converse 空回复重试（#8） | 瞬态：flash reasoning 偶发 finish_reason=length 空 content | 日志 `[converse] main reply empty on first attempt; retrying once` 为观察点；`converse.rs` 重试块 + extractor 同款模式 |
 | surfaced thought 注入 | 需 reflection 先产 thought（一日以上） | `converse.rs` 注入 + 消费性 + `surface_thoughts` 单测 ✅（与既有 A3 同） |
 | B6 BrainState（#9）/ 死代码清理（#13） | 纯重构 / 删除，行为不变 | lib 255 + `check --tests` ✅，无需手感验 |
+| A1 全局 BrainState（Item 5 / 2026-08-08） | 纯重构：`planner::plan` 5 散参 → `&BrainState`，body 字节不变 | 新 `mind/brain_state.rs` + planner 11 单测全过 + golden/questioning 10 调用点同步 ✅，无行为变化 |
 
 ## 安全说明
 - `setHour` 只重写 `getHours`，`Date.now()`/`new Date()` 真实值不受影响 → DeepNight 入睡计时（`Date.now() - lastInteraction`）、cooldown 仍走真实时钟。

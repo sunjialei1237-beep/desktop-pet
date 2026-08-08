@@ -16,6 +16,7 @@ use desktop_pet_lib::mind::retrieval;
 use desktop_pet_lib::db::onboarding::UserProfile;
 use desktop_pet_lib::mind::grounding;
 use desktop_pet_lib::mind::planner::{self, Intent};
+use desktop_pet_lib::mind::BrainState;
 use desktop_pet_lib::mind::store;
 use desktop_pet_lib::mind::extractor::{ExtractionResult, EpisodeInput, FactInput};
 use rusqlite::Connection;
@@ -135,7 +136,7 @@ fn gc_002_pending_event_tracking() {
     let retrieval_result = retrieval::RetrievalResult {
         episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
-    let intent = planner::plan("hi", &emotion, Some(&rel), &due, &retrieval_result);
+    let intent = planner::plan(&BrainState::new("hi", &emotion, Some(&rel), &due, &retrieval_result));
     assert_eq!(intent.action, "proactive_check", "GC_002 FAIL: planner should choose proactive_check");
     assert!(intent.proactive);
 
@@ -165,7 +166,7 @@ fn gc_003_emotion_consistency() {
     // feedback loop (planner.rs Rule 2). She now responds with gentle care.
     // The stressed emotion is kept as realistic context; stress no longer
     // gates anxiety routing. Contract pinned by unit test_anxiety_routes_to_care.
-    let intent = planner::plan("I am so stressed about everything", &stressed, None, &[], &retrieval_result);
+    let intent = planner::plan(&BrainState::new("I am so stressed about everything", &stressed, None, &[], &retrieval_result));
     assert_eq!(intent.goal, "care", "GC_003 FAIL: anxiety should route to care goal");
     assert_eq!(intent.action, "normal", "GC_003 FAIL: anxiety should respond (normal), not silence");
     assert_eq!(intent.tone, "gentle", "GC_003 FAIL: tone should be gentle");
@@ -525,7 +526,7 @@ fn gc_013_planner_celebration() {
         persona_traits: vec![],
         user_profile: UserProfile::default(),
     };
-    let intent = planner::plan("I passed the exam! So happy!", &happy, None, &[], &retrieval_result);
+    let intent = planner::plan(&BrainState::new("I passed the exam! So happy!", &happy, None, &[], &retrieval_result));
     assert_eq!(intent.goal, "celebrate",
         "GC_013 FAIL: good news + happy mood should produce celebrate");
     assert_eq!(intent.tone, "excited",
@@ -555,7 +556,7 @@ fn gc_014_planner_loneliness_proactive() {
     let retrieval_result = retrieval::RetrievalResult {
         episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
-    let intent = planner::plan("hi", &lonely, Some(&rel), &[], &retrieval_result);
+    let intent = planner::plan(&BrainState::new("hi", &lonely, Some(&rel), &[], &retrieval_result));
     assert_eq!(intent.goal, "accompany",
         "GC_014 FAIL: high loneliness + close rel should produce accompany");
     assert!(intent.proactive, "GC_014 FAIL: should be proactive");
@@ -580,7 +581,7 @@ fn gc_015_planner_low_closeness_boundary() {
     let retrieval_result = retrieval::RetrievalResult {
         episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
     };
-    let intent = planner::plan("hi", &lonely, Some(&rel), &[], &retrieval_result);
+    let intent = planner::plan(&BrainState::new("hi", &lonely, Some(&rel), &[], &retrieval_result));
     assert_eq!(intent.goal, "converse",
         "GC_015 FAIL: low closeness should fall through to converse");
     assert!(!intent.proactive, "GC_015 FAIL: should not be proactive");
@@ -623,7 +624,7 @@ fn gc_016_planner_memory_anchor() {
         user_profile: UserProfile::default(),
     };
     let emotion = EmotionState::default();
-    let intent = planner::plan("what should I drink", &emotion, None, &[], &retrieval_result);
+    let intent = planner::plan(&BrainState::new("what should I drink", &emotion, None, &[], &retrieval_result));
     assert!(!intent.memory_anchor.is_empty(),
         "GC_016 FAIL: memory anchor should be set for score > 0.4");
     assert!(intent.memory_anchor.contains("milk tea"),
@@ -955,7 +956,7 @@ fn gc_030_end_to_end_memory_loop() {
     assert!(!result.episodes.is_empty(),
         "GC_030 FAIL: stored episode should be retrievable");
 
-    let intent = planner::plan("how is my job search going", &emotion, None, &[], &result);
+    let intent = planner::plan(&BrainState::new("how is my job search going", &emotion, None, &[], &result));
     assert!(!intent.memory_anchor.is_empty(),
         "GC_030 FAIL: planner should reference the retrieved memory");
 

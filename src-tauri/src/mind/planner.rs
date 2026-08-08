@@ -3,12 +3,15 @@
 //! writes dialogue — it writes goal/tone/action/memory_anchor.
 //! Rules only (no LLM call) per architecture principle #8.
 
-use crate::db::pending::PendingEvent;
-use crate::db::relationship::Relationship;
-use crate::emotion::state::EmotionState;
-use crate::mind::retrieval::RetrievalResult;
+use crate::mind::brain_state::BrainState;
 #[cfg(test)]
 use crate::db::onboarding::UserProfile;
+#[cfg(test)]
+use crate::db::pending::PendingEvent;
+#[cfg(test)]
+use crate::db::relationship::Relationship;
+#[cfg(test)]
+use crate::emotion::state::EmotionState;
 
 /// The planner's output. Directs how the LLM actor should behave.
 #[derive(Debug, Clone)]
@@ -77,13 +80,16 @@ const SHARE_MARKERS: &[&str] = &[
 ///   3. User sharing good news + high mood → celebrate
 ///   4. High loneliness + low closeness → accompany (proactive)
 ///   5. Default → normal converse
-pub fn plan(
-    user_text: &str,
-    emotion: &EmotionState,
-    relationship: Option<&Relationship>,
-    pending_due: &[PendingEvent],
-    retrieval: &RetrievalResult,
-) -> Intent {
+/// Produces an Intent from the per-turn BrainState snapshot (Architecture #2:
+/// one unified handle instead of five loose references). Pure rules, no LLM
+/// (Principle #8).
+pub fn plan(brain: &BrainState) -> Intent {
+    // Bridge the snapshot to local names so the rule body reads unchanged.
+    let user_text = brain.text;
+    let emotion = brain.emotion;
+    let relationship = brain.relationship;
+    let pending_due = brain.pending_due;
+    let retrieval = brain.retrieval;
     let lower = user_text.to_lowercase();
 
     // Derive memory anchor from top-scored episode (if score > 0.4).
@@ -299,15 +305,26 @@ mod tests {
         }
     }
 
+    /// Build a per-turn BrainState snapshot for `plan` (Architecture #2).
+    fn brain<'a>(
+        text: &'a str,
+        emotion: &'a EmotionState,
+        relationship: Option<&'a Relationship>,
+        pending_due: &'a [PendingEvent],
+        retrieval: &'a RetrievalResult,
+    ) -> super::BrainState<'a> {
+        super::BrainState::new(text, emotion, relationship, pending_due, retrieval)
+    }
+
     #[test]
     fn test_pending_event_proactive_check() {
-        let intent = plan(
+        let intent = plan(&brain(
             "how are you",
             &calm_emotion(),
             None,
             &[pending_event("interview tomorrow")],
             &empty_retrieval(),
-        );
+        ));
         assert_eq!(intent.action, "proactive_check");
         assert!(intent.proactive);
         assert_eq!(intent.goal, "care");
@@ -318,13 +335,13 @@ mod tests {
     fn test_anxiety_routes_to_care() {
         // Anxiety now routes to care (comfort) regardless of pet stress.
         // Silence was removed to break the anxiety → stress → silence loop.
-        let intent = plan(
+        let intent = plan(&brain(
             "I am so nervous about the exam, I am stressed",
             &stressed_emotion(),
             None,
             &[],
             &empty_retrieval(),
-        );
+        ));
         assert_eq!(intent.action, "normal");
         assert_eq!(intent.goal, "care");
         assert_eq!(intent.tone, "gentle");
@@ -333,25 +350,25 @@ mod tests {
     #[test]
     fn test_anxiety_without_stress_is_normal() {
         // User says anxious things but pet is not stressed → normal response.
-        let intent = plan(
+        let intent = plan(&brain(
             "I am worried about something",
             &calm_emotion(),
             None,
             &[],
             &empty_retrieval(),
-        );
+        ));
         assert_eq!(intent.action, "normal");
     }
 
     #[test]
     fn test_good_news_celebrate() {
-        let intent = plan(
+        let intent = plan(&brain(
             "I passed the exam! So happy!",
             &happy_emotion(),
             None,
             &[],
             &empty_retrieval(),
-        );
+        ));
         assert_eq!(intent.goal, "celebrate");
         assert_eq!(intent.tone, "excited");
     }
@@ -369,13 +386,13 @@ mod tests {
             closeness_log: None,
             updated_at: "2026-07-14T10:00:00".to_string(),
         };
-        let intent = plan(
+        let intent = plan(&brain(
             "hi",
             &lonely_emotion(),
             Some(&rel),
             &[],
             &empty_retrieval(),
-        );
+        ));
         assert_eq!(intent.goal, "accompany");
         assert!(intent.proactive);
     }
@@ -394,20 +411,20 @@ mod tests {
             closeness_log: None,
             updated_at: "2026-07-14T10:00:00".to_string(),
         };
-        let intent = plan(
+        let intent = plan(&brain(
             "hi",
             &lonely_emotion(),
             Some(&rel),
             &[],
             &empty_retrieval(),
-        );
+        ));
         assert_eq!(intent.goal, "converse");
         assert!(!intent.proactive);
     }
 
     #[test]
     fn test_default_normal() {
-        let intent = plan(
+        let intent = plan(&brain(
             // NOTE: must NOT match any SHARE_MARKER (e.g. "i had") or the
             // planner correctly classifies it as "engage", not "converse".
             // This test verifies the DEFAULT fall-through branch only.
@@ -416,7 +433,7 @@ mod tests {
             None,
             &[],
             &empty_retrieval(),
-        );
+        ));
         assert_eq!(intent.action, "normal");
         assert_eq!(intent.goal, "converse");
         assert_eq!(intent.tone, "gentle");
@@ -425,26 +442,26 @@ mod tests {
     #[test]
     fn test_memory_anchor_from_retrieval() {
         let retrieval = retrieval_with_episode("user likes milk tea", 0.7);
-        let intent = plan(
+        let intent = plan(&brain(
             "what should I drink",
             &calm_emotion(),
             None,
             &[],
             &retrieval,
-        );
+        ));
         assert_eq!(intent.memory_anchor, "user likes milk tea");
     }
 
     #[test]
     fn test_memory_anchor_empty_for_low_score() {
         let retrieval = retrieval_with_episode("user likes milk tea", 0.2);
-        let intent = plan(
+        let intent = plan(&brain(
             "what should I drink",
             &calm_emotion(),
             None,
             &[],
             &retrieval,
-        );
+        ));
         assert!(intent.memory_anchor.is_empty());
     }
 
