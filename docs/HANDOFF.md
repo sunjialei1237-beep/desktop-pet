@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-08（续⁷·速度+性格+幻觉根因）—— main 回复关思考(thinking-off) → 单次 FULL max 4s/mean 2.7s/0 超 5s（**option A 不做**）；system.txt round-2 无条件 soul block + 8 样例回归性格(human 4.07)；grounding.rs 空记忆显式标记根治"你上次说"编造(fresh 组全 0)，G6 越界 6/10 = 性格同源 trade 残留。代码已验证 lib 全过 + 注释修诚实。**release 已 rebuild（2026-08-09 10:40:44，`npx tauri build --no-bundle` exit 0 / 0 警告 / 23.3MB，桌面快捷方式同路径免改）；完整 6 轮 arc 见 §最近一轮 (续⁷) + `docs/review/prompt-quality-report-2026-08-08-retest6.md`**
+> 最后更新：**2026-08-09（续⁹·记忆卫生层）—— 结构性治理记忆三类易复发缺陷：A 抽取无校验 / B 读路径强化 / C 去重视野。新 `mind/memory_gate.rs`（category 白名单 + 噪声 key/value deny，store 写库前过滤，中文 trivia 靠 key 抓）；`retrieve()` 删 reinforce 副作用 → 纯读 + 新 `reinforce_top`（仅 converse+proactive genuine-recall 调用，零签名变更）；converse known_facts preference-only → `get_all_active(30)`。复盘纠正：原以为 strength 只升不降→**错**，`decay_strength`(0.998/天) 已每日运行，故砍掉新衰减子系统。ADR `docs/decisions/2026-08-09-memory-hygiene-layer.md`（含三次多视角复盘）。**代码 lib 287 + golden 29 passed / 17 测试二进制全编译，commit `7f4af17`**。**一次性数据治理已执行**：expire 10 噪声 facts（知识问答/自我语境/越界类，保留 current_reading+糯米副本）+ 19 非地标 episode strength snap 回 importance（解测试期 rc382/445/446 饱和，排序现按 importance：小猪去世0.8居顶/素数trivia0.1落底），DB 备份 `.bak-hygiene`。**测试全绿**：lib 287 + golden 29 + memory_gate 6 + **闭环2 真实 LLM 验证 ✅ pass**（途中发现并修**续⁸ 既存 bug**：lively 70% 概率早返回跳过到期 pending，`proactive.rs::generate` 加一行守卫 `pending_due.is_empty() &&` 掷 lively 骰 → 到期提醒现确定性触发，70/30 多样性对无 pending 场景保留）。**release 待 rebuild**。详见 §最近一轮 (续⁹)。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70），lively 多样性"先观察"。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,8 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-09（续⁹）记忆卫生层 —— ✅ 已收尾（全测试绿 + 数据治理已执行，release 待 rebuild）**。用户"1先观察 2治理，且不能只清这一次脏数据——设计更好结构防复发；设计完自复盘3次（多角度：合理否/会否引新问题/有无更优解）；先调研可复用框架别急着造；设计复盘后自主执行并测试"。**firecrawl 调研**：mem0（REJECT 闸 + ADD-only 软废弃，V3 已砍 LLM judge 翻车+成本）/ MemGPT-Letta（blocks+caps+后台 sleep-time worker）/ Zep-Graphiti（bi-temporal 知识图谱，判 overkill）。读码定位**三类结构性缺陷**：**A 抽取无校验**（store 全信 extractor + LLM 自打 confidence，"太阳东升西落"conf0.98 入库）/ **B 读路径强化**（`retrieve()` 每次读都副作用写 `reinforce()` → recall_count 飙 382/445/446、strength 饱和钉 1.0、富者愈富）/ **C 去重视区**（known_facts 只拉 preference 类，跨类糯米碎片化→重抽）。**三次复盘关键纠正**：B"无衰减"为**假**——`decay_strength`(×0.998/天) 已在 `loop_runner:309` 每日运行，故砍掉新衰减子系统。**两层确定性卫生（LLM 只提议、Rust 校验，#1）**：Part1 新 `mind/memory_gate.rs`（category 白名单 + 噪声 key/value deny，store 写库前过滤；中文 trivia 靠 key `knowledge_question` 抓，6 单测）；Part2 `retrieve()` 删 reinforce 副作用→纯读 + 新 `reinforce_top(db, episodes)`（仅 converse + proactive genuine-recall 显式调用，零签名变更，避坑#4）；Part3 converse known_facts preference-only → `get_all_active(30)`。**不做**（复盘收敛）：知识图谱 / LLM judge 二次校验 / 新衰减 / importance 地板 / gate kill-switch（均见 ADR rationale）。**一次性数据治理**：expire 10 噪声 facts + 19 非地标 episode strength snap 回 importance（保留 current_reading + 糯米 relationship/preference 副本），DB 备份 `.bak-hygiene`。**测试全绿**：lib 287 / golden 29 / memory_gate 6 / **闭环2 ✅ pass**（途中发现并修**续⁸ 既存 bug**：lively 70% 概率早返回跳过到期 pending → `proactive.rs::generate` 一行守卫 `pending_due.is_empty() &&` 掷 lively 骰，到期提醒现确定性触发，70/30 多样性对无 pending 场景保留）。ADR `docs/decisions/2026-08-09-memory-hygiene-layer.md`（含三次多视角复盘全文）；治理脚本 `scripts/migrate_memory_hygiene.py`。commit `7f4af17`（卫生层）。→ 详见 §最近一轮 (续⁹)。
 
 > **2026-08-09 续⁸ 自主冒泡：频率修复 + 灵性重构（记忆30/灵性70）—— ✅ 已收尾（lib 280 全过 + release 重建 exit0）**。用户反馈：① 频率太高（几分钟一冒）② 内容单一（全和糯米有关，要像真人突然找你聊天，可自言自语/撒娇）。firecrawl 调研 + AskUserQuestion 定（频率=30min 可配 / 比例=记忆30:灵性70）。**频率根因（bug）**：`commands.rs:470` 硬编码 `now-31min` 绕过 trigger_proactive 的 30min 门控 → 5min 轮询每次过 → 高频。**内容根因**：`proactive.rs::generate` 固定 query + 强制 memory anchor + "只聊这件事" + 无锚点沉默 → 永远糯米。**修复**：① 频率——AppState 加 `last_proactive_bubble: Mutex<Option<DateTime>>`，check_proactive 读真实值传 trigger_proactive（新 `min_interval_secs` 参数，config `proactive.min_interval_secs` 默认 1800），过门控即占位（conservative 宁少勿突兀，生成失败也不重复触发）。② 灵性——generate 入口 `rand` 加权（≥30 走 lively）：**memory(30%)** query 轮换池 5 条 + 无锚点降级 lively 而非沉默；**新 generate_lively(70%)** 不调 retrieve（省 embedding）、空 RetrievalResult 让 grounding_guard 自然禁编造用户记忆、注入**本地时段+情绪**驱动 prompt（自言自语/撒娇/碎碎念）。两编译坑已修（ThreadRng 非 Send→rng 收敛块内 drop；chrono Timetrait→format("%H")）。**lib 280（+3 测）/ check --tests ✅ / release 重建（1m10s+2.64s 前端）**。→ 待实跑：① 冒泡≈30min ② 内容不再全糯米、出现自言自语/撒娇（Debug Panel action=lively_bubble）。详见 §最近一轮 (续⁸)。
 
@@ -147,6 +149,51 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-09 续⁹)：记忆卫生层 —— 结构性治三类易复发缺陷（写闸门 + 检索纯化 + 去重视野）
+
+**任务**（用户原话）："1先观察，2治理。另外，不能只是完成这一次治理。你需要设计更好的结构来承担记忆任务，避免之后出现同样的或者类似的问题。设计完成之后需要自己复盘3次（合理否/会否引新问题/有无更优解）。先不要急着自己造，去其他地方看看有没有可以直接复用的框架。设计并复盘后自主执行并进行测试。"
+
+### 调研（firecrawl，决定"不造什么"）
+- **mem0**：`REJECT` 闸门 + ADD-only（无原地改）+ `supersede_by` 软废弃链；**V3 已砍 LLM-as-judge 二次校验**（V1/V2 的 extract→verdict 引发回归 + 成本，业界收敛到确定性规则闸门）。复用其负向规则 + 软废弃形态（我们 `expire` 机制已是）。
+- **MemGPT / Letta**：blocks + 容量上限 + CAS（archive）+ **sleep-time 后台 worker**（把状态维护关进后台）。我们 consolidation + loop_runner slow_tick 已是这个形态。
+- **Zep / Graphiti**：bi-temporal 知识图谱（节点+边带 valid_from/valid_to）。判 **overkill**（39 facts/单用户/成本#8 规模），且我们 `facts(valid_from/valid_to/source_episode)` 已是 bi-temporal 形状。
+
+### 三类结构性缺陷（读码定位，非一次性脏数据）
+| 缺陷 | 根因（代码） | 表现 |
+|---|---|---|
+| **A 抽取无校验** | `store_fact` 全盘信任 extractor 输出 + LLM 自打 confidence；extractor prompt 写对但 LLM 违规 10-20% | "太阳东升西落"conf0.98、"user is asking about my dreams"、知识问答入库 |
+| **B 读路径强化** | `retrieve()` 每次**读**都副作用**写** `reinforce()`（+strength、+recall_count）；forget / proactive / **测试** 都触发 | recall_count 刷爆(382/445/446)、strength 饱和钉 1.0、富者愈富 |
+| **C 去重视区** | `converse.rs:94` known_facts 只拉 `preference` 类 | 糯米跨 relationship/preference/profile 碎片化、extractor 看不到 → 重抽 |
+
+> ⚠️ **复盘纠正**：原判 strength"只升不降"。**错**——`db::episodes::decay_strength`（×0.998/天）已在 `loop_runner.rs:309` 每日运行。B 的真正根因是"读路径也强化"，不是"无衰减"。
+
+### 设计：两层确定性卫生（LLM 只提议，Rust 校验，原则 #1）
+- **Part 1 写入闸门**（治 A，新 `mind/memory_gate.rs`）：`admits(fact)->bool` / `filter_facts`，无 LLM、可单测，`store()` 写库前调用。三条独立 deny：① category 白名单（preference/relationship/goal/profile/school/work/health，对齐 extractor.txt）；② 噪声 key（结尾 `_question`/`_gap`/`_knowledge` 或 `belief_in_*` 前缀——中文 trivia "太阳东升西落" 的 key 是 `knowledge_question`，靠此抓）；③ 噪声 value（英文 + 对齐 proactive `is_anchorable_fact`：asked about / asking about / user asked / user is asking / does not know / curious about / busy with work…）。
+- **Part 2 检索纯化**（治 B，**零签名变更**）：`retrieve()` 删 reinforce 副作用 → 纯读；新增 `reinforce_top(db, episodes)` 辅助，仅 genuine-recall 调用方用（converse 非 QA / proactive 3 处）。**不新增衰减**（decay 已存在）。**为何不用 `reinforce:bool` flag**：retrieve 回归纯函数语义更清 + 签名零变更 → forget/tests/embedding_ab 调用点无需改（避坑#4）。
+- **Part 3 去重视野**（治 C）：`converse.rs` known_facts `get_by_category("preference") take(20)` → `get_all_active(30)`（按 mention_count/confidence 排序）。
+
+### 三次多视角复盘（设计定稿前，全文见 ADR）
+1. **架构/正确性**：纠正 B"无衰减"为假 → 砍新衰减子系统；value 黑名单全英文漏中文反例 → key 黑名单兜住；旧 `test_strength_reinforcement` 会挂 → 改纯读契约 + 新 `reinforce_top` 单测。
+2. **回归/副作用**：签名零变更确认；两个固定断言会失败（retrieval + gc_008）→ 已改；迁移误杀 `current_reading` → 改显式 expire（非 blanket 重放）；stale 注释（forget/embedding_ab）→ 已更新。
+3. **小马尾/更优解**：砍 ~40% 代码（filter_facts 内联、`reinforce_top` 替 flag、衰减子系统全砍）；known_facts 全类保留。
+
+### 不做（复盘收敛）
+知识图谱（overkill）/ LLM judge 二次校验（翻车+成本）/ 新衰减子系统 & importance 地板（decay 已有效，无过衰减证据，地板治未病且可能保噪音）/ `enable_memory_gate` kill-switch（gate 与 `dedup_insert`/`expire_old` 同属零成本确定性 ingest 闸门，后者也无 toggle；#6 kill-switch 专给昂贵/LLM 能力省成本，gate 无成本可省；threading config 进 store() 是坑#4 级签名动荡）。
+
+### 数据治理（一次性，用户 #2）
+`scripts/migrate_memory_hygiene.py`（python sqlite3，镜像 memory_gate 模式 + 重置测试期饱和 strength，dry-run 默认 / `--apply` 提交，先备份 `.bak-hygiene`）。**执行结果**：expire **10 噪声 facts**（知识问答/自我语境/越界类，保留 current_reading + 糯米副本）+ **19** 非地标 episode strength snap 回 importance → facts 36→26 active、episodes 0 饱和（原 7）、排序现按 importance（小猪去世 0.8 居顶 / 素数 trivia 0.1 落底）。recall_count 不动（不参与评分，仅诊断）。
+
+### 闭环2 测试途中修了续⁸ 既存 bug（非续⁹ 回归）
+`cargo test --test closed_loop2_harness`（真实 LLM）首跑 **FAILED**：`proactive_bubble_brings_up_due_pending` 断言 pending 被触发，但 generate 走了 lively 分支（"伸了个懒腰…"）跳过到期 pending。**根因**：续⁸ 的 lively 70% 概率早返回（`proactive.rs:210` `gen_range(0..100)>=30`）在 `pending_due` 检查**之前** → 到期提醒被 70% 随机跳过。续⁸ 当时只跑 `check --tests`（编译）没跑 harness，漏掉。**不是续⁹ 回归**（测试用全新内存 DB，lively 早返回我未触碰，我的 reinforce_top 只在 non-lively 分支）。但它**破坏核心承诺**（北极星：到期提醒该被带出）。**一行守卫根因修复**：`is_lively = pending_due.is_empty() && rng.gen_range(0..100)>=30` —— 到期提醒在则强制走 memory 分支（确定性触发 mark_triggered），无到期提醒时 70/30 多样性原样保留（尊重续⁸"先观察"）。`generate_welcome_back` / `generate_lonely_bubble` 无 lively 概率分支，不受影响。**修复后闭环2 ✅ 1 passed**（anchor="明天有个大公司的实习面试" goal=care，pending anchored: true）。
+
+### 验证（全绿）
+`cargo test --lib` **287 passed** / `--test golden_conversations` **29 passed** / memory_gate 6 单测 / `--test closed_loop2_harness` **1 passed**（真实 LLM）/ 17 测试二进制全编译零签名破坏。commit `7f4af17`（卫生层）+ proactive 一行守卫（待提交）。
+
+### 改动清单
+新 `mind/memory_gate.rs`（admits/filter_facts + 6 单测）；`mind/mod.rs`（注册）；`mind/store.rs`（写库前过闸门）；`mind/retrieval.rs`（删 reinforce 块→纯读 + reinforce_top + 测试改纯读契约）；`mind/converse.rs`（known_facts 全类30 + 非 QA reinforce_top）；`pending/proactive.rs`（3 处 reinforce_top + **续⁸ lively 守卫**）；`mind/forget.rs`+`tests/embedding_ab_harness.rs`（stale 注释）；`tests/golden_conversations.rs`（gc_008→纯读契约）。ADR + 治理脚本。**release 待 `npx tauri build --no-bundle`**。
 
 ---
 
