@@ -377,11 +377,20 @@ fn semantic_rerank(
     if n == 0 {
         return;
     }
-    let k = n.min(5);
-    // Indices of the char-overlap top-K, highest score first.
-    let mut idx: Vec<usize> = (0..n).collect();
+    // Only re-rank entries that already share at least one char-bigram with the
+    // query (char_overlap > 0). A zero-overlap entry keeps score 0: BGE-M3's
+    // unrelated baseline (~0.5 raw cosine → 0.75 via the (cos+1)/2 map) would
+    // otherwise clear the 0.7 delete gate and FABRICATE candidates — e.g.
+    // "忘掉火锅" falsely surfacing the 早睡 fact. The shared-char anchor lets the
+    // boost catch genuine near-synonyms ("忘掉早睡的事" → "想早睡总是熬夜", they
+    // share 早睡) without admitting unrelated memories. (Architecture #1: never
+    // delete the wrong thing; #11: explainable threshold.)
+    let mut idx: Vec<usize> = (0..n).filter(|&i| scores[i] > 0.0).collect();
+    if idx.is_empty() {
+        return;
+    }
     idx.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap_or(Ordering::Equal));
-    let top: Vec<usize> = idx.into_iter().take(k).collect();
+    let top: Vec<usize> = idx.into_iter().take(n.min(5)).collect();
     let qv = match embedding.embed(text) {
         Ok(v) => v,
         Err(_) => return,
