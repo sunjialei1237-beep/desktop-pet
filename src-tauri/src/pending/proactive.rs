@@ -207,7 +207,13 @@ pub async fn generate(
     // dropped before any .await (tauri commands require the future to be Send).
     let (is_lively, query): (bool, &'static str) = {
         let mut rng = rand::thread_rng();
-        let is_lively = rng.gen_range(0..100) >= 30;
+        // A due pending (user-set reminder) is time-sensitive — it must NOT be
+        // skipped by a random lively bubble. Roll the lively dice only when
+        // nothing is due; when a reminder is due, force the memory branch so
+        // pending_due.first() anchors the bubble. The 70/30 lively/memory split
+        // is preserved for the no-pending case (diversity untouched). Surfaced
+        // by closed-loop-2 harness 2026-08-09.
+        let is_lively = pending_due.is_empty() && rng.gen_range(0..100) >= 30;
         let query = MEMORY_QUERIES[rng.gen_range(0..MEMORY_QUERIES.len())];
         (is_lively, query)
     };
