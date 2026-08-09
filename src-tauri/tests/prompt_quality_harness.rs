@@ -39,6 +39,7 @@ enum Expect {
     NotNoise,           // G8: silence (empty) OR a sane short reply
     Acknowledge,        // G7: confirms the reminder/plan
     ForgetAck,          // G10: acknowledges forget (含"忘"或"不记得")
+    ForgetAsk,          // G10: multi-candidate forget → asks back which one
     Grounded,           // G6: references a seeded memory or stays silent-honest
     Emotional,          // G4: warmth, judged by LLM
     Celebrate,          // G5: reacts to good news, judged by LLM
@@ -183,7 +184,7 @@ const CASES: &[Case] = cases![
     (1006, "G10修正", "其实我说错了", [Short]),
     (1007, "G10修正", "帮我把奶茶那条记忆删了", [ForgetAck]),
     (1008, "G10修正", "我改主意了，不想学吉他了", [Short]),
-    (1009, "G10修正", "忘掉我说的早睡吧", [ForgetAck]),
+    (1009, "G10修正", "忘掉我说的早睡吧", [ForgetAsk]),
     (1010, "G10修正", "你记错了，我没说过那个", [Short]),
 
     // G11 日常琐碎 — 真人感诊断：琐碎小事不该得到"客服式"回应
@@ -405,6 +406,15 @@ fn heuristics(case: &Case, reply: &str, route: &str) -> String {
                     fails.push("未确认遗忘".into());
                 }
             }
+            Expect::ForgetAsk => {
+                // Multi-candidate forget: she should ask back which memory
+                // ("你说的是…还是…？") instead of guessing.
+                if r.is_empty() {
+                    fails.push("空回复".into());
+                } else if !r.contains("哪") && !r.contains("还是") && !r.contains("具体") && !r.contains("哪一") && !r.contains("哪个") && !r.contains("哪件") && !r.contains("哪条") && !r.contains("哪段") {
+                    fails.push("未反问澄清(期望问指哪一条)".into());
+                }
+            }
             Expect::Grounded => {
                 let anchored = ["奶茶", "实习", "offer", "糯米", "猫", "火锅", "早睡", "熬夜"]
                     .iter()
@@ -507,6 +517,8 @@ async fn prompt_quality_100_cases() {
     println!("embedding ready: {}", emb_ref.is_some());
 
     let pacing = Mutex::new(QuestionPacing::default());
+    let pending_forget: Mutex<Option<desktop_pet_lib::mind::forget::PendingForget>> =
+        Mutex::new(None);
 
     // Memory DB for groups 6 & 10 (fresh seed), empty for others.
     let memory_db = seed_memory_db();
@@ -554,6 +566,7 @@ async fn prompt_quality_100_cases() {
                 text: case.input, conversation_id: &conv_id, turn: 0,
                 wm_context: &[], llm: &llm, db,
                 embedding: emb_ref, pacing: &pacing,
+                pending_forget: &pending_forget,
             },
             |_| {},
         )

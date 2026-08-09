@@ -34,6 +34,10 @@ pub struct AppState {
     /// proactive_bubble runs — so the 5-min frontend poll can't re-fire within
     /// the interval even if generation later fails (conservative: 宁少勿突兀).
     pub last_proactive_bubble: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
+    /// Pending cross-turn forget disambiguation (None normally). Holds the ≥2
+    /// candidate memories from a "忘掉X" that matched several, awaiting the
+    /// user's clarifying reply. Mirrors `question_pacing` as a Mutex slot.
+    pub pending_forget: std::sync::Mutex<Option<crate::mind::forget::PendingForget>>,
 }
 
 // -- Response types --
@@ -112,6 +116,7 @@ pub async fn send_message(
         db: &db,
         embedding: Some(&state.embedding),
         pacing: &state.question_pacing,
+        pending_forget: &state.pending_forget,
     };
     let result = crate::mind::converse::converse(
         &ctx,

@@ -228,6 +228,18 @@ cargo test --test personality_judge_harness -- --nocapture --test-threads=1
 **通过判据**：回复气泡**慢慢浮现**（约 1.2s，明显比平时的 0.3s 弹出慢）、**先半透明再变实**（迟疑试探感，非瞬现）；Debug Panel Last Turn 的 mood_label 显「害羞」。**对照**：把 closeness 拉到 ≥20（Debug Panel 多次摸头/对话累积，或直接 SQL 改 relationship.closeness）后再发中性消息 → 气泡恢复爽快弹出（开心/调皮/平静），不再害羞——验证亲密度里程碑的两面（与 lonely-nudge 的 `closeness>=20` 门同阈值）。
 **边界**：distress 不被害羞掩盖——低 closeness 下若情绪是 担心/疲惫/难过（Debug Panel Emotion 编辑器把 stress 拉高/ social_battery 拉低/ mood 拉低后对话），标签仍是 担心/疲惫/难过 而非 害羞（单测 `test_shy_does_not_mask_distress` 钉）。
 
+### D15 — Forget 多轮消歧义（多候选反问 + 跨轮指定，2026-08-09 续¹⁰）
+> D5 是单候选遗忘（直接删 + 确认）。D15 验新链路：当"忘掉X"同时命中 ≥2 条记忆时，她**不再猜删一个**，而是反问"你说的是哪个？"，第二轮按序数/关键词指定后只删那一条（#1：绝不删错东西）。需 dev 或 release exe。
+**前提**：先聊出**两条同主题**记忆——一条偏好(fact)、一条经历(episode)。例如：① 发「我最喜欢猫了」→ 习得 fact（偏好）；② 发「昨天带糯米去看了流浪猫，好可爱」→ 习得 episode（经历）。F12 Debug Panel 确认 Facts 和 Episodes 各有一条带"猫"。
+**步骤 1（反问）**：发「忘掉猫那件事」。
+**通过判据 1**：她**反问**而非直接确认——回复含「哪/哪个/还是/具体」（如"你说的是喜欢猫，还是那次看猫的经历？"），且 Debug Panel 的 fact 和 episode **都还在**（Ambiguous 不删）。
+**步骤 2（指定 → 删指定那条）**：发「那次经历」或「第二个」或「后者」。
+**通过判据 2**：她简短确认忘了（如"好，我把那段忘了"）且**绝不复述**；Debug Panel **episode 消失、fact 保留**（只删指定的那一条）。
+**对照（序数删另一条）**：重新凑两条同主题 → 「忘掉X」反问 → 答「第一个」/「前者」→ 删的是列表第一条（序数索引生效）。
+**对照（换话题清 slot）**：反问后不回答、直接聊别的（如「今天天气真好」）→ 她正常接话、不再追问（slot 因 off-topic 清除）；之后再发"忘掉X"是全新一轮。
+**对照（只重问一次）**：反问后答含糊（如「嗯就是那个」）→ 她再问一次；再含糊 → 不再纠缠（slot 已清，第 3 轮不再卡在消歧义）。
+**注意**：landmark（地标记忆）永不进候选（被 episode 腿过滤）；fact 是软过期(valid_to)可恢复、episode 是硬删。代码层 `forget.rs` 6 新单测（Ambiguous 不删/resolve 序数+overlap+越界/is_off_topic）+ converse 跨轮 slot 已 CI 覆盖；此项验"真实双候选→反问→指定删除"端到端手感。
+
 ## 本批次不易快速验收（代码层已单测）
 | 项 | 为何难快速触发 | 代码层依据 |
 |---|---|---|

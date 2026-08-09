@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-09（续⁹·记忆卫生层）—— 结构性治理记忆三类易复发缺陷：A 抽取无校验 / B 读路径强化 / C 去重视野。新 `mind/memory_gate.rs`（category 白名单 + 噪声 key/value deny，store 写库前过滤，中文 trivia 靠 key 抓）；`retrieve()` 删 reinforce 副作用 → 纯读 + 新 `reinforce_top`（仅 converse+proactive genuine-recall 调用，零签名变更）；converse known_facts preference-only → `get_all_active(30)`。复盘纠正：原以为 strength 只升不降→**错**，`decay_strength`(0.998/天) 已每日运行，故砍掉新衰减子系统。ADR `docs/decisions/2026-08-09-memory-hygiene-layer.md`（含三次多视角复盘）。**代码 lib 287 + golden 29 passed / 17 测试二进制全编译，commit `7f4af17`**。**一次性数据治理已执行**：expire 10 噪声 facts（知识问答/自我语境/越界类，保留 current_reading+糯米副本）+ 19 非地标 episode strength snap 回 importance（解测试期 rc382/445/446 饱和，排序现按 importance：小猪去世0.8居顶/素数trivia0.1落底），DB 备份 `.bak-hygiene`。**测试全绿**：lib 287 + golden 29 + memory_gate 6 + **闭环2 真实 LLM 验证 ✅ pass**（途中发现并修**续⁸ 既存 bug**：lively 70% 概率早返回跳过到期 pending，`proactive.rs::generate` 加一行守卫 `pending_due.is_empty() &&` 掷 lively 骰 → 到期提醒现确定性触发，70/30 多样性对无 pending 场景保留）。**release 待 rebuild**。详见 §最近一轮 (续⁹)。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70），lively 多样性"先观察"。**
+> 最后更新：**2026-08-09（续¹⁰·选择性遗忘多轮消歧义）—— 补遗忘链路两个体验缺口：① 多候选不澄清（「忘掉咖啡」同时命中 fact+episode，旧逻辑直接猜删一个可能删错）② fact/pending 措辞不匹配太硬（char_overlap 字面不重叠，「忘掉早睡的事」匹配不到 fact「想早睡总是熬夜」→ 生硬"不记得"）。`forget_best_match` 改三态 `ForgetOutcome::{Deleted,Declined,Ambiguous}`——≥2 候选**不再删而是反问**；新 `PendingForget` 跨轮 slot（抄 `pacing` Mutex 范式）+ `resolve_candidate`（序数词 第N个/前者/后者/甲乙 + char_overlap≥0.4）+ 90s 超时 + 只重问一次；converse 在 ingest **前**拦第二轮（"第一个"不进 Forget gate→必须 gate 前拦截，#1）→ 解析→`execute_candidate` 删→跳 ingest（二轮不被存为新记忆）；fact/pending 加 `semantic_rerank`（char_overlap top-5 现场 embed+cosine 归一映射 0.7 门，模型不可用退回 char_overlap，#6）。踩坑#4 全程避（只加 enum/字段不改签名；3 harness ConverseCtx 构造点同步 + prompt_quality case 1009 ForgetAck→ForgetAsk + ForgetAsk 启发式）。**lib 293（+6 forget 测）/ check --tests ✅ / release 已 rebuild（17:20）**。→ 待实跑见 D15。详见 §最近一轮 (续¹⁰)。**原 续⁹·记忆卫生层 —— 结构性治理记忆三类易复发缺陷：A 抽取无校验 / B 读路径强化 / C 去重视野。新 `mind/memory_gate.rs`（category 白名单 + 噪声 key/value deny，store 写库前过滤，中文 trivia 靠 key 抓）；`retrieve()` 删 reinforce 副作用 → 纯读 + 新 `reinforce_top`（仅 converse+proactive genuine-recall 调用，零签名变更）；converse known_facts preference-only → `get_all_active(30)`。复盘纠正：原以为 strength 只升不降→**错**，`decay_strength`(0.998/天) 已每日运行，故砍掉新衰减子系统。ADR `docs/decisions/2026-08-09-memory-hygiene-layer.md`（含三次多视角复盘）。**代码 lib 287 + golden 29 passed / 17 测试二进制全编译，commit `7f4af17`**。**一次性数据治理已执行**：expire 10 噪声 facts（知识问答/自我语境/越界类，保留 current_reading+糯米副本）+ 19 非地标 episode strength snap 回 importance（解测试期 rc382/445/446 饱和，排序现按 importance：小猪去世0.8居顶/素数trivia0.1落底），DB 备份 `.bak-hygiene`。**测试全绿**：lib 287 + golden 29 + memory_gate 6 + **闭环2 真实 LLM 验证 ✅ pass**（途中发现并修**续⁸ 既存 bug**：lively 70% 概率早返回跳过到期 pending，`proactive.rs::generate` 加一行守卫 `pending_due.is_empty() &&` 掷 lively 骰 → 到期提醒现确定性触发，70/30 多样性对无 pending 场景保留）。**release 待 rebuild**。详见 §最近一轮 (续⁹)。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70），lively 多样性"先观察"。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,8 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-09（续¹⁰）选择性遗忘：多轮消歧义 + fact/pending 语义匹配 —— ✅ 已收尾（lib 293 + check --tests + release 17:20 已 rebuild）**。08-05 episode/fact/pending 遗忘 MVP 是**单轮、零状态、最高分赢家通吃**——两个体验缺口：①「忘掉咖啡」同时命中 fact「咖啡」+ episode「和糯米喝咖啡」时直接猜删一个（可能删错，#1 不可违背）②「忘掉早睡的事」因 char_overlap 字面不重叠匹配不到 fact「想早睡总是熬夜」→ 生硬"不记得"。**模块 A 多轮消歧义**：`forget_best_match` 改三态 `ForgetOutcome::{Deleted{summary}, Declined, Ambiguous{candidates}}`（替 `ForgetResult`）——≥2 候选**不删而反问**（landmark 已被 episode 腿过滤，候选皆可删）；新 `PendingForget{query,candidates,created_at}` 跨轮 slot（抄 `ConverseCtx.pacing` 的 `&Mutex<Option<..>>` 范式）；纯函数 `resolve_candidate`（序数词表 `ordinal_index`：第N个/前者/后者/最后/1/A/甲乙 + `cjk_to_digit` → 索引；否则 char_overlap 取最高≥0.4）+ `is_off_topic`（无序数且全候选 char_overlap<0.2 → 判换话题）。**关键控制流**：第二轮"第一个"不进 Forget gate（Forget 是动词驱动）→ converse **在 ingest 之前** `resolve_pending_forget` 拦截——take-and-clear 一次锁（>90s stale drop）→ resolve 命中 `execute_candidate` 删 + 跳过 ingest（合成 Silence-route outcome，二轮不被存为新记忆）；off-topic → 正常 ingest；仍不明 → 重问一次（slot 已清，防循环）。三条路径（Resolved/Reask/Proceed）汇合到既有 chat 生成回复。**模块 B fact/pending 语义匹配**：`find_fact_candidate`/`find_pending_candidate` 加 `embedding: Option<&EmbeddingService>`——char_overlap 粗筛 top-5 → `semantic_rerank` 现场 embed_batch + `cosine_similarity`（未归一，`((cos+1)/2).clamp(0,1)` 映射匹配 retrieval::compute_semantic）→ 0.7 门；embedding 任意 hiccup 退回 char_overlap（#6）。**模块 C harness 同步（踩坑#4）**：`ForgetCandidate` 加 `#[derive(Debug,Clone)]`（ForgetOutcome/PendingForget 的 Vec 成员要求）；`IngestionOutcome.forget` 类型 `ForgetResult`→`ForgetOutcome`（字段名不变）；3 harness（conversation/memory_recall/prompt_quality）ConverseCtx 构造点加 `pending_forget: &Mutex::new(None)`；prompt_quality case 1009「忘掉我说的早睡吧」种子下双候选（fact「想早睡总是熬夜」:309 + episode「熬夜写代码…早睡」:312 非地标）→ `Expect::ForgetAck` 改 `Expect::ForgetAsk` + ForgetAsk 启发式（回复含 哪/还是/具体/哪个/哪件）。**lib 293（forget 18 测含 6 新：Ambiguous 不删保留双候选 / resolve 序数+overlap+越界 None / is_off_topic / 语义 None 退回 char_overlap）/ check --tests ✅ / release `npx tauri build --no-bundle` 重建 exit0（17:20，先 taskkill 桌宠避坑#6 文件锁）**。→ 待实跑见 D15（双候选反问→序数指定→确认删除）。**当前无进行中任务**。
 
 > **2026-08-09（续⁹）记忆卫生层 —— ✅ 已收尾（全测试绿 + 数据治理已执行，release 待 rebuild）**。用户"1先观察 2治理，且不能只清这一次脏数据——设计更好结构防复发；设计完自复盘3次（多角度：合理否/会否引新问题/有无更优解）；先调研可复用框架别急着造；设计复盘后自主执行并测试"。**firecrawl 调研**：mem0（REJECT 闸 + ADD-only 软废弃，V3 已砍 LLM judge 翻车+成本）/ MemGPT-Letta（blocks+caps+后台 sleep-time worker）/ Zep-Graphiti（bi-temporal 知识图谱，判 overkill）。读码定位**三类结构性缺陷**：**A 抽取无校验**（store 全信 extractor + LLM 自打 confidence，"太阳东升西落"conf0.98 入库）/ **B 读路径强化**（`retrieve()` 每次读都副作用写 `reinforce()` → recall_count 飙 382/445/446、strength 饱和钉 1.0、富者愈富）/ **C 去重视区**（known_facts 只拉 preference 类，跨类糯米碎片化→重抽）。**三次复盘关键纠正**：B"无衰减"为**假**——`decay_strength`(×0.998/天) 已在 `loop_runner:309` 每日运行，故砍掉新衰减子系统。**两层确定性卫生（LLM 只提议、Rust 校验，#1）**：Part1 新 `mind/memory_gate.rs`（category 白名单 + 噪声 key/value deny，store 写库前过滤；中文 trivia 靠 key `knowledge_question` 抓，6 单测）；Part2 `retrieve()` 删 reinforce 副作用→纯读 + 新 `reinforce_top(db, episodes)`（仅 converse + proactive genuine-recall 显式调用，零签名变更，避坑#4）；Part3 converse known_facts preference-only → `get_all_active(30)`。**不做**（复盘收敛）：知识图谱 / LLM judge 二次校验 / 新衰减 / importance 地板 / gate kill-switch（均见 ADR rationale）。**一次性数据治理**：expire 10 噪声 facts + 19 非地标 episode strength snap 回 importance（保留 current_reading + 糯米 relationship/preference 副本），DB 备份 `.bak-hygiene`。**测试全绿**：lib 287 / golden 29 / memory_gate 6 / **闭环2 ✅ pass**（途中发现并修**续⁸ 既存 bug**：lively 70% 概率早返回跳过到期 pending → `proactive.rs::generate` 一行守卫 `pending_due.is_empty() &&` 掷 lively 骰，到期提醒现确定性触发，70/30 多样性对无 pending 场景保留）。ADR `docs/decisions/2026-08-09-memory-hygiene-layer.md`（含三次多视角复盘全文）；治理脚本 `scripts/migrate_memory_hygiene.py`。commit `7f4af17`（卫生层）。→ 详见 §最近一轮 (续⁹)。
 
@@ -149,6 +151,49 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-09 续¹⁰)：选择性遗忘 —— 多轮消歧义 + fact/pending 语义匹配
+
+**任务**：08-05 续做的选择性遗忘（episode/fact/pending MVP）是**单轮、零状态、最高分赢家通吃**——gate→`Forget`→`forget_best_match` 扫三路各过 0.7 门、取置信度最高**直接删一个**，无候选则 converse 注入"不记得"。用户确认两个体验缺口都要解：① 多候选不澄清（猜删可能删错，违背 #1「Rust 绝不删错东西」）② 措辞不匹配太硬（char_overlap 字面不重叠，「忘掉早睡的事」匹配不到 fact「想早睡总是熬夜」）。实现深度定为**完整跨轮反问**：多候选→反问→slot 存候选→接第二轮→删指定。
+
+### 关键约束（codegraph + 源码坐实，非假设）
+1. **第二轮 gate 不进 Forget**：Forget 是动词驱动（"忘掉/删/取消"），"第一个/前者"会被分到 Silence → **接第二轮必须在 gate 之前拦截**，不能依赖路由。
+2. **converse 对 AppState 是"瞎的"，但有跨轮注入范式**：`ConverseCtx.pacing: &Mutex<QuestionPacing>`（`converse.rs:69`）是现成的 turn-spanning slot → `pending_forget` 照抄，零架构新概念。
+3. **踩坑#4 雷区**：改 `converse`/`ingest` 签名会断所有 harness。本轮**只加 enum 变体 / struct 字段，不改函数签名**；`ConverseCtx`/`AppState` 加字段则同步所有构造点（3 harness + lib.rs init + commands.rs send_message）。prompt_quality case 1009 种子下**双候选**（fact「想早睡总是熬夜」+ episode「熬夜写代码…早睡」非地标）→ 新逻辑从 ForgetAck 翻成反问 → 启发式判 FAIL，**必须同步**。
+
+### 模块 A：多候选反问 + 跨轮消歧义（`forget.rs` 主体重写）
+**新类型**（替 `ForgetResult`）：`ForgetOutcome::{Deleted{summary}, Declined, Ambiguous{candidates}}` + `PendingForget{query,candidates,created_at}` + `ForgetCandidate{target,id,summary,confidence}`（均 `#[derive(Debug,Clone)]`）。三态比 bool+Option 清晰：删了一个 / 诚实拒绝 / 需反问。
+
+**`forget_best_match` 改纯决策**（`forget.rs:307`）：三路候选（含模块 B 语义匹配）→ `≥2` 返回 `Ambiguous`（**不删**，landmark 已被 episode 腿过滤，候选皆可删）→ `==1` 删它 `Deleted` → `0` `Declined`。纯决策**不碰 slot**（#1：Rust 决定删什么；slot 读写归 converse）。
+
+**第二轮解析纯函数**（可单测，无 DB/模型）：`resolve_candidate` 先 `ordinal_index`（第N个/前者/后者/最后/1/A/甲乙，含 `cjk_to_digit`）→ 命中返回索引；否则各候选 char_overlap 取最高≥0.4；都不中 None。`is_off_topic`：无序数且全候选 char_overlap<0.2 → 判换话题（保守：疑似仍在话题内就留循环重问，只对明确新话题清 slot）。
+
+### 模块 A 续：converse 控制流汇合（`converse.rs`，最复杂）
+**入口（ingest 之前）拦第二轮**（`converse.rs:209`）—— `resolve_pending_forget`：take-and-clear **一次锁**（>90s stale drop，clone 候选出作用域后不持锁跨 DB 擦除）→ `resolve_candidate` 命中 → `execute_candidate` 删第 i 个 + 清 slot → `Resolved`；off-topic → 清 slot + `Proceed`（正常 ingest）；仍不明 → 清 slot + `Reask(candidates)`（**只重问一次**，slot 已清防循环）。
+
+**跳过 ingest**（`converse.rs:210`）：Resolved/Reask 合成 `IngestionOutcome{route:Silence,…全 None}`——二轮"第一个"**绝不存为新记忆**（erase 已在 resolve 发生，ingest 只会污染）；但 emotion/retrieve/plan/chat 仍跑以产出回复。
+
+**注入块**（`converse.rs:468`）：`Resolved` → "好我忘了"确认提示；`Reask` → `disambig_prompt`（列候选 summary 让 LLM 自然问"你说的是 A 还是 B？"，引真实摘要减少编造）；`Proceed` → 看 `outcome.forget`：Deleted/Declined 照旧，Ambiguous → **写 slot**（PendingForget）+ `disambig_prompt` 反问。三路径汇合既有 chat 生成。
+
+### 模块 B：fact/pending 语义匹配兜底（`forget.rs`）
+`find_fact_candidate`/`find_pending_candidate` 加 `embedding: Option<&EmbeddingService>`：char_overlap 粗筛 → 若 `emb.is_ready()` 调 `semantic_rerank`——**char_overlap top-5 现场 embed_batch + cosine**，`cosine_similarity` 未归一故 `((cos+1)/2).clamp(0,1)` 映射匹配 `retrieval::compute_semantic`，0.7 门读法不变；embedding 任意 hiccup 退回 char_overlap（#6 优雅退化）。效果：「忘掉早睡的事」语义命中「想早睡总是熬夜」。成本：每次 forget 最多 1 query + 5 value embed（forget 低频，可接受）。
+
+### 模块 C：harness 同步（踩坑#4 全程未踩）
+- `ForgetCandidate` 漏 `#[derive(Debug,Clone)]` → `ForgetOutcome`/`PendingForget` 的 Vec 成员要求它 → 5 处编译错全此一因，加 derive 即解。
+- `IngestionOutcome.forget` 字段名不变、类型 `ForgetResult`→`ForgetOutcome`，ingest Forget 分支类型自动推断无需改。
+- 3 harness（conversation_harness / memory_recall / prompt_quality）每个 ConverseCtx 构造点加 `pending_forget: &Mutex::new(None)`（memory_recall 有 3 处用 replace_all）。
+- prompt_quality：case 1009「忘掉我说的早睡吧」`[ForgetAck]`→`[ForgetAsk]`；新 `Expect::ForgetAsk` 启发式（回复含 哪/还是/具体/哪个/哪件/哪条/哪段 即 pass）；case 1002/1005/1007（单候选/0候选/单候选）保持 ForgetAck。
+
+### 验证
+- **lib 293 passed**（forget 18 测含 6 新：`forget_best_match_ambiguous_keeps_both` 钉 ≥2 候选不删、`resolve_candidate_ordinals/keyword_overlap/unresolvable/out_of_range`、`is_off_topic_detects_new_subject`；语义路径 embedding=None 退回 char_overlap 由 `find_fact_candidate_below_gate_is_none` 等覆盖 #6）。
+- **cargo check --tests ✅**（17 测试二进制全编译，含 3 harness ConverseCtx 同步）。
+- **release `npx tauri build --no-bundle` exit0**（17:20，`D:\cargo-target\desktop-pet\release\desktop-pet.exe` 24.4MB；先 `taskkill //IM desktop-pet.exe //F` 避坑#6 文件锁）。
+- ⏳ **prompt_quality case 1009 = ForgetAsk 真实 LLM 端到端**：harness 后台跑中（真模型 ~10-15min），lib 测已证纯逻辑，harness 证种子双候选→Ambiguous→反问启发式命中。
+
+### 待实跑（D15）
+dev 聊出两条同主题记忆（如偏好「猫」+ 一次「和糯米看猫」episode）→ 发"忘掉猫" → 见**反问**（"你说的是哪个？"）→ 答"那次经历"/"第二个" → 见"好，我把那段忘了"+ Debug Panel 确认 episode 删、fact 保留；再测序数"第一个"、换话题清 slot、90s 超时。
 
 ---
 

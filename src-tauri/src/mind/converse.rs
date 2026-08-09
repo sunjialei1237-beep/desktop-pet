@@ -67,6 +67,108 @@ pub struct ConverseCtx<'a> {
     pub db: &'a DbState,
     pub embedding: Option<&'a EmbeddingService>,
     pub pacing: &'a std::sync::Mutex<crate::mind::pacing::QuestionPacing>,
+    /// Pending cross-turn forget disambiguation (None normally). When the user
+    /// asked to forget something that matched ≥2 memories, the candidates live
+    /// here until their next reply resolves one (or they move on). Mirrors
+    /// `pacing` as a turn-spanning Mutex slot (Architecture #2).
+    pub pending_forget: &'a std::sync::Mutex<Option<crate::mind::forget::PendingForget>>,
+}
+
+/// How a pending forget disambiguation resolved this turn. Computed at the top
+/// of `converse` (before ingest) from the cross-turn slot; drives both whether
+/// ingest runs and which system hint is injected.
+enum PendingResolution {
+    /// No slot / expired / user moved to a new topic: run ingest normally.
+    Proceed,
+    /// The reply resolved to one candidate, which was erased. Confirm it
+    /// naturally (the summary is logged in resolve_pending_forget, never fed
+    /// to the LLM — repeating it would mean the forget failed).
+    Resolved,
+    /// Still can't tell which one after the user replied: ask back ONE more
+    /// time (slot already cleared, so this is the last re-ask). Carries the
+    /// candidates for the disambiguation prompt.
+    Reask(Vec<crate::mind::forget::ForgetCandidate>),
+}
+
+/// Inspect the cross-turn forget slot and resolve the user's reply. The erase
+/// (when resolved) happens here, before ingest, so the second turn is never
+/// stored as a new memory. The slot is cleared once read in every branch
+/// (resolved, abandoned, or re-asked) — a disambiguation gets at most one re-ask.
+fn resolve_pending_forget(
+    ctx: &ConverseCtx<'_>,
+    text: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<PendingResolution, String> {
+    use crate::mind::forget::{execute_candidate, is_off_topic, resolve_candidate};
+
+    // Take-and-clear in one lock scope; clone the candidates out so no lock is
+    // held across the (synchronous) DB erase below. Stale (>90s) slots drop.
+    let pf = {
+        let mut guard = ctx
+            .pending_forget
+            .lock()
+            .map_err(|e| format!("pending_forget lock error: {}", e))?;
+        match guard.as_ref() {
+            Some(pf) if (now - pf.created_at).num_seconds() > 90 => {
+                *guard = None;
+                None
+            }
+            Some(pf) => Some(pf.clone()),
+            None => None,
+        }
+    };
+    let Some(pf) = pf else {
+        return Ok(PendingResolution::Proceed);
+    };
+    let clear_slot = || {
+        let _ = ctx.pending_forget.lock().map(|mut g| *g = None);
+    };
+
+    match resolve_candidate(text, &pf.candidates) {
+        Some(i) => {
+            let summary = pf.candidates[i].summary.clone();
+            let deleted = execute_candidate(&pf.candidates[i], ctx.db);
+            if !deleted {
+                log::warn!("[converse] forget disambig: execute_candidate false for {}", i);
+            }
+            clear_slot();
+            log::info!(
+                "[converse] forget disambig resolved to candidate {} ({})",
+                i,
+                summary.chars().take(40).collect::<String>()
+            );
+            Ok(PendingResolution::Resolved)
+        }
+        None => {
+            if is_off_topic(text, &pf.candidates) {
+                clear_slot();
+                log::info!("[converse] forget disambig abandoned (off-topic)");
+                Ok(PendingResolution::Proceed)
+            } else {
+                clear_slot();
+                log::info!("[converse] forget disambig re-asking once");
+                Ok(PendingResolution::Reask(pf.candidates))
+            }
+        }
+    }
+}
+
+/// System hint listing the candidate memories so she asks "which one?"
+/// naturally (cites the real summaries instead of inventing different ones).
+fn disambig_prompt(candidates: &[crate::mind::forget::ForgetCandidate]) -> String {
+    let opts: Vec<String> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("{}. {}", i + 1, c.summary))
+        .collect();
+    let first = candidates.first().map(|c| c.summary.as_str()).unwrap_or("");
+    let second = candidates.get(1).map(|c| c.summary.as_str()).unwrap_or("");
+    format!(
+        "（系统提示：用户想让你忘掉某件事，但你记忆里有几条都可能对应：\n{}\n请自然地问用户具体是哪一条，比如「你说的是「{}」还是「{}」？」——只在这轮澄清，不要擅自删掉任何一条。）",
+        opts.join("\n"),
+        first,
+        second,
+    )
 }
 
 /// Full conversation pipeline:
@@ -99,7 +201,28 @@ pub async fn converse(
         Ok(summary.join("; "))
     })?;
 
-    let outcome = crate::mind::ingest(text, conversation_id, turn, &known_facts, llm, db, embedding).await?;
+    // Resolve any pending cross-turn forget disambiguation BEFORE ingest. If
+    // the user's reply resolved one (or we re-ask), ingest is skipped — the
+    // second turn ("第一个") must never be stored as a new memory, and the erase
+    // already happened in resolve_pending_forget. (Architecture #1: Rust erased
+    // it; ingest would only pollute.)
+    let pending_res = resolve_pending_forget(ctx, text, chrono::Utc::now())?;
+    let outcome = match &pending_res {
+        PendingResolution::Proceed => {
+            crate::mind::ingest(text, conversation_id, turn, &known_facts, llm, db, embedding)
+                .await?
+        }
+        // Synthesize a Silence-route outcome so the rest of the pipeline
+        // (emotion/retrieve/plan/chat) still runs to produce her confirmation
+        // or re-ask — only the ingest/store step is bypassed.
+        _ => crate::mind::IngestionOutcome {
+            route: GateRoute::Silence,
+            extraction: None,
+            episode_id: None,
+            correction: None,
+            forget: None,
+        },
+    };
 
     // Direct-answer mode for general-knowledge / technical questions: skip
     // memory retrieval and memory injection entirely, so the model answers
@@ -332,23 +455,70 @@ pub async fn converse(
         });
     }
 
-    // If this turn just forgot a memory (Step 1 ingest Forget route), tell the
-    // expression LLM so it confirms naturally ("好，我忘了") WITHOUT repeating
-    // the deleted content — repeating it means the forget failed and feels
-    // creepy. If nothing was deleted (no confident match), she honestly says she
-    // doesn't remember it (Architecture Principle #1: Rust decided what to
-    // erase; the LLM only acknowledges).
-    if let Some(forget) = outcome.forget.as_ref() {
-        let content = if forget.deleted {
-            "（系统提示：用户刚才让你忘掉一段记忆，你已经把它彻底忘了。简短温暖地确认你忘了，比如「好，我忘了」或「嗯，已经不记得了」。绝对不要复述或暗示那段内容——你真的忘了，就想不起来了。）".to_string()
-        } else {
-            "（系统提示：用户想让你忘掉某件事，但你的记忆里其实没有这段，可能是记混了。诚实又温和地说你好像不记得这件事。）".to_string()
-        };
-        log::info!("[converse] forget this turn: deleted={}", forget.deleted);
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content,
-        });
+    // Forget acknowledgment / disambiguation. Three sources converge here, all
+    // pushing a system hint before the user message:
+    //   - pending_res::Resolved → this turn finished a cross-turn disambiguation
+    //     (erase already happened in resolve_pending_forget): confirm it.
+    //   - pending_res::Reask    → the user replied to "which one?" but we still
+    //     can't tell: ask back one last time.
+    //   - outcome.forget (first turn) → Deleted / Declined / Ambiguous. Ambiguous
+    //     STARTS a disambiguation: store the candidates in the slot and ask back.
+    //     (Architecture Principle #1: Rust decided what/whether to erase; the LLM
+    //     only acknowledges or asks — never deletes, and never repeats content.)
+    match &pending_res {
+        PendingResolution::Resolved => {
+            log::info!("[converse] forget resolved this turn (cross-turn disambig)");
+            messages.push(ChatMessage {
+                role: "system".to_string(),
+                content: "（系统提示：用户刚才确认了要忘掉哪段记忆，你已经把它彻底忘了。简短温暖地确认你忘了，比如「好，我忘了」或「嗯，已经不记得了」。绝对不要复述那段内容。）".to_string(),
+            });
+        }
+        PendingResolution::Reask(cands) => {
+            messages.push(ChatMessage {
+                role: "system".to_string(),
+                content: disambig_prompt(cands),
+            });
+        }
+        PendingResolution::Proceed => {
+            if let Some(fo) = outcome.forget.as_ref() {
+                match fo {
+                    crate::mind::forget::ForgetOutcome::Deleted { .. } => {
+                        log::info!("[converse] forget this turn: deleted");
+                        messages.push(ChatMessage {
+                            role: "system".to_string(),
+                            content: "（系统提示：用户刚才让你忘掉一段记忆，你已经把它彻底忘了。简短温暖地确认你忘了，比如「好，我忘了」或「嗯，已经不记得了」。绝对不要复述或暗示那段内容——你真的忘了，就想不起来了。）".to_string(),
+                        });
+                    }
+                    crate::mind::forget::ForgetOutcome::Declined => {
+                        messages.push(ChatMessage {
+                            role: "system".to_string(),
+                            content: "（系统提示：用户想让你忘掉某件事，但你的记忆里其实没有这段，可能是记混了。诚实又温和地说你好像不记得这件事。）".to_string(),
+                        });
+                    }
+                    crate::mind::forget::ForgetOutcome::Ambiguous { candidates } => {
+                        // START a disambiguation: store candidates for the next
+                        // turn, then ask which one the user means.
+                        let pf = crate::mind::forget::PendingForget {
+                            query: text.to_string(),
+                            candidates: candidates.clone(),
+                            created_at: chrono::Utc::now(),
+                        };
+                        let _ = ctx
+                            .pending_forget
+                            .lock()
+                            .map(|mut g| *g = Some(pf));
+                        log::info!(
+                            "[converse] forget ambiguous ({} candidates) — asking back",
+                            candidates.len()
+                        );
+                        messages.push(ChatMessage {
+                            role: "system".to_string(),
+                            content: disambig_prompt(candidates),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     // Surface any internal thought the last reflection left for "next time the

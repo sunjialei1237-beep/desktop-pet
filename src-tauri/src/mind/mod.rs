@@ -16,7 +16,10 @@ pub mod pacing;
 pub mod evaluation;
 
 pub use correction::{handle_correction, CorrectionResult};
-pub use forget::{forget_best_match, forget_episode, ForgetResult};
+pub use forget::{
+    execute_candidate, forget_best_match, forget_episode, is_off_topic, resolve_candidate,
+    ForgetCandidate, ForgetOutcome, ForgetTarget, PendingForget,
+};
 pub use extractor::{extract, EmotionDelta, EpisodeInput, ExtractionResult, FactInput, PendingInput};
 pub use gate::{classify, GateRoute};
 pub use store::store as store_extraction;
@@ -187,6 +190,8 @@ pub struct IngestionOutcome {
     pub episode_id: Option<String>,
     /// The correction result (if a correction was handled).
     pub correction: Option<CorrectionResult>,
-    /// The forget result (if the user asked to forget a memory).
-    pub forget: Option<ForgetResult>,
+    /// The forget outcome (if the user asked to forget a memory): Deleted /
+    /// Declined / Ambiguous. Ambiguous triggers cross-turn disambiguation in
+    /// converse (store candidates → ask back → resolve next turn).
+    pub forget: Option<ForgetOutcome>,
 }

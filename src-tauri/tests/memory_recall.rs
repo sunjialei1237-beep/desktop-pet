@@ -53,6 +53,8 @@ async fn cross_session_recall_works() {
     ).expect("LLM not configured");
 
     let pacing = Mutex::new(QuestionPacing::default());
+    let pending_forget: Mutex<Option<desktop_pet_lib::mind::forget::PendingForget>> =
+        Mutex::new(None);
 
     let facts_before = snapshot_fact_keys(&db);
     println!("facts before seed: {}", facts_before.len());
@@ -66,6 +68,7 @@ async fn cross_session_recall_works() {
             text: SEED_MSG, conversation_id: &conv_id, turn: 0,
             wm_context: &seed_wm_ctx, llm: &llm, db: &db,
             embedding: None, pacing: &pacing,
+            pending_forget: &pending_forget,
         },
         |_|{},
     ).await.expect("seed converse");
@@ -92,6 +95,7 @@ async fn cross_session_recall_works() {
             text: NOISE_QUESTION, conversation_id: &noise_conv_id, turn: 0,
             wm_context: &noise_wm_ctx, llm: &llm, db: &db,
             embedding: None, pacing: &pacing,
+            pending_forget: &pending_forget,
         },
         |_|{},
     ).await.expect("noise converse");
@@ -113,6 +117,7 @@ async fn cross_session_recall_works() {
             text: RECALL_MSG, conversation_id: &recall_conv_id, turn: 0,
             wm_context: &recall_wm_ctx, llm: &llm, db: &db,
             embedding: None, pacing: &pacing,
+            pending_forget: &pending_forget,
         },
         |_|{},
     ).await.expect("recall converse");

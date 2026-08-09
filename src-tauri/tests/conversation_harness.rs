@@ -91,6 +91,8 @@ async fn run_50_turn_conversation() {
 
     let wm = Mutex::new(WorkingMemory::new());
     let pacing = Mutex::new(QuestionPacing::default());
+    let pending_forget: Mutex<Option<desktop_pet_lib::mind::forget::PendingForget>> =
+        Mutex::new(None);
 
     let mut aligned = 0usize;
     let mut misaligned = 0usize;
@@ -106,6 +108,7 @@ async fn run_50_turn_conversation() {
                 text: question, conversation_id: &conversation_id, turn: i as i32,
                 wm_context: &wm_ctx, llm: &llm, db: &db,
                 embedding: None, pacing: &pacing,
+                pending_forget: &pending_forget,
             },
             |_|{},
         )

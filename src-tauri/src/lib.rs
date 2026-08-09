@@ -113,6 +113,7 @@ pub fn run() {
             question_pacing: Default::default(),
             last_decision: std::sync::Mutex::new(None),
             last_proactive_bubble: std::sync::Mutex::new(None),
+            pending_forget: std::sync::Mutex::new(None),
         })
         .manage(db_state)
         .setup(|app| {
