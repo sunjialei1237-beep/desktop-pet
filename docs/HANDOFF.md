@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-08（续⁷·速度+性格+幻觉根因）—— main 回复关思考(thinking-off) → 单次 FULL max 4s/mean 2.7s/0 超 5s（**option A 不做**）；system.txt round-2 无条件 soul block + 8 样例回归性格(human 4.07)；grounding.rs 空记忆显式标记根治"你上次说"编造(fresh 组全 0)，G6 越界 6/10 = 性格同源 trade 残留。代码已验证 lib 全过 + 注释修诚实。**⏳ release 待 rebuild；完整 6 轮 arc + 明天步骤见 §最近一轮 (续⁷) + `docs/review/prompt-quality-report-2026-08-08-retest6.md`**
+> 最后更新：**2026-08-08（续⁷·速度+性格+幻觉根因）—— main 回复关思考(thinking-off) → 单次 FULL max 4s/mean 2.7s/0 超 5s（**option A 不做**）；system.txt round-2 无条件 soul block + 8 样例回归性格(human 4.07)；grounding.rs 空记忆显式标记根治"你上次说"编造(fresh 组全 0)，G6 越界 6/10 = 性格同源 trade 残留。代码已验证 lib 全过 + 注释修诚实。**release 已 rebuild（2026-08-09 10:40:44，`npx tauri build --no-bundle` exit 0 / 0 警告 / 23.3MB，桌面快捷方式同路径免改）；完整 6 轮 arc 见 §最近一轮 (续⁷) + `docs/review/prompt-quality-report-2026-08-08-retest6.md`**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -29,7 +29,9 @@
 
 ## §当前任务（接手者先看这）
 
-> **2026-08-08（续⁷）速度+性格+幻觉根因 —— ⏳ 已暂停，明天继续**（用户"暂停任务，写进 HANDOFF，明天继续，不要丢细节"）。6 轮 A/B 已跑完、代码改完验证（lib 277 全过）+ 已提交。**明天接手三步**：① **rebuild release**（`taskkill //IM desktop-pet.exe //F`→等~3s→`npx tauri build --no-bundle`→产物 `D:\cargo-target\desktop-pet\release\desktop-pet.exe`）② **向用户完整诚实报告**：速度已解决（main 关思考，FULL max4s/mean2.7s/0超5s → **option A 不做**）/ 性格回归（round-2 soul block+8样例，human 4.07）/ 空记忆幻觉**已修**（grounding 显式标记，fresh 组全 0）/ **须披露 G6 越界 6/10 = 性格同源 trade**（样例教"上次说"framing = 用户要的"连过去"性格，不可全除）/ ~8pp run-to-run 方差。③ **可选**：用户在意 G6 → 软化 ex2/ex3 出处 framing（**削弱性格，需权衡**）或 grounding B 档运行时阻断。**完整 6 轮 arc + 根因 + 代码改动清单见 §最近一轮 (续⁷)**。
+> **2026-08-09 接手完成 续⁷ 收尾**（用户"读 handoff、用 codegraph 了解代码、继续完成昨天未完成的聊天回复问题"）。codegraph + 源码逐处复核续⁷ 三处改动确在位（非仅信旧记）：converse.rs:415 `ThinkingConfig::disabled()`+`reasoning_effort=None` / grounding.rs:290 空记忆显式标记 + :293 非空 footer + :690 测试断言 / system.txt round-2 8 样例。exe 未运行→**rebuild 成功**（10:40:44，exit0/0警告/23.3MB）。② 向用户完整诚实报告（速度/性格/幻觉根因 + G6 trade + 方差）已交付。⏳ **当前无进行中任务**，等用户实跑验收手感 + 决定 G6 follow-up。
+
+> **2026-08-08（续⁷）速度+性格+幻觉根因 —— ✅ 已收尾（代码 lib 277 全过 + 已提交 `13e7dc8`；release 2026-08-09 10:40 重建）**。6 轮 A/B 跑完、代码改完验证。**接手三步已全做**：① **rebuild release** ✅（`npx tauri build --no-bundle`）② **向用户完整诚实报告** ✅：速度已解决（main 关思考，FULL max4s/mean2.7s/0超5s → **option A 不做**）/ 性格回归（round-2 soul block+8样例，human 4.07）/ 空记忆幻觉**已修**（grounding 显式标记，fresh 组全 0）/ **已披露 G6 越界 6/10 = 性格同源 trade**（样例教"上次说"framing = 用户要的"连过去"性格，不可全除）/ ~8pp run-to-run 方差。③ **可选（待用户定）**：用户在意 G6 → 软化 ex2/ex3 出处 framing（**削弱性格，需权衡**）或流式 chat 路径运行时阻断（流式已流出 token 无法撤回，本质受限）。**完整 6 轮 arc + 根因 + 代码改动清单见 §最近一轮 (续⁷)**。
 
 > **2026-08-08 自主批次推进中**（用户授权："挨个推进 2,3,4,5,6 [审计清单里 5 个未实现/未接线项]，每完成一项自主验证、更新 HANDOFF + 新增待测试，不报告不询问；并砍掉走路相关计划"。逐项推进，每项 cargo test --lib / check --tests / tsc 绿后勾选并提交；release exe 在批次末统一 rebuild）：
 > - [x] **Item 2 接线 is_deep_focus（P14.3）**：审计发现 `commands.rs:352,446` + `proactive.rs` 全硬编码 `is_deep_focus:false` → `trigger_proactive` Rule1（深度专注抑制）永不为真、空转。新 `perception/focus.rs`：纯函数 `update_continuous`（同一 Work app 累积 / 切换 Work app 重置 / 非 Work 重置）+ 后台 30s 采样线程（镜像 cursor::start）发布 `CONTINUOUS_WORK_SECS`/`IS_DEEP_FOCUS` 全局 atomic；阈值 25min（计划 P14.3）。两生产点接真实值（`get_perception` + `check_proactive`，均按 `enable_window` 门控 #6）；消费端 `trigger_proactive` Rule1 现在真生效。DebugSnapshot + DebugPanel 加 Focus 分区（#11 可观测）。**lib 261（+6 focus 纯函数测）/ check --tests ✅ / tsc ✅**。→ 待实跑见 D8。纯后端+前端，release 需 rebuild。
