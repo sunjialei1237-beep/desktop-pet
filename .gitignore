@@ -18,6 +18,10 @@ Thumbs.db
 !docs/screenshots/
 !docs/screenshots/**
 
+# Spine character assets ship in-tree (overrides *.png above)
+!public/spine/
+!public/spine/**
+
 # User config (contains API key — never commit!)
 config.toml
 

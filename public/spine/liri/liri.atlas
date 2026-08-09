@@ -1,0 +1,279 @@
+
+skeleton.png
+size: 2017,517
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+刘海
+  rotate: false
+  xy: 805, 123
+  size: 115, 130
+  orig: 115, 130
+  offset: 0, 0
+  index: -1
+半张笑嘴
+  rotate: true
+  xy: 991, 232
+  size: 21, 6
+  orig: 21, 6
+  offset: 0, 0
+  index: -1
+半睁眼右
+  rotate: false
+  xy: 1913, 118
+  size: 101, 60
+  orig: 101, 60
+  offset: 0, 0
+  index: -1
+半睁眼左
+  rotate: false
+  xy: 1920, 310
+  size: 95, 47
+  orig: 95, 47
+  offset: 0, 0
+  index: -1
+右半笑眼
+  rotate: false
+  xy: 1913, 66
+  size: 84, 50
+  orig: 84, 50
+  offset: 0, 0
+  index: -1
+右头发
+  rotate: false
+  xy: 1455, 7
+  size: 134, 297
+  orig: 134, 297
+  offset: 0, 0
+  index: -1
+右手
+  rotate: false
+  xy: 930, 12
+  size: 54, 62
+  orig: 54, 62
+  offset: 0, 0
+  index: -1
+右眉毛
+  rotate: true
+  xy: 794, 47
+  size: 26, 8
+  orig: 26, 8
+  offset: 0, 0
+  index: -1
+右眼
+  rotate: true
+  xy: 1591, 262
+  size: 42, 29
+  orig: 42, 29
+  offset: 0, 0
+  index: -1
+右眼高光
+  rotate: true
+  xy: 991, 214
+  size: 16, 6
+  orig: 16, 6
+  offset: 0, 0
+  index: -1
+右笑眯眼
+  rotate: false
+  xy: 135, 2
+  size: 47, 31
+  orig: 47, 31
+  offset: 0, 0
+  index: -1
+右耳
+  rotate: true
+  xy: 1884, 180
+  size: 79, 131
+  orig: 79, 131
+  offset: 0, 0
+  index: -1
+右腿
+  rotate: true
+  xy: 999, 405
+  size: 110, 615
+  orig: 110, 615
+  offset: 0, 0
+  index: -1
+右袖
+  rotate: true
+  xy: 425, 75
+  size: 178, 378
+  orig: 178, 379
+  offset: 0, 1
+  index: -1
+右闭眼
+  rotate: true
+  xy: 922, 148
+  size: 105, 67
+  orig: 105, 67
+  offset: 0, 0
+  index: -1
+右飘带
+  rotate: true
+  xy: 2, 10
+  size: 23, 131
+  orig: 23, 131
+  offset: 0, 0
+  index: -1
+后头发
+  rotate: false
+  xy: 2, 35
+  size: 421, 480
+  orig: 421, 483
+  offset: 0, 0
+  index: -1
+嘴
+  rotate: true
+  xy: 1999, 96
+  size: 20, 8
+  orig: 20, 8
+  offset: 0, 0
+  index: -1
+头饰
+  rotate: true
+  xy: 1702, 9
+  size: 28, 99
+  orig: 28, 99
+  offset: 0, 0
+  index: -1
+小笑嘴
+  rotate: true
+  xy: 922, 127
+  size: 19, 6
+  orig: 19, 6
+  offset: 0, 0
+  index: -1
+尾巴
+  rotate: true
+  xy: 425, 255
+  size: 260, 572
+  orig: 260, 573
+  offset: 0, 0
+  index: -1
+左半笑眼
+  rotate: false
+  xy: 1920, 266
+  size: 70, 42
+  orig: 70, 42
+  offset: 0, 0
+  index: -1
+左头发
+  rotate: true
+  xy: 1591, 39
+  size: 125, 239
+  orig: 125, 239
+  offset: 0, 0
+  index: -1
+左手
+  rotate: false
+  xy: 930, 76
+  size: 52, 70
+  orig: 52, 70
+  offset: 0, 0
+  index: -1
+左眉毛
+  rotate: false
+  xy: 1884, 171
+  size: 26, 7
+  orig: 26, 7
+  offset: 0, 0
+  index: -1
+左眼
+  rotate: false
+  xy: 184, 2
+  size: 44, 31
+  orig: 44, 31
+  offset: 0, 0
+  index: -1
+左眼高光
+  rotate: false
+  xy: 1803, 27
+  size: 15, 10
+  orig: 15, 10
+  offset: 0, 0
+  index: -1
+左笑眯眼
+  rotate: false
+  xy: 1913, 33
+  size: 48, 31
+  orig: 48, 31
+  offset: 0, 0
+  index: -1
+左耳
+  rotate: false
+  xy: 1832, 37
+  size: 79, 127
+  orig: 79, 128
+  offset: 0, 1
+  index: -1
+左腿
+  rotate: true
+  xy: 999, 306
+  size: 97, 621
+  orig: 97, 621
+  offset: 0, 0
+  index: -1
+左袖
+  rotate: true
+  xy: 1622, 359
+  size: 156, 372
+  orig: 156, 374
+  offset: 0, 0
+  index: -1
+左闭眼
+  rotate: false
+  xy: 687, 14
+  size: 105, 59
+  orig: 105, 59
+  offset: 0, 0
+  index: -1
+左飘带
+  rotate: true
+  xy: 425, 27
+  size: 46, 260
+  orig: 46, 261
+  offset: 0, 0
+  index: -1
+张大笑嘴
+  rotate: true
+  xy: 1996, 491
+  size: 24, 15
+  orig: 24, 15
+  offset: 0, 0
+  index: -1
+脸
+  rotate: true
+  xy: 805, 10
+  size: 111, 123
+  orig: 111, 123
+  offset: 0, 0
+  index: -1
+衣服主体
+  rotate: true
+  xy: 999, 14
+  size: 290, 454
+  orig: 290, 455
+  offset: 0, 0
+  index: -1
+裙1
+  rotate: true
+  xy: 1591, 166
+  size: 93, 291
+  orig: 93, 291
+  offset: 0, 0
+  index: -1
+裙2
+  rotate: true
+  xy: 1591, 12
+  size: 25, 109
+  orig: 25, 109
+  offset: 0, 0
+  index: -1
+裙3
+  rotate: true
+  xy: 1622, 261
+  size: 96, 296
+  orig: 96, 296
+  offset: 0, 0
+  index: -1

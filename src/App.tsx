@@ -4,6 +4,16 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { Live2DCanvas } from "./Live2DCanvas";
+import { SpineCanvas } from "./SpineCanvas";
+
+// Migration toggle: render the Spine (Liri) renderer when ?spine=1 is in the URL
+// or localStorage.spine==="1", otherwise keep the Live2D (Haru) placeholder.
+// localStorage matters because the Tauri desktop window has no address bar --
+// flip it from DevTools: localStorage.spine="1" then reload. Once Spine is
+// verified, removing Live2D is a one-line delete here.
+const USE_SPINE =
+  new URLSearchParams(window.location.search).has("spine") ||
+  localStorage.getItem("spine") === "1";
 import { SettingsPanel } from "./SettingsPanel";
 import { DebugPanel } from "./DebugPanel";
 import { ContextMenu } from "./ContextMenu";
@@ -1124,19 +1134,29 @@ const handleBodyClick = useCallback(() => {
       }}
       onMouseDown={handleDragStart}
    >
-    <Live2DCanvas
-      emotionVector={emotionVector}
-       behavior={behavior}
-       attention={attention}
-       pointerRef={pointerRef}
-     isThinking={isThinking}
-     onHeadClick={handleHeadClick}
-     onBodyClick={handleBodyClick}
-     onModelBounds={handleModelBounds}
-     onModelHitBounds={handleModelHitBounds}
-     transientExpression={transientExpression}
-     speedModifier={circadianRef.current.speedModifier}
-   />
+    {USE_SPINE ? (
+      <SpineCanvas
+        speedModifier={circadianRef.current.speedModifier}
+        onHeadClick={handleHeadClick}
+        onBodyClick={handleBodyClick}
+        onModelBounds={handleModelBounds}
+        onModelHitBounds={handleModelHitBounds}
+      />
+    ) : (
+      <Live2DCanvas
+        emotionVector={emotionVector}
+        behavior={behavior}
+        attention={attention}
+        pointerRef={pointerRef}
+        isThinking={isThinking}
+        onHeadClick={handleHeadClick}
+        onBodyClick={handleBodyClick}
+        onModelBounds={handleModelBounds}
+        onModelHitBounds={handleModelHitBounds}
+        transientExpression={transientExpression}
+        speedModifier={circadianRef.current.speedModifier}
+      />
+    )}
    </div>
 
       <button
