@@ -23,8 +23,10 @@
 //!         should hit).
 //!       - `semantic`: query is paraphrase only — NO character overlap with the
 //!         answer (only embedding can hit; keyword bigram fallback should miss).
-//!   * Two independent in-memory DBs are seeded (one per mode) so the
-//!     `reinforce()` side-effect of `retrieve` cannot cross-contaminate.
+//!   * Two independent in-memory DBs are seeded (one per mode) for clean
+//!     isolation. (retrieve() is now a pure read — ADR 2026-08-09 — so strength
+//!     no longer cross-contaminates; the per-mode DBs stay as a defensive
+//!     boundary keeping each mode's ranking measurement self-contained.)
 //!
 //! Uses the REAL embedding model (CPU ONNX, no LLM, no network beyond model
 //! load). Run:
@@ -194,10 +196,10 @@ fn eval(
     );
 
     for q in QUERIES {
-        // Fresh in-memory DB per query: `retrieve` internally calls
-        // reinforce() which mutates memory_strength. A shared DB would let
-        // early queries inflate strengths and bias later queries' rankings.
-        // One DB per query keeps every ranking independent and uncontaminated.
+        // Fresh in-memory DB per query for clean isolation. (retrieve() is now a
+        // pure read — ADR 2026-08-09 — so strength no longer mutates across
+        // queries, but a per-query DB keeps each ranking measurement independent
+        // and defends against any future retrieval side-effect.)
         let db = test_db();
         seed(&db, emb);
         let result = retrieve(q.text, emotion, emb, &db, 3).expect("retrieve");

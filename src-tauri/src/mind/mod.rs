@@ -2,6 +2,7 @@ pub mod correction;
 pub mod extractor;
 pub mod forget;
 pub mod gate;
+pub mod memory_gate;
 pub mod store;
 pub mod working;
 pub mod budget;

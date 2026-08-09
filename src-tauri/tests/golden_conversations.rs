@@ -308,10 +308,16 @@ fn gc_007_system_prompt_grounded() {
 }
 
 // ==========================================
-// GC_008: Memory reinforcement on retrieval
+// GC_008: retrieve is a pure read (no reinforcement side-effect)
 // ==========================================
+// Previously retrieve() reinforced its top episodes as a write side-effect,
+// which inflated strength/recall_count on every read path (forget lookups,
+// tests, A/B harnesses). retrieve is now pure; only genuine recall
+// (converse/proactive via reinforce_top) reinforces. This pins the pure-read
+// contract: a retrieve call must NOT change strength or recall_count.
+// (ADR 2026-08-09 Part 2.)
 #[test]
-fn gc_008_memory_reinforcement() {
+fn gc_008_retrieve_is_pure_read() {
     let db = test_db();
 
     let ep_id = db.with_conn(|conn| {
@@ -341,17 +347,17 @@ fn gc_008_memory_reinforcement() {
     let emotion = EmotionState::default();
     let _result = retrieval::retrieve("hiking", &emotion, None, &db, 5).unwrap();
 
-    // Verify strength increased
+    // retrieve must be side-effect-free: strength and recall_count unchanged.
     db.with_conn(|conn| {
         let ep = db_episodes::get(conn, &ep_id)?.unwrap();
-        assert!(ep.memory_strength > 0.5,
-            "GC_008 FAIL: strength should increase after retrieval (was {})", ep.memory_strength);
-        assert_eq!(ep.recall_count, 1,
-            "GC_008 FAIL: recall count should be 1");
+        assert!((ep.memory_strength - 0.5).abs() < 1e-9,
+            "GC_008 FAIL: pure read changed strength (was 0.5, now {})", ep.memory_strength);
+        assert_eq!(ep.recall_count, 0,
+            "GC_008 FAIL: pure read bumped recall_count to {}", ep.recall_count);
         Ok(())
     }).unwrap();
 
-    println!("GC_008 PASS: memory reinforced on retrieval");
+    println!("GC_008 PASS: retrieve is a pure read (no reinforcement side-effect)");
 }
 
 // ==========================================

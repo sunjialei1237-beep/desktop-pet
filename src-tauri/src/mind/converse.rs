@@ -89,10 +89,13 @@ pub async fn converse(
     let now = chrono::Utc::now().to_rfc3339();
 
     // Step 1: Ingest (Gate -> Extract -> Store).
-    // Build known_facts summary so the extractor can avoid duplicates.
+    // Build known_facts summary so the extractor can avoid duplicates. Spans ALL
+    // categories (top by mention/confidence), not just `preference`, so the
+    // extractor sees cross-category attributes (e.g. pet name under
+    // `relationship`) and does not re-extract them. ADR 2026-08-09 Part 3.
     let known_facts = db.with_conn(|conn| {
-        let facts = crate::db::facts::get_by_category(conn, "preference")?;
-        let summary: Vec<String> = facts.iter().take(20).map(|f| format!("{}: {}", f.key, f.value)).collect();
+        let facts = crate::db::facts::get_all_active(conn, 30)?;
+        let summary: Vec<String> = facts.iter().map(|f| format!("{}: {}", f.key, f.value)).collect();
         Ok(summary.join("; "))
     })?;
 
@@ -153,6 +156,13 @@ pub async fn converse(
             )
         }
     };
+
+    // Genuine conversational recall strengthens memory. retrieve() is a pure
+    // read, so we reinforce explicitly here (the chat path only). Skipped in QA
+    // mode — it retrieves nothing. ADR 2026-08-09 Part 2.
+    if !qa_mode {
+        crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
+    }
 
     // Project the top retrieved episodes into a lightweight debug view (used in
     // both return paths below). Built once here while `retrieval` is in scope.

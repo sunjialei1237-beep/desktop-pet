@@ -6,6 +6,7 @@ use crate::db::vectors as db_vectors;
 use crate::db::DbState;
 use crate::embedding::EmbeddingService;
 use crate::mind::extractor::{EmotionDelta, ExtractionResult, FactInput, PendingInput};
+use crate::mind::memory_gate;
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -137,8 +138,20 @@ pub fn store(
         stored_episode_id = Some(ep_id);
     }
 
-    // 2. Fact storage (dedup + temporal validity)
-    for fact in &result.facts {
+    // 2. Fact storage (hygiene gate -> dedup + temporal validity).
+    // The gate (memory_gate::admits) drops extractor miss-extractions — knowledge
+    // questions, the model's own conversational context, invented categories —
+    // before they reach the DB. ADR 2026-08-09 Part 1.
+    let admitted: Vec<&FactInput> = result.facts.iter().filter(|f| memory_gate::admits(f)).collect();
+    let rejected = result.facts.len() - admitted.len();
+    if rejected > 0 {
+        log::info!(
+            "[memory_gate] rejected {} noise fact(s) of {} extracted",
+            rejected,
+            result.facts.len()
+        );
+    }
+    for fact in admitted {
         db.with_conn(|conn| store_fact(conn, fact, stored_episode_id.as_deref(), &now))?;
     }
 

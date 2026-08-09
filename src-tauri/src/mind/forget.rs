@@ -149,9 +149,9 @@ struct ForgetCandidate {
 
 /// Best episode match, or None if the top episode is a landmark or below the
 /// confidence gate. (Episodes are landmark-protected; facts/pending are not.)
-/// Note: `retrieve` reinforces its top result as a retrieval side-effect — if
-/// a fact/pending later wins, one episode got +0.03 strength. Negligible and
-/// in the favorable direction (recall strengthens); accepted for MVP.
+/// `retrieve` is a pure read (no strength/recall_count side-effect) — forgetting
+/// one memory type never strengthens another. (ADR 2026-08-09 Part 2: only
+/// genuine conversational/proactive recall reinforces.)
 fn find_episode_candidate(
     text: &str,
     db: &DbState,

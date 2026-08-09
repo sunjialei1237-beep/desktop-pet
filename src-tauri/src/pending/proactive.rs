@@ -218,6 +218,8 @@ pub async fn generate(
     // Memory-anchored: the rotated query surfaces different memories across
     // calls instead of always the dominant topic.
     let retrieval = crate::mind::retrieval::retrieve(query, &emotion, embedding, db, 3)?;
+    // A memory-anchored bubble is genuine recall — strengthen it. ADR 2026-08-09 Part 2.
+    crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
 
     let (memory_anchor, goal, tone): (String, &'static str, &'static str) =
         if let Some(ev) = pending_due.first() {
@@ -429,6 +431,8 @@ pub async fn generate_welcome_back(
         db,
         3,
     )?;
+    // A proactive message grounded in retrieved memory is genuine recall.
+    crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
 
     // Optional anchor: a durable fact, else a recent episode. Empty if neither.
     let (memory_anchor, has_anchor): (String, bool) =
@@ -559,6 +563,8 @@ pub async fn generate_lonely_bubble(
         db,
         3,
     )?;
+    // A proactive message grounded in retrieved memory is genuine recall.
+    crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
 
     // Optional anchor: a durable fact, else a recent episode. Empty if neither
     // — a lonely nudge with no anchor is still a valid "just thinking of you".

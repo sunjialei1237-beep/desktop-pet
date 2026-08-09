@@ -127,15 +127,11 @@ pub fn retrieve(
     scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(top_k);
 
-    // Reinforce retrieved episodes (memory strength += 0.03).
-    let now_str = now.to_rfc3339();
-    for scored_ep in &scored {
-        if let Err(e) = db.with_conn(|conn| {
-            db_episodes::reinforce(conn, &scored_ep.episode.id, &now_str)
-        }) {
-            log::warn!("Failed to reinforce episode {}: {}", scored_ep.episode.id, e);
-        }
-    }
+    // retrieve() is a PURE READ: it does not reinforce. Reinforcement is a write
+    // that belongs to the caller, and only callers representing a genuine recall
+    // (a conversational reply, a proactive memory mention) should call
+    // `reinforce_top`. Read-only paths (forget lookups, tests, A/B harnesses)
+    // must never inflate memory_strength / recall_count. ADR 2026-08-09 Part 2.
 
     // Retrieve active facts.
     let facts = db.with_conn(get_active_facts)?;
@@ -166,6 +162,23 @@ pub fn retrieve(
         persona_traits,
         user_profile,
     })
+}
+
+/// Reinforces the given episodes as a genuine-recall write: strength +=
+/// RECALL_BOOST (capped at 1.0), recall_count++, last_recalled_at = now.
+///
+/// `retrieve` itself is a pure read; this is the ONLY retrieval-path write, and
+/// only callers that represent a REAL recall — a conversational reply or a
+/// proactive mention of a memory — should call it. Keeps read-only paths (forget
+/// matching, tests, embedding A/B harness) from inflating strength/recall_count.
+/// ADR 2026-08-09 Part 2.
+pub fn reinforce_top(db: &DbState, episodes: &[ScoredEpisode]) {
+    let now = Utc::now().to_rfc3339();
+    for se in episodes {
+        if let Err(e) = db.with_conn(|conn| db_episodes::reinforce(conn, &se.episode.id, &now)) {
+            log::warn!("Failed to reinforce episode {}: {}", se.episode.id, e);
+        }
+    }
 }
 
 /// Gets candidate episodes with their stored vectors (if available).
@@ -482,7 +495,10 @@ mod tests {
     }
 
     #[test]
-    fn test_strength_reinforcement() {
+    fn test_retrieve_is_pure_read() {
+        // retrieve() must NOT mutate memory_strength or recall_count — it is a
+        // pure read. Only genuine recall (converse/proactive via reinforce_top)
+        // strengthens memory. ADR 2026-08-09 Part 2.
         let db = test_db();
         let ep_id = db
             .with_conn(|conn| {
@@ -496,9 +512,41 @@ mod tests {
 
         db.with_conn(|conn| {
             let ep = db_episodes::get(conn, &ep_id)?.unwrap();
-            // Strength should have increased by 0.03 (reinforce boost)
-            assert!(ep.memory_strength > 0.5, "strength was {} should be > 0.5", ep.memory_strength);
-            assert_eq!(ep.recall_count, 1);
+            assert!(
+                (ep.memory_strength - 0.5).abs() < 1e-9,
+                "pure read changed strength (was 0.5, now {})",
+                ep.memory_strength
+            );
+            assert_eq!(ep.recall_count, 0, "pure read bumped recall_count");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_reinforce_top_strengthens() {
+        // reinforce_top is the ONLY retrieval-path write: a genuine recall boosts
+        // strength (+RECALL_BOOST, capped at 1.0) and recall_count.
+        let db = test_db();
+        let ep_id = db
+            .with_conn(|conn| {
+                let id = make_episode(conn, "test event", 0.5, "2026-07-13T10:00:00+00:00");
+                Ok(id)
+            })
+            .unwrap();
+
+        // Retrieve (pure read) then explicitly reinforce, as converse/proactive do.
+        let result = retrieve("test", &EmotionState::default(), None, &db, 5).unwrap();
+        reinforce_top(&db, &result.episodes);
+
+        db.with_conn(|conn| {
+            let ep = db_episodes::get(conn, &ep_id)?.unwrap();
+            assert!(
+                ep.memory_strength > 0.5,
+                "strength should increase after reinforce_top (was {})",
+                ep.memory_strength
+            );
+            assert_eq!(ep.recall_count, 1, "recall_count should be 1");
             Ok(())
         })
         .unwrap();
