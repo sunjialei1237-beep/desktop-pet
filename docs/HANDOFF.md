@@ -168,7 +168,9 @@
 
 **验证**：cargo test --lib **280 passed**(277+3) / cargo check --tests ✅（generate 签名未变故 harness 无波及）/ release `npx tauri build --no-bundle` exit0（1m10s Rust+2.64s 前端，前端未改 CSS hash 不变）。
 
-**待实跑**：观察 ① 冒泡间隔≈30min ② 内容多样性（不再全糯米，出现时段感慨/自言自语/撒娇；Debug Panel Last Turn action=lively_bubble vs proactive_check 区分）。可调：AppData config 加 `[proactive] min_interval_secs=900` 改频率。
+**待实跑**：观察 ① 冒泡间隔≈30min ② 内容多样性（**续⁸b 已用 harness 验证**，见下；Debug Panel Last Turn action=lively_bubble vs proactive_check 区分）。可调：AppData config 加 `[proactive] min_interval_secs=900` 改频率。
+
+**续⁸b（2026-08-09，lively prompt 反同质化，commit 4a7516c）**：续⁸的 `bubble_content_check` harness 第一轮暴露 lively 气泡雷同——hour=11/loneliness=0.85 固定情境下 7 条全"快中午了+阳光/太阳+想你"变体。**根因**：`lively_prompt` 把 `time_desc`/`mood_desc` 当**成品词**直接拼进 prompt 句首（"现在是快中午了，你有点想 ta"），LLM 惰性照搬这两个词作输出骨架。**修复**（`proactive.rs` surgical +18/-15）：① `time_desc`/`mood_desc` → 描述性 `time_hint`/`mood_hint`（"中午时分"/"心里莫名有点空"，非可直接照搬的成品短语）；② 配 `time_avoid` 显式禁各时段套路报时词（快中午了/早上好/夕阳…）；③ 通用禁套路「忽然/突然+想你」「阳光正好/太阳正暖」；④ 强调具体小切入点菜单（动作/细节/身体感/荒唐念头/自言自语）+"不是打招呼、不是表达关心"破套话退路。新增 `tests/bubble_content_check.rs`（N=15 真实 LLM 内容回归资产，校验 70/30 比例 + 0 编造/套话/多重提问）。**第二轮验证**：11 lively/4 memory=**73:27**，0 编造/套话/多重提问全过，反套路词 0 命中，lively 11 条各异（数灰尘/影子/团成一团/后背咔哒/哈欠叹回/屏幕发烫/饭菜香/肚子咕噜），同质化根除。**残留**：伸懒腰动作重复 4 次（后续各异，可接受）；memory 仍 100% 糯米（**记忆数据集中度，非 prompt 问题**——库里糯米是唯一强记忆，等用户积累更多记忆自然分散）。
 
 ## §最近一轮 (2026-08-08 续⁷)：速度（主回复关思考 ≤5s）+ 性格回归 + 记忆幻觉根因修复（6 轮 A/B，⏳ 未 rebuild）
 
