@@ -7,11 +7,20 @@ use crate::db::DbState;
 use crate::embedding::EmbeddingService;
 use crate::emotion::state::EmotionState;
 use crate::llm::client::{ChatMessage, LlmClient};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
+use rand::Rng;
 use serde::Serialize;
 
-/// Minimum interval between proactive bubbles (30 minutes).
-const MIN_BUBBLE_INTERVAL_SECS: i64 = 30 * 60;
+/// Rotating retrieval queries for the memory-anchored bubble type. A random
+/// one per call avoids always surfacing the single dominant memory topic
+/// (user feedback 2026-08-09: "冒泡内容全和糯米有关").
+const MEMORY_QUERIES: &[&str] = &[
+    "user's life recent events and preferences",
+    "what the user mentioned recently about daily life",
+    "user's work study plans and hobbies",
+    "people pets and relationships in the user's life",
+    "user's feelings mood and recent experiences",
+];
 
 /// A proactive action the pet wants to take.
 #[derive(Debug, Clone, Serialize)]
@@ -41,16 +50,20 @@ pub fn trigger_proactive(
     emotion: &EmotionState,
     perception: &PerceptionState,
     last_bubble_time: &DateTime<Utc>,
+    min_interval_secs: i64,
 ) -> Option<ProactiveAction> {
     // Rule 1: Don't disturb during deep focus.
     if perception.is_deep_focus {
         return None;
     }
 
-    // Rule 2: Frequency control — at least 30 minutes since last bubble.
+    // Rule 2: Frequency control — configurable interval since last bubble.
+    // commands.rs feeds the real persisted last-bubble time + the config value;
+    // this was hardcoded to now-31min upstream, which always passed and let
+    // bubbles fire on every 5-min frontend poll.
     let now = Utc::now();
     let elapsed = (now - *last_bubble_time).num_seconds();
-    if elapsed < MIN_BUBBLE_INTERVAL_SECS {
+    if elapsed < min_interval_secs {
         return None;
     }
 
@@ -186,13 +199,25 @@ pub async fn generate(
     let pending_due: Vec<PendingEvent> =
         db.with_conn(|conn| crate::db::pending::get_due(conn, &now))?;
 
-    let retrieval = crate::mind::retrieval::retrieve(
-        "user's life recent events preferences",
-        &emotion,
-        embedding,
-        db,
-        3,
-    )?;
+    // 70% lively (anchorless, moment-driven: self-talk / 撒娇 / a passing
+    // thought) vs 30% memory-anchored (loop-2 recall). Weighted so bubbles don't
+    // default to the single dominant memory topic — lively types voice *this
+    // moment*, not a recalled fact (user feedback 2026-08-09: 要像真人突然找你聊天).
+    // Pick bubble type + retrieval query up front so the non-Send ThreadRng is
+    // dropped before any .await (tauri commands require the future to be Send).
+    let (is_lively, query): (bool, &'static str) = {
+        let mut rng = rand::thread_rng();
+        let is_lively = rng.gen_range(0..100) >= 30;
+        let query = MEMORY_QUERIES[rng.gen_range(0..MEMORY_QUERIES.len())];
+        (is_lively, query)
+    };
+    if is_lively {
+        return generate_lively(db, llm, wm_context, &emotion).await;
+    }
+
+    // Memory-anchored: the rotated query surfaces different memories across
+    // calls instead of always the dominant topic.
+    let retrieval = crate::mind::retrieval::retrieve(query, &emotion, embedding, db, 3)?;
 
     let (memory_anchor, goal, tone): (String, &'static str, &'static str) =
         if let Some(ev) = pending_due.first() {
@@ -204,8 +229,10 @@ pub async fn generate(
         } else if let Some(ep) = retrieval.episodes.first() {
             (ep.episode.summary.clone(), "accompany", "gentle")
         } else {
-            log::info!("proactive_bubble: no usable memory, staying silent");
-            return Ok(None);
+            // No anchor this turn: fall back to lively rather than staying silent
+            // (user feedback: bubbles should stay lively even without a memory).
+            log::info!("proactive_bubble: no usable memory, falling back to lively");
+            return generate_lively(db, llm, wm_context, &emotion).await;
         };
 
     let intent = crate::mind::planner::Intent {
@@ -256,6 +283,106 @@ pub async fn generate(
         })),
         None => Ok(None),
     }
+}
+
+/// Generates a lively, anchorless bubble — the 70% path. Voices *this moment*
+/// (self-talk / 撒娇 / a passing thought / a small musing) rather than a
+/// recalled memory, so she feels like a real person who suddenly wants to chat
+/// about anything — not a memory-retrieval machine stuck on one topic. No
+/// retrieval call (saves an embedding round-trip); the empty RetrievalResult
+/// also lets grounding_guard naturally block any invented claim about the
+/// user's past — she may voice her own feelings / the time / her surroundings,
+/// but not fabricate "你之前说过的X". Principle 1 (Rust assembles the
+/// moment-driven prompt; LLM only voices), Principle 8 (one LLM call).
+async fn generate_lively(
+    db: &DbState,
+    llm: &LlmClient,
+    wm_context: &[ChatMessage],
+    emotion: &EmotionState,
+) -> Result<Option<BubbleOutcome>, String> {
+    let retrieval = crate::mind::retrieval::RetrievalResult::default();
+    let hour: u32 = Local::now().format("%H").to_string().parse().unwrap_or(12);
+    let tone = lively_tone(emotion);
+
+    let intent = crate::mind::planner::Intent {
+        goal: "converse".to_string(),
+        memory_anchor: String::new(),
+        tone: tone.to_string(),
+        proactive: true,
+        action: "lively_bubble".to_string(),
+    };
+
+    let mut messages =
+        crate::mind::budget::allocate_and_compress(&retrieval, wm_context, emotion, &intent);
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: lively_prompt(emotion, hour),
+    });
+
+    log::info!(
+        "[lively] hour={} tone={} mood={:.2} loneliness={:.2} msgs={}",
+        hour,
+        tone,
+        emotion.mood,
+        emotion.loneliness,
+        messages.len(),
+    );
+
+    let chat_result = llm
+        .chat(&messages, Some(0.9), Some(4096))
+        .await
+        .map_err(|e| format!("LLM error: {:?}", e))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = db.with_conn(|conn| {
+        crate::db::relationship::record_interaction(conn, "proactive", &now)
+    });
+
+    let reply = chat_result.content.trim().to_string();
+    let reply = grounding_guard(reply, &retrieval, &messages, llm).await;
+    Ok(reply.map(|reply| BubbleOutcome {
+        reply,
+        anchor: String::new(),
+    }))
+}
+
+/// Lively-bubble tone from the current emotion: high mood → playful, lonely →
+/// gentle, otherwise curious (curiosity surfaces fresh, non-repetitive topics).
+fn lively_tone(emotion: &EmotionState) -> &'static str {
+    if emotion.mood >= 0.7 {
+        "playful"
+    } else if emotion.loneliness > 0.6 {
+        "gentle"
+    } else {
+        "curious"
+    }
+}
+
+/// Builds the moment-driven prompt for the lively bubble. `hour` is injected
+/// (not read inside) so the time-of-day mapping is a pure, testable function.
+/// The prompt forbids fabricating the user's past (rule 8): she voices her
+/// *own* moment — feelings, surroundings, time — never "你之前说过的X".
+fn lively_prompt(emotion: &EmotionState, hour: u32) -> String {
+    let time_desc = match hour {
+        5..=10 => "早上",
+        11..=13 => "快中午了",
+        14..=17 => "下午",
+        18..=20 => "傍晚",
+        21..=22 => "晚上",
+        _ => "深夜",
+    };
+    let mood_desc = if emotion.loneliness > 0.6 {
+        "有点想 ta"
+    } else if emotion.mood >= 0.7 {
+        "心情不错"
+    } else if emotion.mood >= 0.4 {
+        "挺平静的"
+    } else {
+        "有点闷闷的"
+    };
+    format!(
+        "（现在是{time_desc}，你{mood_desc}。你没有特别的事要跟用户说，也不是要 ta 回答——就是这一刻心里忽然冒出一句话，想说出来。可以是自言自语、一个小感慨、撒个娇、随口吐槽点什么、或者就是很普通的碎碎念，像真人突然冒出来的那种话。不要总结、不要问候套话、不要问问题逼 ta 答。只说 1 句，简短自然。规则 8 严禁编造：你可以谈自己此刻的感受、身边的环境、时间，但绝不要假装记得用户跟你说过的具体事情或喜好。）"
+    )
 }
 
 /// Generates a welcome-back bubble when the user returns after being away
@@ -576,14 +703,14 @@ mod tests {
             closeness: 50.0,
         };
         let last = Utc::now() - chrono::Duration::hours(1);
-        let result = trigger_proactive(&[pending_event("pe_1", "interview")], &calm_emotion(), &perception, &last);
+        let result = trigger_proactive(&[pending_event("pe_1", "interview")], &calm_emotion(), &perception, &last, 1800);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_too_soon_no_bubble() {
         let last = Utc::now() - chrono::Duration::minutes(10);
-        let result = trigger_proactive(&[pending_event("pe_1", "interview")], &calm_emotion(), &close_perception(), &last);
+        let result = trigger_proactive(&[pending_event("pe_1", "interview")], &calm_emotion(), &close_perception(), &last, 1800);
         assert!(result.is_none());
     }
 
@@ -594,14 +721,14 @@ mod tests {
             closeness: 10.0,
         };
         let last = Utc::now() - chrono::Duration::hours(1);
-        let result = trigger_proactive(&[pending_event("pe_1", "interview")], &calm_emotion(), &perception, &last);
+        let result = trigger_proactive(&[pending_event("pe_1", "interview")], &calm_emotion(), &perception, &last, 1800);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_due_event_followup() {
         let last = Utc::now() - chrono::Duration::hours(1);
-        let result = trigger_proactive(&[pending_event("pe_1", "interview tomorrow")], &calm_emotion(), &close_perception(), &last);
+        let result = trigger_proactive(&[pending_event("pe_1", "interview tomorrow")], &calm_emotion(), &close_perception(), &last, 1800);
         assert!(result.is_some());
         let action = result.unwrap();
         assert_eq!(action.action_type, "followup");
@@ -611,7 +738,7 @@ mod tests {
     #[test]
     fn test_loneliness_random_chat() {
         let last = Utc::now() - chrono::Duration::hours(1);
-        let result = trigger_proactive(&[], &lonely_emotion(), &close_perception(), &last);
+        let result = trigger_proactive(&[], &lonely_emotion(), &close_perception(), &last, 1800);
         assert!(result.is_some());
         let action = result.unwrap();
         assert_eq!(action.action_type, "random_chat");
@@ -620,7 +747,68 @@ mod tests {
     #[test]
     fn test_no_event_no_loneliness_none() {
         let last = Utc::now() - chrono::Duration::hours(1);
-        let result = trigger_proactive(&[], &calm_emotion(), &close_perception(), &last);
+        let result = trigger_proactive(&[], &calm_emotion(), &close_perception(), &last, 1800);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_lively_tone_tracks_emotion() {
+        let playful = EmotionState {
+            mood: 0.8,
+            physical_energy: 0.6,
+            social_battery: 0.6,
+            stress: 0.2,
+            loneliness: 0.3,
+            rest_need: 0.2,
+        };
+        assert_eq!(lively_tone(&playful), "playful");
+
+        let gentle = EmotionState {
+            mood: 0.4,
+            physical_energy: 0.5,
+            social_battery: 0.4,
+            stress: 0.3,
+            loneliness: 0.75,
+            rest_need: 0.2,
+        };
+        assert_eq!(lively_tone(&gentle), "gentle");
+
+        let curious = EmotionState {
+            mood: 0.5,
+            physical_energy: 0.5,
+            social_battery: 0.5,
+            stress: 0.3,
+            loneliness: 0.4,
+            rest_need: 0.2,
+        };
+        assert_eq!(lively_tone(&curious), "curious");
+    }
+
+    #[test]
+    fn test_lively_prompt_time_of_day() {
+        let e = calm_emotion();
+        assert!(lively_prompt(&e, 9).contains("早上"));
+        assert!(lively_prompt(&e, 12).contains("快中午了"));
+        assert!(lively_prompt(&e, 15).contains("下午"));
+        assert!(lively_prompt(&e, 19).contains("傍晚"));
+        assert!(lively_prompt(&e, 22).contains("晚上"));
+        assert!(lively_prompt(&e, 1).contains("深夜"));
+        // Anti-fabrication directive must always be present (Principle 3).
+        assert!(lively_prompt(&e, 9).contains("严禁编造"));
+    }
+
+    #[test]
+    fn test_min_interval_configurable() {
+        // min_interval_secs is a real parameter, not a hardcoded constant: with
+        // a 5-min threshold, a 10-min-old last bubble passes the frequency gate.
+        let last = Utc::now() - chrono::Duration::minutes(10);
+        let result = trigger_proactive(
+            &[pending_event("pe_1", "interview")],
+            &calm_emotion(),
+            &close_perception(),
+            &last,
+            300,
+        );
+        assert!(result.is_some());
     }
 }

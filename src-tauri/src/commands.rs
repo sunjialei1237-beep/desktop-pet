@@ -29,6 +29,11 @@ pub struct AppState {
     /// (Architecture #11: "她为什么这么说" — intent + retrieval + trigger +
     /// violations). Written in send_message, read in get_debug_snapshot.
     pub last_decision: std::sync::Mutex<Option<DecisionTrace>>,
+    /// Last proactive-bubble emission time (frequency gate). None = never.
+    /// Updated in check_proactive the moment a bubble is greenlit — before
+    /// proactive_bubble runs — so the 5-min frontend poll can't re-fire within
+    /// the interval even if generation later fails (conservative: 宁少勿突兀).
+    pub last_proactive_bubble: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
 }
 
 // -- Response types --
@@ -467,8 +472,29 @@ pub async fn check_proactive(
         closeness,
     };
 
-    let last_bubble = chrono::Utc::now() - chrono::Duration::minutes(31);
-    let action = crate::pending::trigger_proactive(&events, &emotion, &perception, &last_bubble);
+    // Real last-bubble time (was hardcoded to now-31min, which always passed the
+    // 30-min gate → bubbles fired every 5-min poll). None = never → sentinel a
+    // century back so elapsed is huge and the first bubble is allowed.
+    let last_bubble = state
+        .last_proactive_bubble
+        .lock()
+        .map_err(|e| format!("proactive lock error: {}", e))?
+        .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(36500));
+    let action = crate::pending::trigger_proactive(
+        &events,
+        &emotion,
+        &perception,
+        &last_bubble,
+        state.config.proactive.min_interval_secs,
+    );
+    // Occupy this interval the instant a bubble is greenlit — before
+    // proactive_bubble generates the text — so the 5-min frontend poll can't
+    // re-trigger within min_interval_secs even if generation later returns None.
+    if action.is_some() {
+        if let Ok(mut t) = state.last_proactive_bubble.lock() {
+            *t = Some(chrono::Utc::now());
+        }
+    }
 
     if let Some(a) = &action {
         if let Some(eid) = &a.event_id {

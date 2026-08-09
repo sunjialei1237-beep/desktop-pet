@@ -12,6 +12,8 @@ pub struct AppConfig {
     pub perception: PerceptionConfig,
     #[serde(default)]
     pub scheduler: SchedulerConfig,
+    #[serde(default)]
+    pub proactive: ProactiveConfig,
 }
 
 /// LLM API configuration (OpenAI-compatible).
@@ -102,6 +104,25 @@ impl Default for AppConfig {
             },
             perception: PerceptionConfig::default(),
             scheduler: SchedulerConfig::default(),
+            proactive: ProactiveConfig::default(),
+        }
+    }
+}
+
+/// Proactive-bubble frequency control (Architecture Principle 6: every feature
+/// must be disableable/tunable). Missing [proactive] section in older config
+/// files uses the 30-minute default. Design doc 9.2: bubbles at most every
+/// 30 minutes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProactiveConfig {
+    /// Minimum seconds between proactive bubbles (default 30 min).
+    pub min_interval_secs: i64,
+}
+
+impl Default for ProactiveConfig {
+    fn default() -> Self {
+        ProactiveConfig {
+            min_interval_secs: 30 * 60,
         }
     }
 }

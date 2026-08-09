@@ -29,7 +29,9 @@
 
 ## §当前任务（接手者先看这）
 
-> **2026-08-09 接手完成 续⁷ 收尾**（用户"读 handoff、用 codegraph 了解代码、继续完成昨天未完成的聊天回复问题"）。codegraph + 源码逐处复核续⁷ 三处改动确在位（非仅信旧记）：converse.rs:415 `ThinkingConfig::disabled()`+`reasoning_effort=None` / grounding.rs:290 空记忆显式标记 + :293 非空 footer + :690 测试断言 / system.txt round-2 8 样例。exe 未运行→**rebuild 成功**（10:40:44，exit0/0警告/23.3MB）。② 向用户完整诚实报告（速度/性格/幻觉根因 + G6 trade + 方差）已交付。⏳ **当前无进行中任务**，等用户实跑验收手感 + 决定 G6 follow-up。
+> **2026-08-09 续⁸ 自主冒泡：频率修复 + 灵性重构（记忆30/灵性70）—— ✅ 已收尾（lib 280 全过 + release 重建 exit0）**。用户反馈：① 频率太高（几分钟一冒）② 内容单一（全和糯米有关，要像真人突然找你聊天，可自言自语/撒娇）。firecrawl 调研 + AskUserQuestion 定（频率=30min 可配 / 比例=记忆30:灵性70）。**频率根因（bug）**：`commands.rs:470` 硬编码 `now-31min` 绕过 trigger_proactive 的 30min 门控 → 5min 轮询每次过 → 高频。**内容根因**：`proactive.rs::generate` 固定 query + 强制 memory anchor + "只聊这件事" + 无锚点沉默 → 永远糯米。**修复**：① 频率——AppState 加 `last_proactive_bubble: Mutex<Option<DateTime>>`，check_proactive 读真实值传 trigger_proactive（新 `min_interval_secs` 参数，config `proactive.min_interval_secs` 默认 1800），过门控即占位（conservative 宁少勿突兀，生成失败也不重复触发）。② 灵性——generate 入口 `rand` 加权（≥30 走 lively）：**memory(30%)** query 轮换池 5 条 + 无锚点降级 lively 而非沉默；**新 generate_lively(70%)** 不调 retrieve（省 embedding）、空 RetrievalResult 让 grounding_guard 自然禁编造用户记忆、注入**本地时段+情绪**驱动 prompt（自言自语/撒娇/碎碎念）。两编译坑已修（ThreadRng 非 Send→rng 收敛块内 drop；chrono Timetrait→format("%H")）。**lib 280（+3 测）/ check --tests ✅ / release 重建（1m10s+2.64s 前端）**。→ 待实跑：① 冒泡≈30min ② 内容不再全糯米、出现自言自语/撒娇（Debug Panel action=lively_bubble）。详见 §最近一轮 (续⁸)。
+
+> **2026-08-09 接手完成 续⁷ 收尾**（用户"读 handoff、用 codegraph 了解代码、继续完成昨天未完成的聊天回复问题"）。codegraph + 源码逐处复核续⁷ 三处改动确在位（非仅信旧记）：converse.rs:415 `ThinkingConfig::disabled()`+`reasoning_effort=None` / grounding.rs:290 空记忆显式标记 + :293 非空 footer + :690 测试断言 / system.txt round-2 8 样例。exe 未运行→**rebuild 成功**（10:40:44，exit0/0警告/23.3MB）。② 向用户完整诚实报告（速度/性格/幻觉根因 + G6 trade + 方差）已交付。⏳ **当前无进行中任务**。**速度：用户确认可接受（max 4s/mean 2.7s 达标）→ gate/extractor 并行优化不做，留 backlog**（已分析两轮[续⁷ option A + 2026-08-09 AIRI 调研]，结论固化：gate 与 extractor 互相独立却串行[converse.rs:99→mod.rs:48]，`tokio::join` 并行预期砍 ~0.5–1s 首字延迟，代价是 Question/Discard 路由白跑一次 flash extract，需要时直接做不必再调研；AIRI 的本地零 RTT 复制不了[API-bound]）。仍待：用户实跑验收手感 + 决定 G6 follow-up。
 
 > **2026-08-08（续⁷）速度+性格+幻觉根因 —— ✅ 已收尾（代码 lib 277 全过 + 已提交 `13e7dc8`；release 2026-08-09 10:40 重建）**。6 轮 A/B 跑完、代码改完验证。**接手三步已全做**：① **rebuild release** ✅（`npx tauri build --no-bundle`）② **向用户完整诚实报告** ✅：速度已解决（main 关思考，FULL max4s/mean2.7s/0超5s → **option A 不做**）/ 性格回归（round-2 soul block+8样例，human 4.07）/ 空记忆幻觉**已修**（grounding 显式标记，fresh 组全 0）/ **已披露 G6 越界 6/10 = 性格同源 trade**（样例教"上次说"framing = 用户要的"连过去"性格，不可全除）/ ~8pp run-to-run 方差。③ **可选（待用户定）**：用户在意 G6 → 软化 ex2/ex3 出处 framing（**削弱性格，需权衡**）或流式 chat 路径运行时阻断（流式已流出 token 无法撤回，本质受限）。**完整 6 轮 arc + 根因 + 代码改动清单见 §最近一轮 (续⁷)**。
 
@@ -147,6 +149,26 @@
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
 
 ---
+
+## §最近一轮 (2026-08-09 续⁸)：自主冒泡频率修复 + 灵性重构（记忆30/灵性70）
+
+**起因**：用户体感——自主冒泡①频率太高（几分钟一次）②内容单一（全和糯米有关，要像真人突然找你聊天，话题任意，可自言自语/撒娇）。firecrawl 调研（companion app 主动对话：频控靠 cooldown、内容靠多类型+情绪+时段驱动，避免单记忆锚定重复）+ AskUserQuestion 定：频率=30min（修 bug + config 可调）/ 比例=记忆30:灵性70。
+
+**频率根因（bug 非 design）**：`commands.rs:470` `let last_bubble = chrono::Utc::now() - chrono::Duration::minutes(31);` 硬编码——每次都满足 trigger_proactive Rule2（elapsed<1800 → 31min>30min 恒过）→ 前端 5min 轮询（App.tsx:407）每次拿 action → 高频。30min 设计（proactive.rs MIN_BUBBLE_INTERVAL_SECS=1800）本身对，是上游传参造假。
+
+**内容根因（design 倾斜）**：`proactive.rs::generate`(168-259) ① 固定 query 每次召回同一批（糯米=强记忆）② 强制三选一 anchor（pending>fact>episode），无锚点 `Ok(None)` 沉默 ③ prompt "只能围绕它原意...绝不能换别的" → 永远糯米。
+
+**改动（4 文件 surgical）**：
+- `config.rs`：新 `ProactiveConfig{min_interval_secs:i64}` 默认 1800，`#[serde(default)]` 进 AppConfig（旧 config.toml 无 [proactive] 段用默认，无需改 AppData）。
+- `commands.rs`：AppState 加 `last_proactive_bubble: Mutex<Option<DateTime<Utc>>>`；check_proactive 读真实值（None→now-36500days 哨兵，elapsed 巨大放行首次）传 trigger_proactive，**过门控即占位** `*t=Some(now)`（在 proactive_bubble 生成前；生成失败/None 也不让 5min 轮询区间内重复触发，conservative 宁少勿突兀）。
+- `pending/proactive.rs`：① trigger_proactive 加 `min_interval_secs` 参数（删常量，Rule2 用参数；6 单测调用点同步+1800 踩坑#4）。② generate 入口 rand 加权：rng 收敛块内（ThreadRng 非 Send 不能跨 await）算 `(is_lively,query)` 后 drop；`>=30` 走新 generate_lively；memory 分支 query 从 `MEMORY_QUERIES`(5 条) 随机选 + 无锚点降级 lively（不再沉默）。③ 新 `generate_lively`(70%)：**不调 retrieve**（省 embedding）用 `RetrievalResult::default()`——空检索让 grounding_guard 自然禁任何用户过往编造（只能说自己的感受/环境/时间）；Intent goal=converse/tone=`lively_tone`(mood≥.7→playful/lonely>.6→gentle/else curious)；prompt=`lively_prompt(emotion,hour)` 纯函数——注入本地时段（format("%H")→早上/快中午/下午/傍晚/晚上/深夜）+情绪（想ta/不错/平静/闷闷），"此刻心里冒句话"（自言自语/撒娇/碎碎念，禁总结/套话/逼问），过 grounding_guard + record_interaction。④ 3 新纯函数测（lively_tone 三分支 / lively_prompt 六时段+防幻觉 / min_interval 可配证参数生效）。
+- `lib.rs`：AppState 构造点初始化 `last_proactive_bubble: Mutex::new(None)`。
+
+**两编译坑（已修）**：① ThreadRng(Rc-based) 非 Send 跨 await → tauri Future 不 Send → 收敛 rng 到独立块 drop。② chrono Timetrait::hour() 解析报错 → format("%H").parse() 不依赖 trait。
+
+**验证**：cargo test --lib **280 passed**(277+3) / cargo check --tests ✅（generate 签名未变故 harness 无波及）/ release `npx tauri build --no-bundle` exit0（1m10s Rust+2.64s 前端，前端未改 CSS hash 不变）。
+
+**待实跑**：观察 ① 冒泡间隔≈30min ② 内容多样性（不再全糯米，出现时段感慨/自言自语/撒娇；Debug Panel Last Turn action=lively_bubble vs proactive_check 区分）。可调：AppData config 加 `[proactive] min_interval_secs=900` 改频率。
 
 ## §最近一轮 (2026-08-08 续⁷)：速度（主回复关思考 ≤5s）+ 性格回归 + 记忆幻觉根因修复（6 轮 A/B，⏳ 未 rebuild）
 
