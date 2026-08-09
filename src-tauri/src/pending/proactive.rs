@@ -363,25 +363,28 @@ fn lively_tone(emotion: &EmotionState) -> &'static str {
 /// The prompt forbids fabricating the user's past (rule 8): she voices her
 /// *own* moment — feelings, surroundings, time — never "你之前说过的X".
 fn lively_prompt(emotion: &EmotionState, hour: u32) -> String {
-    let time_desc = match hour {
-        5..=10 => "早上",
-        11..=13 => "快中午了",
-        14..=17 => "下午",
-        18..=20 => "傍晚",
-        21..=22 => "晚上",
-        _ => "深夜",
+    // Give the LLM *situation ingredients* (time-of-day + mood) as descriptive
+    // hints, NOT ready-made phrases — avoids it lazily copying "快中午了/想你了"
+    // into every line (the homogeneity 续⁸'s content check exposed).
+    let (time_hint, time_avoid) = match hour {
+        5..=10 => ("清晨到上午", "早 / 早上好 / 新的一天"),
+        11..=13 => ("中午时分", "快中午了 / 中午 / 该吃饭了"),
+        14..=17 => ("下午", "慵懒的下午 / 午后"),
+        18..=20 => ("傍晚", "傍晚 / 夕阳 / 一天结束了"),
+        21..=22 => ("晚上", "夜色 / 这个点"),
+        _ => ("深夜", "这么晚了 / 还不睡 / 夜深了"),
     };
-    let mood_desc = if emotion.loneliness > 0.6 {
-        "有点想 ta"
+    let mood_hint = if emotion.loneliness > 0.6 {
+        "心里莫名有点空，想找个人搭句话"
     } else if emotion.mood >= 0.7 {
-        "心情不错"
+        "心情挺轻快"
     } else if emotion.mood >= 0.4 {
-        "挺平静的"
+        "挺平静，没什么波澜"
     } else {
-        "有点闷闷的"
+        "有点闷，提不起劲"
     };
     format!(
-        "（现在是{time_desc}，你{mood_desc}。你没有特别的事要跟用户说，也不是要 ta 回答——就是这一刻心里忽然冒出一句话，想说出来。可以是自言自语、一个小感慨、撒个娇、随口吐槽点什么、或者就是很普通的碎碎念，像真人突然冒出来的那种话。不要总结、不要问候套话、不要问问题逼 ta 答。只说 1 句，简短自然。规则 8 严禁编造：你可以谈自己此刻的感受、身边的环境、时间，但绝不要假装记得用户跟你说过的具体事情或喜好。）"
+        "（此刻大概是{time_hint}，你{mood_hint}。你没有特别的事要跟用户说，也不是要 ta 回答——就是这一刻脑子里忽然飘过一句话，随口讲出来。\n\n从一个具体的小切入点说起：一个小动作（伸懒腰、打哈欠、拨弄手边的东西）、刚才注意到的一个细节（窗外的声音、屏幕的光、空气的温度）、一个身体感觉（犯困、饿、暖洋洋、肩膀酸）、一个荒唐的小念头、或一句没头没尾的自言自语。要像真人脑子里突然冒出来的那一句，不是在打招呼，也不是在表达关心。\n\n别用这些当开头或万能句式：{time_avoid}、「忽然/突然」+「想你/想到你」、「阳光正好/太阳正暖」——它们太套路，会让每句都差不多。换个新鲜点的说法。\n\n只说 1 句，简短自然。规则 8 严禁编造：只谈你自己此刻的感受、身边的环境、身体，绝不要假装记得用户跟你说过的具体事情或喜好。）"
     )
 }
 
@@ -787,8 +790,8 @@ mod tests {
     #[test]
     fn test_lively_prompt_time_of_day() {
         let e = calm_emotion();
-        assert!(lively_prompt(&e, 9).contains("早上"));
-        assert!(lively_prompt(&e, 12).contains("快中午了"));
+        assert!(lively_prompt(&e, 9).contains("清晨"));
+        assert!(lively_prompt(&e, 12).contains("中午"));
         assert!(lively_prompt(&e, 15).contains("下午"));
         assert!(lively_prompt(&e, 19).contains("傍晚"));
         assert!(lively_prompt(&e, 22).contains("晚上"));
