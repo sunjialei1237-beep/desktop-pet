@@ -28,9 +28,12 @@ export interface SpineCanvasProps {
   onModelBounds?: (b: Rect) => void;
   // Tight bounding rect for click hit testing.
   onModelHitBounds?: (b: Rect) => void;
+  // Fired when the Spine asset fails to load, so App falls back to Live2D
+  // instead of leaving a blank canvas.
+  onLoadError?: () => void;
 }
 
-export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds }: SpineCanvasProps) {
+export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onLoadError }: SpineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const spineRef = useRef<any>(null);
@@ -128,6 +131,7 @@ export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBo
         (app as any).__clickFn = handleClick;
       } catch (err) {
         console.error("[Spine] model load failed:", err);
+        if (!destroyed) onLoadError?.();
       }
     })();
 

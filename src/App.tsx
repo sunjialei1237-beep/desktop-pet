@@ -6,14 +6,8 @@ import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { Live2DCanvas } from "./Live2DCanvas";
 import { SpineCanvas } from "./SpineCanvas";
 
-// Migration toggle: render the Spine (Liri) renderer when ?spine=1 is in the URL
-// or localStorage.spine==="1", otherwise keep the Live2D (Haru) placeholder.
-// localStorage matters because the Tauri desktop window has no address bar --
-// flip it from DevTools: localStorage.spine="1" then reload. Once Spine is
-// verified, removing Live2D is a one-line delete here.
-const USE_SPINE =
-  new URLSearchParams(window.location.search).has("spine") ||
-  localStorage.getItem("spine") === "1";
+// Liri (Spine) is the default renderer. Live2D (Haru) stays only as the
+// fallback when the Spine asset fails to load (spineFailed state in App).
 import { SettingsPanel } from "./SettingsPanel";
 import { DebugPanel } from "./DebugPanel";
 import { ContextMenu } from "./ContextMenu";
@@ -87,6 +81,8 @@ const SLEEP_AFTER_IDLE_MS = 10 * 60 * 1000;
 
   const [bubbleText, setBubbleText] = useState("");
   const [bubbleVisible, setBubbleVisible] = useState(false);
+  // Spine (Liri) is default; flips to true on asset load error → render Haru.
+  const [spineFailed, setSpineFailed] = useState(false);
   const [bubbleStyle, setBubbleStyle] = useState("");
   const [bubblePos, setBubblePos] = useState("");
   const [inputVisible, setInputVisible] = useState(false);
@@ -1134,13 +1130,14 @@ const handleBodyClick = useCallback(() => {
       }}
       onMouseDown={handleDragStart}
    >
-    {USE_SPINE ? (
+    {!spineFailed ? (
       <SpineCanvas
         speedModifier={circadianRef.current.speedModifier}
         onHeadClick={handleHeadClick}
         onBodyClick={handleBodyClick}
         onModelBounds={handleModelBounds}
         onModelHitBounds={handleModelHitBounds}
+        onLoadError={() => setSpineFailed(true)}
       />
     ) : (
       <Live2DCanvas
