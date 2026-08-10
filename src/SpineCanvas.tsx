@@ -46,10 +46,14 @@ export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBo
     let destroyed = false;
 
     (async () => {
+     try {
       const PIXI = await import("pixi.js");
-      // Importing pixi-spine registers its Assets loader parser (side effect) for
-      // Spine 3.8 skeletons before PIXI.Assets.load runs below.
-      const { Spine } = await import("pixi-spine");
+      // Liri is a Spine 3.8.75 export. loader-uni auto-detects the skeleton
+      // version; the Spine class must come from the matching 3.8 runtime -- the
+      // umbrella `pixi-spine` default is the 4.x runtime, which rejects 3.8 data
+      // ("3.8.75 is deprecated, export with a newer version of Spine").
+      await import("@pixi-spine/loader-uni");
+      const { Spine } = await import("@pixi-spine/runtime-3.8");
 
       if (destroyed || !canvasRef.current) return;
 
@@ -72,7 +76,6 @@ export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBo
       app.ticker.add(speedTickerFn);
       (app as any).__speedFn = speedTickerFn;
 
-      try {
         // pixi-spine's loader auto-resolves the matching liri.atlas (same basename)
         // and the texture it references (skeleton.png, see skeleton_structure.md).
         const res = await PIXI.Assets.load("/spine/liri/liri.json");
@@ -82,17 +85,29 @@ export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBo
         spineRef.current = spine;
         app.stage.addChild(spine);
 
-        // Scale to fit the canvas, centered. Spine has no `.anchor`; center via
-        // its post-scale bounds (pixi-spine getBounds reflects the transform).
-        const fit = Math.min(app.screen.width / spine.width, app.screen.height / spine.height) * 0.9;
-        spine.scale.set(fit);
-        const b = spine.getBounds(true);
-        spine.x = (app.screen.width - b.width) / 2 - b.x;
-        spine.y = (app.screen.height - b.height) / 2 - b.y;
+        // Apply the idle pose before measuring. A freshly-built Spine hasn't
+        // run a world-transform update, so its bounds are stale.
+        spine.state.setAnimation(0, "body_breath", true); // track 0 = base life (breath loop)
+        spine.update(0);
 
-        // Base life layer: breathing on track 0 (loop). Idle secondary tracks
-        // (ear/hair/tail) and expression layer come with the driver push.
-        spine.state.setAnimation(0, "body_breath", true);
+        // Measure at scale=1. pixi-spine bakes mesh vertices into a cache at
+        // update() time; a later scale.set() does NOT recompute them, so
+        // getBounds() reports the unscaled size. Centering on that stale bounds
+        // pushes Liri down until only her upper body is on screen. Measure at
+        // scale 1, then do the scaled centering math ourselves.
+        const b1 = spine.getBounds(true);
+        const fit = Math.min(app.screen.width / b1.width, app.screen.height / b1.height) * 0.9;
+        spine.scale.set(fit);
+        spine.x = app.screen.width / 2 - (b1.x + b1.width / 2) * fit;
+        spine.y = app.screen.height / 2 - (b1.y + b1.height / 2) * fit;
+        // On-screen bounds for click hit-testing (getBounds lies post-scale, so
+        // derive the world rectangle from the scale-1 bounds manually).
+        const b = {
+          x: spine.x + b1.x * fit,
+          y: spine.y + b1.y * fit,
+          width: b1.width * fit,
+          height: b1.height * fit,
+        };
 
         // Report bounding rects for click-through (loose + tight), mirroring
         // Live2DCanvas so App's hit testing keeps working unchanged.
@@ -130,7 +145,7 @@ export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBo
         canvasRef.current.addEventListener("click", handleClick);
         (app as any).__clickFn = handleClick;
       } catch (err) {
-        console.error("[Spine] model load failed:", err);
+        console.error("[Spine] init/load failed:", err);
         if (!destroyed) onLoadError?.();
       }
     })();
