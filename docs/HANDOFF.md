@@ -29,6 +29,8 @@
 
 ## §当前任务（接手者先看这）
 
+> **2026-08-10（续¹³）Liri Spine driver 层 phase1（串行通道 + 呼吸节拍对齐治跳变）—— ✅ 代码+release（⏳ 待用户最终确认体感）**。续¹² 全身上屏后接 driver 层。用户三轮反馈收敛出**跳变根因**：node 解析 liri.json 坐实**所有 idle 动画（ear/tail/arm/hair）都 key 整条脊柱链+head**（非仅命名部位）→ ear/tail 在 `body_breath` 呼吸**中途**插入时 spine 从"呼吸中间态"瞬间跳到"idle 首帧(setup)"= 跳变；loop 接缝/clearTrack 硬切是次因。**最终方案（用户点破"呼吸轮回中性才允许动作加入"）**：① **单一串行动作通道**——blink/ear/tail/smile 共享 `busy` 标志，一次只播一个（含 0.3s `setEmptyAnimation` 平滑收回），绝不重叠；② **呼吸节拍对齐**——ear/tail（key spine）只在 `body_breath` 每轮 `complete`（身体回 setup 瞬间）触发，首帧即 setup→零跳变；blink/smile 只 key 眼 slot 不碰脊柱→不跳，保持独立计时（眨眼~5s/笑~12-18s）但受 busy 互斥；③ idle `loop=false`（消 loop 接缝跳）+ `setEmptyAnimation(fade)` 收尾（消 clearTrack 硬切）。**双时钟**：`deltaMS`(circadian 缩放) 喂 `spine.update`（动作播放随昼夜变速，#10），`elapsedMS`(挂钟) 驱动间隔（"多久动一次"昼夜稳定——上版用缩放 dt 致深夜间隔被放大成~1min）。**笑容嘴部覆盖**：smile 只 key 眼，手动 `嘴→null`+`小笑嘴→附件` 持续 smileDuration。落地：新 `src/animation/spineIntent.ts`(翻译层) + `SpineCanvas.tsx`(串行调度+breath complete listener) + `App.tsx`(Spine 分支传 behavior)。tsc exit0 / release rebuild exit0（48.95s）。**⏳ 待用户确认**：跳变根治否/串行节奏自然否/频率(眨眼~5s·耳尾~10-16s·笑~12-18s)OK 否（用户"今天就到这"未给本轮反馈）。详见 §最近一轮 (续¹³)。
+
 > **2026-08-10（续¹²）Liri Spine 全身显示 —— ✅ 两个 release-only bug 已修 + 用户目视确认全身**。续¹¹·补² rebuild 后用户实跑暴露两 bug（**dev 隐身**——dev tauri 自动放宽 CSP 故 dev 永远正常，踩坑#7 同类）：① **重启空白** = CSP 缺 `worker-src`（PIXI/pixi-spine 建 `blob:` worker 被阻→PIXI Application 崩→画布空白，后端/React 正常极难排查）→ `tauri.conf.json` CSP 加 `worker-src 'self' blob:;`。② **只显上半身** = pixi-spine `getBounds()` 返回 scale=1 缓存 vertices（`update()` 时烘焙，之后 `scale.set()` 不重算）→ 原 centering 信任谎言 bounds 把璃推到 world y∈[400,940]、可见区[0,600]只露头肩；**修复**：scale=1 时量 `b1=getBounds(true)` 手动做缩放 centering（`spine.y=H/2-(b1.y+b1.height/2)*fit`），worldBounds 手算 y∈[30,570] 全入画布，click hit bounds 同从 `b1×fit` 手推。CDP 数值诊断坐实（WebView2 `--remote-debugging-port=9222` + `Runtime.evaluate` 量真实 bounds；`analyze_image` 此例不可靠——上半身截图两次误判"完整"，**数值诊断优先于视觉模型**）。`npx tauri build --no-bundle` exit0 + 用户确认全身。**下一轮（driver 层）**：分层 idle 轨道（ear/hair/tail/arm_idle loop）+ 表情 slot 映射（emotion→半睁眼/笑眯眼/小笑嘴；transient→smile track2）+ 视线（neck/head 骨骼追指针）+ FSM behavior→动画映射 + 测试面板；`Live2DCanvas` 占位待删。详见 §最近一轮 (续¹²)。
 
 > **2026-08-10（续¹¹·补²）Liri 设为默认渲染 + 加载失败回退 —— ✅ 代码+release（续¹² 已验：璃全身上屏非 Haru + body_breath 呼吸）**。用户"打开后还是旧桌宠（Haru），没切换"。根因：`USE_SPINE` flag-gated 默认 false（#6 优雅退化），且用户开桌面快捷方式 = release exe（续¹¹ 未 rebuild，仍 Haru 路径）。但 **Liri 是最终角色、Live2D 为占位待迁移**（memory），Tauri 窗口无地址栏靠 `localStorage.spine=1` 切换对用户不友好 → **直接翻默认**：① `App.tsx` 删 `USE_SPINE` flag（URL/localStorage 双触发全删），改 `spineFailed` state（默认 false=走 Spine）② 渲染分支 `{!spineFailed ? <SpineCanvas/> : <Live2DCanvas/>}` ③ `SpineCanvas.tsx` 加 `onLoadError` prop，asset 加载 catch → `setSpineFailed(true)` → **自动回退 Haru**（永不空白，console 留 `[Spine] model load failed` 报错可诊断）。**tsc exit0 / release rebuild exit0（1m19s，desktop-pet.exe）**。**待实跑**：打开桌面快捷方式 → ① 璃模型上屏（非 Haru）② body_breath 呼吸播放 ③ 若仍 Haru = Spine 加载失败，F12 Console 看 `[Spine] model load failed` 报错（最可能 pixi-spine@4.0.6 对 spine 3.8.75 兼容 / atlas-skeleton.png 解析），把报错贴出诊断。**下一轮（驱动层，续¹¹ 既定）**：分层 idle 轨道 + 表情 slot 映射 + 视线 + FSM→动画映射。
@@ -137,7 +139,7 @@
 | **B6 A1 BrainState** | "架构债" | ⚠️ **确认债** | `converse()` = 10 参数（plan A1 要 `fn(brain:&BrainState)`），违反原则 #2 信号"参数>3"。在跑、重构触踩坑#4。 |
 | **B7 A2 Scheduler** | "架构债" | ⚠️ **确认债** | `loop_runner.rs` = `std::thread::spawn`+`sleep`（medium 30s / slow 1h），非 plan A2 的 Scheduler trait。在跑。 |
 | **B1b Grounding 阻断** | "条件触发" | ⏳ **确认条件成立、未触发** | `check_groundedness`(grounding.rs:235) 仅挂 converse、只 warn、`claim_patterns`(:256) 全英文（中文漏检）、未挂 proactive/welcome_back 输出端。07-31 A 档 prompt 收紧后**无复发报告** → 维持观察，不升级。 |
-| **Liri/Spine 迁移** | 续¹² | ✅ **里程碑1+全身修复完成** | `SpineCanvas.tsx` 已接 Spine3.8+PixiJS（runtime-3.8/loader-uni），`App.tsx` 加 spineFailed→Live2D 回退。release 两 bug 已修（CSP worker-src + getBounds scale 缓存，见续¹²）。**全身显示已验证**。下一步：driver 层（分层 idle track/表情 slot/注视/FSM-emotion 映射），`Live2DCanvas` 占位待删。 |
+| **Liri/Spine 迁移** | 续¹³ | ✅ **里程碑1+全身修复 + driver phase1（串行+呼吸对齐）** | `SpineCanvas.tsx` 接 Spine3.8+PixiJS（runtime-3.8/loader-uni），`App.tsx` spineFailed→Live2D 回退。release 两 bug 已修（续¹²），全身已验。**driver phase1 已落地**：`spineIntent.ts` 翻译层 + 单一串行动作通道 + 呼吸节拍对齐治跳变（见续¹³，⏳ 待确认体感）。下一步：Phase 3 emotion→表情 slot 持续映射 + Phase 4 凝视追指针 + Phase 5 测试面板 + FSM-behavior→动画映射补全，`Live2DCanvas` 占位待删。 |
 
 **遗漏排查（HANDOFF 未单列但核验发现）**：
 - **A7 多气泡堆叠**：旧 backlog 已正确降级（App.tsx 单气泡覆盖语义，非堆叠）✅。
@@ -155,10 +157,47 @@
 | P2 | B5 Golden 评估框架 | 锁 Liri 人格防漂移；重（需真 LLM、≥30 对话、CI） | ✅ **完成（2026-08-08 续）** 三层[规则/cosine/judge] + 30 golden 集 |
 | P3 | B1b Grounding B 档 | 条件触发（A 档后无复发） | ⏳ 观察 |
 | P4 | B6 A1 BrainState / B7 A2 Scheduler | 在跑的架构债、重构风险高 | ⏳ 顺带改 |
-| P3 | Liri/Spine 迁移 driver 层 | 里程碑1✅（全身显示已验），下一步分层 idle/表情/注视/FSM 映射 | 🟡 driver 层待做 |
+| P3 | Liri/Spine 迁移 driver 层 | phase1✅（串行 idle + 呼吸对齐治跳变，⏳ 待确认体感），下一步 emotion→slot/凝视/测试面板/FSM 映射补全 | 🟡 phase2-5 待做 |
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-10 续¹³)：Liri Spine driver 层 phase1 —— 串行通道 + 呼吸节拍对齐治跳变
+
+**背景**：续¹² 全身显示 OK 后接 driver 层。先做 idle 生命感（耳/尾/眨眼/笑间歇动），用户三轮迭代反馈暴露**身体跳变**，最终诊断+方案如下。
+
+### 三轮反馈 → 根因收敛
+1. 初版（4 idle 持续 loop）：用户"太频繁"。
+2. 改间歇（4 选 1 共享池 + loop 2.5s）：用户"耳不动、尾间隔 1 分钟且连续动 2 次、偶发跳变（身体摆右→跳左重新开始）"。
+3. **node 解析 liri.json 坐实根因**：
+   - `ear_idle`/`tail_idle`/`arm_idle`/`hair_idle` **全部 key 整条 spine 链 + head**（不只命名部位）→ 任何 idle 触发都驱动身体。
+   - "1 分钟间隔" = 4 选 1 池分摊（单部位 ~48s）+ 间隔用 circadian-scaled dt（深夜 ×2-2.5 放大）。
+   - "连续动 2 次" = idle duration ~1s 但 loop 2.5s → 循环 2-3 次。
+   - "跳变" = ① loop 接缝（末帧身体偏右→首帧左）② **更主要**：ear/tail 在 `body_breath` 呼吸中途插入，spine 从呼吸中间态跳到 idle 首帧。
+   - ear/tail 幅度足够（ear_l2 ±17° 明显）——"耳不动"纯概率（4 选 1 没轮到）。
+
+### 最终方案（用户点破"呼吸做完一轮恢复初始状态才允许动作加入"）
+**① 单一串行动作通道**：`busy` 标志，blink/ear/tail/smile 一次一个，做完（含 fade）才下一个 → 绝不重叠。
+**② 呼吸节拍对齐**：ear/tail（key spine）只在 `body_breath` 每轮 `complete` 事件触发——此刻身体回 setup，idle 首帧亦 setup，两者重合零跳变。`spine.state.addListener({complete})` 监听 track0；`spinePending` 在 spineT 到点时置位，等 complete 兑现。blink/smile 只 key 眼 slot 不碰脊柱→不跳，独立计时（眨眼~5s/笑~12-18s）但受 busy 互斥。
+**③ idle `loop=false`**（一次性，消 loop 接缝跳）+ 播完 `setEmptyAnimation(track, 0.3)`（带 mix 回 setup，消 clearTrack 硬切跳）。
+**④ 双时钟**：`dt=deltaMS/1000`(circadian 缩放) 喂 `spine.update`（动作播放随昼夜变速，#10）；`wall=elapsedMS/1000`(挂钟) 驱动 blink/smile/spine 间隔（"多久动一次"昼夜稳定）。
+**⑤ 笑容嘴部覆盖**：smile 动画只 key 眼 slot（笑眯眼），嘴不变——手动 `嘴.setAttachment(null)` + `小笑嘴.setAttachment(附件)` 持续 smileDuration，结束还原（initFace 在 setup pose 捕获 slot ref）。
+
+### 落地
+- 新 `src/animation/spineIntent.ts`：翻译层。`TRACK{breath0/ear1/tail2/expr5}`；`playAction(kind)`/`actionDuration`(ear/tail=duration+fade)/`beginFadeOut`(ear/tail→setEmptyAnimation)/`endAction`(smile→关嘴)；`setupMix`(defaultMix 0.15)；`initFace`；间隔 `nextBlinkDelay(~5s)`/`nextSmileDelay(12-18s)`/`nextSpineDelay(5-8s→耳尾各~10-16s)`。内部封装 playEar/playTail/triggerBlink/triggerSmile/endSmileMouth（不再各自 export）。
+- `src/SpineCanvas.tsx`：autoUpdate=false（续¹² 修，circadian 经 deltaMS 到达）；串行状态机（busy/busyRem/busyKind/faded）+ `onBreathComplete` listener + 双时钟；点击上下分屏 hit（待真 polygon）。
+- `src/App.tsx`：SpineCanvas 分支传 `behavior` prop（FSM BehaviorState，目前仅 Embarrassed→单眼 wink）。
+
+### 验证
+- `tsc --noEmit` exit0；`npx tauri build --no-bundle` exit0（48.95s）。
+- **⏳ 待用户最终确认体感**（跳变根治否/串行节奏自然否/频率 OK 否——用户"今天就到这"未给本轮反馈）。
+
+### 已知局限 / 下一阶段
+- ear/tail 播放期间 body_breath 被覆盖（都 key spine）→ 该 ~1s 呼吸暂停（**美术限制**：idle 不该 key spine，需美术修才能让呼吸与耳尾并存；当前用呼吸对齐把暂停点放在轮回边界，视觉上像"呼吸一下→动一下耳→再呼吸"）。
+- 未做：Phase 3 emotion→表情 slot 持续映射（mood 高→笑眯眼/小笑嘴，rest_need 高→半睁眼，需 spine.update 后 slot override）；Phase 4 凝视追指针（neck/head 骨骼旋转）；Phase 5 测试面板（Debug Panel Spine 按钮）；`Live2DCanvas` 占位待删。
+- FSM 14 behavior vs Spine 10 动画非 1:1，目前仅 Embarrassed 接 wink，余待映射。
 
 ---
 

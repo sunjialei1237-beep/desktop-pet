@@ -1,14 +1,22 @@
 import { useEffect, useRef } from "react";
+import { BehaviorState } from "./animation/fsm";
+import { setupMix, setupIdleTracks, triggerBehavior, initFace, playAction, actionDuration, beginFadeOut, endAction, nextBlinkDelay, nextSmileDelay, nextSpineDelay, IDLE_FADE } from "./animation/spineIntent";
+import type { ActionKind } from "./animation/spineIntent";
 
 // Spine (3.8) + PixiJS rendering layer for Liri. Replaces the Live2DCanvas
-// placeholder once verified. Rendered behind the `?spine=1` URL flag in App.tsx
-// so the working Live2D path stays as fallback during migration.
+// placeholder once verified.
 //
-// MVP scope (this file): load liri.json/atlas/png, display the skeleton centered,
-// play `body_breath` on loop, apply the circadian speedModifier. The full driver
-// layer (layered idle tracks, expression slot switching, gaze, FSM/emotion
-// mapping, test panel) lands in the next push -- see
-// docs/specs/liri/{skeleton_structure,animation_spec}.md for the contract.
+// Driver layer (this file + spineIntent.ts): a SINGLE SERIAL action channel
+// fires one of blink/ear/tail/smile at a time over a continuous body_breath
+// base (track0) — they never overlap. ear/tail are one-shots (never looped —
+// every Liri idle keys the spine chain) AND breath-aligned (fire only at
+// body_breath's loop boundary so the body is at setup, killing spine jumps);
+// blink/smile key only eye slots, so they fire freely on their own timers. The
+// FSM BehaviorState drives an extra expression (wink) on behavior change.
+// Live2D Cubism-param translation is replaced; intent sources
+// (FSM/circadian/EmotionVector) are reused. Emotion→expression-slot (Phase 3)
+// + gaze (Phase 4) pending. Contract: docs/specs/liri/{skeleton_structure,
+// animation_spec}.md.
 
 interface Rect {
   x: number;
@@ -18,10 +26,12 @@ interface Rect {
 }
 
 export interface SpineCanvasProps {
-  // Circadian animation-speed multiplier (circadian.ts speedModifier). Scales
-  // the PIXI ticker delta so breathing slows at night / perks up in the morning
+  // Circadian animation-speed multiplier (circadian.ts speedModifier). Applied
+  // via app.ticker.speed, which scales deltaMS feeding our manual spine.update
   // (Architecture Principle #10). Default 1.0 = real-time.
   speedModifier: number;
+  // FSM BehaviorState → drives the expression track (blink/wink on change).
+  behavior: BehaviorState;
   onHeadClick: () => void;
   onBodyClick: () => void;
   // Loose bounding rect for gaze/click-through (mirrors Live2DCanvas semantics).
@@ -33,14 +43,18 @@ export interface SpineCanvasProps {
   onLoadError?: () => void;
 }
 
-export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onLoadError }: SpineCanvasProps) {
+export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onLoadError }: SpineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const spineRef = useRef<any>(null);
-  // Mirror latest props into a ref read each ticker frame (avoids re-running the
-  // heavy load effect on every prop change -- same pattern as Live2DCanvas).
+  // Mirror latest props into refs read each ticker frame / effect (avoids
+  // re-running the heavy load effect on every prop change — same pattern as
+  // Live2DCanvas).
   const speedRef = useRef(speedModifier);
   speedRef.current = speedModifier;
+  const behaviorRef = useRef(behavior);
+  behaviorRef.current = behavior;
+  const lastBehaviorRef = useRef<BehaviorState | null>(null);
 
   useEffect(() => {
     let destroyed = false;
@@ -85,10 +99,16 @@ export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBo
         spineRef.current = spine;
         app.stage.addChild(spine);
 
-        // Apply the idle pose before measuring. A freshly-built Spine hasn't
-        // run a world-transform update, so its bounds are stale.
-        spine.state.setAnimation(0, "body_breath", true); // track 0 = base life (breath loop)
-        spine.update(0);
+        // Turn off pixi-spine's self-update. It drives update() via Date.now()
+        // inside updateTransform, which BYPASSES PIXI's ticker — so circadian
+        // app.ticker.speed never reached the skeleton (a latent bug: Spine Liri
+        // ignored day/night speed). We drive update ourselves from the ticker
+        // using deltaMS (which IS scaled by app.ticker.speed), fixing that and
+        // giving a known post-update hook point for Phase 3 slot overrides.
+        spine.autoUpdate = false;
+        setupMix(spine.stateData);
+        setupIdleTracks(spine); // track0 body_breath only; ear/tail fire as one-shots
+        spine.update(0); // apply pose before measuring
 
         // Measure at scale=1. pixi-spine bakes mesh vertices into a cache at
         // update() time; a later scale.set() does NOT recompute them, so
@@ -133,9 +153,95 @@ export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBo
           // getBounds unavailable -- App keeps fully interactive (safe default).
         }
 
+        // Drive the skeleton ourselves (autoUpdate is off). Two clocks:
+        //  - dt   = deltaMS/1000, scaled by app.ticker.speed → feeds spine.update,
+        //           so animation PLAYBACK slows at night (circadian, Principle #10).
+        //  - wall = elapsedMS/1000, real wall-clock → drives event INTERVALS, so
+        //           "how often" is stable day or night (scaling it once made the
+        //           user see ~1min gaps).
+        //
+        // SINGLE SERIAL ACTION CHANNEL: blink/ear/tail/smile fire ONE at a time
+        // behind a shared busy flag — they never overlap (user: "做完才下一个",
+        // "不要同时"). Within that:
+        //  - blink/smile key only eye SLOTS, never the spine → no jump; they fire
+        //    on their own independent wall-clock timers when the channel is free.
+        //  - ear/tail key the SPINE chain → firing mid-breath makes the body jump
+        //    from the breath's mid-cycle pose to the idle's first frame. So they
+        //    fire ONLY at body_breath's loop boundary (each `complete`), where the
+        //    body is back at setup and the idle's first frame (also setup) matches
+        //    — zero jump. spinePending arms the fire; the breath completes it.
+        const face = initFace(spine);
+        let busy = false; // channel occupied by the current action
+        let busyRem = 0; // wall-clock remaining for the current action
+        let busyKind: ActionKind | null = null;
+        let faded = false; // ear/tail: setEmptyAnimation already issued for this action
+        let blinkT = nextBlinkDelay(); // ~5s
+        let smileT = nextSmileDelay(); // 12-18s
+        let spineT = nextSpineDelay(); // 5-8s → ear/tail each ~every 10-16s
+        let spinePending = false; // spineT elapsed; wait for a breath boundary to fire
+
+        const fireSpineAction = () => {
+          const k: ActionKind = Math.random() < 0.5 ? "ear" : "tail";
+          playAction(spine, k, face);
+          busy = true;
+          busyKind = k;
+          busyRem = actionDuration(k, face);
+          faded = false;
+          spineT = nextSpineDelay();
+        };
+
+        // body_breath (track0) completes once per loop — the only moment the body
+        // is guaranteed back at setup. Fire a pending ear/tail here.
+        const onBreathComplete = (entry: any) => {
+          if (entry.trackIndex === 0 && spinePending && !busy) {
+            spinePending = false;
+            fireSpineAction();
+          }
+        };
+        spine.state.addListener({ complete: onBreathComplete });
+
+        const updateFn = () => {
+          const dt = app.ticker.deltaMS / 1000;
+          const wall = app.ticker.elapsedMS / 1000;
+          spine.update(dt);
+          if (busy) {
+            busyRem -= wall;
+            if (!faded && busyRem <= IDLE_FADE) {
+              beginFadeOut(spine, busyKind!);
+              faded = true;
+            }
+            if (busyRem <= 0) {
+              endAction(busyKind!, face);
+              busy = false;
+              busyKind = null;
+            }
+            return; // channel busy: freeze the independent timers until it frees
+          }
+          // Channel free — advance independent timers, fire the first to elapse.
+          if ((blinkT -= wall) <= 0) {
+            playAction(spine, "blink", face);
+            busy = true; busyKind = "blink"; busyRem = actionDuration("blink", face); faded = true;
+            blinkT = nextBlinkDelay();
+          } else if ((smileT -= wall) <= 0) {
+            playAction(spine, "smile", face);
+            busy = true; busyKind = "smile"; busyRem = actionDuration("smile", face); faded = true;
+            smileT = nextSmileDelay();
+          } else if ((spineT -= wall) <= 0) {
+            spinePending = true; // ear/tail wait for the next breath boundary
+          }
+        };
+        app.ticker.add(updateFn);
+        (app as any).__updateFn = updateFn;
+
+        // Seed expression for the behavior already active at load — the
+        // [behavior] effect below may have run before the spine finished
+        // loading (it no-ops while spineRef is null).
+        triggerBehavior(spine, behaviorRef.current);
+        lastBehaviorRef.current = behaviorRef.current;
+
         // Click hit testing: Liri has no Spine hit boxes wired yet, so map by a
-        // vertical split (upper 55% = head, lower = body). Placeholder until the
-        // driver push adds real polygon hit areas.
+        // vertical split (upper 55% = head, lower = body). Placeholder until
+        // real polygon hit areas land.
         const handleClick = (ev: MouseEvent) => {
           const rect = canvasRef.current!.getBoundingClientRect();
           const ry = (ev.clientY - rect.top) / rect.height;
@@ -160,6 +266,9 @@ export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBo
       if (app && (app as any).__speedFn) {
         app.ticker.remove((app as any).__speedFn);
       }
+      if (app && (app as any).__updateFn) {
+        app.ticker.remove((app as any).__updateFn);
+      }
       if (app) {
         app.destroy(true);
         appRef.current = null;
@@ -167,6 +276,16 @@ export function SpineCanvas({ speedModifier, onHeadClick, onBodyClick, onModelBo
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Behavior → expression track. No-ops until the spine is loaded (the load
+  // effect seeds the initial value once the spine exists), and skips repeats.
+  useEffect(() => {
+    const spine = spineRef.current;
+    if (!spine) return;
+    if (lastBehaviorRef.current === behavior) return;
+    lastBehaviorRef.current = behavior;
+    triggerBehavior(spine, behavior);
+  }, [behavior]);
 
   return (
     <canvas
