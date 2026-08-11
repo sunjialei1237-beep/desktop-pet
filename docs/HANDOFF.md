@@ -183,6 +183,8 @@
 
 **验证**：`tsc --noEmit` exit0；`npm run build` exit0（2.84s）；`npx tauri build --no-bundle` exit0（1m01s，纯前端改动 Rust 缓存命中只重新嵌入 dist）。commit `366ffc8`。
 
+**续¹⁴·补（Debug Panel 可拖动浮窗，commit 184d7e0）**：用户反馈 panel 全屏覆盖挡脸、无法验证表情。改 `.debug-panel` 全屏 absolute → fixed 右下 300px 浮窗（max-height 60vh、圆角阴影，让出左上脸区）；toolbar 加拖拽（mousedown→全局 mousemove/up，clamp 窗口内，点按钮不触发）+ cursor:move；Emotion 编辑器移到面板顶部（验证表情免滚动）。tsc/vite build 绿，release rebuild 1m35s。
+
 **⏳ 待实跑**：桌面快捷方式 → F12 Debug Panel → Emotion 编辑器拉低 `physical_energy`（如 0.2）或拉高 `rest_need`（如 0.8）→ Apply → 肉眼确认璃**半眯眼**；等 blink/smile 触发瞬间半眯让位、过后恢复；拉回正常值半眯消失。若半眯不出现 = 半睁眼 slot 名不符（halfEye 字段 null）→ F12 console 诊断。
 
 **已知局限 / 下一阶段**：仅 fatigue→半睁眼一维，笑眯眼+小笑嘴(mood)/眉毛(stress)待 follow-up；半睁眼阈值 0.5/增益照搬 emotionDriver，可能需实跑按 Liri 体感微调；phase1 体感（续¹³ 跳变根治）仍待用户确认（本轮不依赖不阻塞）；仍待 Phase 4 凝视追指针、Phase 5 测试面板、FSM-behavior→动画映射补全、`Live2DCanvas` 占位待删。
