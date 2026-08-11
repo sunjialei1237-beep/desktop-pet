@@ -593,7 +593,21 @@ const transientTimerRef = useRef<number | null>(null);
     }).then((u) => { unlistenMoved = u; }).catch(() => {});
 
     let unlisten: UnlistenFn | undefined;
+    // Watchdog: if the global-cursor polling thread stalls (rare but would
+    // leave the window permanently transparent to mouse events — pet can't
+    // be dragged nor right-clicked), force back to interactive after 10 s.
+    let cursorWatchdog: ReturnType<typeof setTimeout> | undefined;
+    const resetWatchdog = () => {
+      if (cursorWatchdog) clearTimeout(cursorWatchdog);
+      cursorWatchdog = setTimeout(() => {
+        if (ignoreRef.current) {
+          console.warn("[clickthrough] cursor polling silent for 10s — resetting to interactive");
+          applyIgnore(false);
+        }
+      }, 10_000);
+    };
     listen<{ x: number; y: number }>("global-cursor", (e) => {
+      resetWatchdog();
       const { x: sx, y: sy } = e.payload; // physical screen px
       const origin = windowOriginRef.current;
       const scale = scaleFactorRef.current;
@@ -628,6 +642,7 @@ const transientTimerRef = useRef<number | null>(null);
     return () => {
       unlisten?.();
       unlistenMoved?.();
+      if (cursorWatchdog) clearTimeout(cursorWatchdog);
     };
   }, [applyIgnore, inputVisible, showSettings, isBeingDragged]);
 
