@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface DebugSnapshot {
@@ -78,6 +79,33 @@ export function DebugPanel({ anim, onClose, onQuit }: {
     mood: 0.5, physical_energy: 0.5, social_battery: 0.5, stress: 0.3, loneliness: 0.3,
   });
   const emoInitRef = useRef(false);
+  // Draggable floating panel: default bottom-right (leaves the face visible),
+  // drag the toolbar to reposition. Buttons inside the toolbar still click.
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const drag = useRef<{ dx: number; dy: number; w: number; h: number } | null>(null);
+  const startDrag = (e: ReactMouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    const panel = (e.currentTarget as HTMLElement).parentElement;
+    if (!panel) return;
+    const r = panel.getBoundingClientRect();
+    drag.current = { dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height };
+    e.preventDefault();
+    const move = (ev: MouseEvent) => {
+      const d = drag.current;
+      if (!d) return;
+      setPos({
+        x: Math.max(0, Math.min(ev.clientX - d.dx, window.innerWidth - d.w)),
+        y: Math.max(0, Math.min(ev.clientY - d.dy, window.innerHeight - d.h)),
+      });
+    };
+    const up = () => {
+      drag.current = null;
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
 
   const refresh = useCallback(() => {
     invoke<DebugSnapshot>("get_debug_snapshot")
@@ -115,12 +143,35 @@ export function DebugPanel({ anim, onClose, onQuit }: {
   if (!snapshot) return null;
 
   return (
-    <div className="debug-panel">
-      <div className="debug-toolbar">
+    <div className="debug-panel" style={pos ? { left: pos.x, top: pos.y, right: "auto", bottom: "auto" } : undefined}>
+      <div className="debug-toolbar" onMouseDown={startDrag} title="按住拖动面板">
         <span className="debug-title">Debug</span>
         <span className="debug-hint">F12 / Ctrl+Shift+D 关闭</span>
         <button className="debug-btn" type="button" onClick={onClose}>✕ 关闭面板</button>
         <button className="debug-btn debug-btn-danger" type="button" onClick={() => { onClose(); onQuit(); }}>⏻ 退出桌宠</button>
+      </div>
+
+      <div className="debug-section">
+        <span className="debug-title">Emotion 编辑器（Apply 后即时生效）</span>
+        {EMO_KEYS.map((k) => (
+          <div key={k} className="debug-bar">
+            <label className="debug-slider">
+              <span>{k}</span>
+              <input type="range" min={0} max={1} step={0.05}
+                value={emoDraft[k]}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  setEmoDraft((d) => ({ ...d, [k]: v }));
+                }} />
+              <span>{emoDraft[k].toFixed(2)}</span>
+            </label>
+          </div>
+        ))}
+        <div className="debug-bar">
+          <button className="debug-btn" type="button"
+            onClick={() => mutate(invoke("set_emotion", { edit: emoDraft }))}>Apply emotion</button>
+          {editError && <span className="debug-err"> ⚠ {editError}</span>}
+        </div>
       </div>
 
       <div className="debug-section">
@@ -176,29 +227,6 @@ export function DebugPanel({ anim, onClose, onQuit }: {
         </div>
         <div className="debug-bar">
           <span>Closeness {snapshot.closeness.toFixed(0)}/100 | Trust {snapshot.trust.toFixed(0)} | {snapshot.days_known}d | {snapshot.total_conversations} chats</span>
-        </div>
-      </div>
-
-      <div className="debug-section">
-        <span className="debug-title">Emotion 编辑器（Apply 后即时生效）</span>
-        {EMO_KEYS.map((k) => (
-          <div key={k} className="debug-bar">
-            <label className="debug-slider">
-              <span>{k}</span>
-              <input type="range" min={0} max={1} step={0.05}
-                value={emoDraft[k]}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value);
-                  setEmoDraft((d) => ({ ...d, [k]: v }));
-                }} />
-              <span>{emoDraft[k].toFixed(2)}</span>
-            </label>
-          </div>
-        ))}
-        <div className="debug-bar">
-          <button className="debug-btn" type="button"
-            onClick={() => mutate(invoke("set_emotion", { edit: emoDraft }))}>Apply emotion</button>
-          {editError && <span className="debug-err"> ⚠ {editError}</span>}
         </div>
       </div>
 
