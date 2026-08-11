@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface DebugSnapshot {
@@ -79,33 +78,6 @@ export function DebugPanel({ anim, onClose, onQuit }: {
     mood: 0.5, physical_energy: 0.5, social_battery: 0.5, stress: 0.3, loneliness: 0.3,
   });
   const emoInitRef = useRef(false);
-  // Draggable floating panel: default bottom-right (leaves the face visible),
-  // drag the toolbar to reposition. Buttons inside the toolbar still click.
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
-  const drag = useRef<{ dx: number; dy: number; w: number; h: number } | null>(null);
-  const startDrag = (e: ReactMouseEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
-    const panel = (e.currentTarget as HTMLElement).parentElement;
-    if (!panel) return;
-    const r = panel.getBoundingClientRect();
-    drag.current = { dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height };
-    e.preventDefault();
-    const move = (ev: MouseEvent) => {
-      const d = drag.current;
-      if (!d) return;
-      setPos({
-        x: Math.max(0, Math.min(ev.clientX - d.dx, window.innerWidth - d.w)),
-        y: Math.max(0, Math.min(ev.clientY - d.dy, window.innerHeight - d.h)),
-      });
-    };
-    const up = () => {
-      drag.current = null;
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  };
 
   const refresh = useCallback(() => {
     invoke<DebugSnapshot>("get_debug_snapshot")
@@ -143,10 +115,10 @@ export function DebugPanel({ anim, onClose, onQuit }: {
   if (!snapshot) return null;
 
   return (
-    <div className="debug-panel" style={pos ? { left: pos.x, top: pos.y, right: "auto", bottom: "auto" } : undefined}>
-      <div className="debug-toolbar" onMouseDown={startDrag} title="按住拖动面板">
+    <div className="debug-panel">
+      <div className="debug-toolbar">
         <span className="debug-title">Debug</span>
-        <span className="debug-hint">F12 / Ctrl+Shift+D 关闭</span>
+        <span className="debug-hint">独立窗口 · 标题栏可拖到任意位置 · ✕ 关闭</span>
         <button className="debug-btn" type="button" onClick={onClose}>✕ 关闭面板</button>
         <button className="debug-btn debug-btn-danger" type="button" onClick={() => { onClose(); onQuit(); }}>⏻ 退出桌宠</button>
       </div>

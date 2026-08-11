@@ -1252,6 +1252,35 @@ pub fn open_devtools(app_handle: tauri::AppHandle) {
     }
 }
 
+/// Open the Debug Panel as a separate OS window (F12 / Ctrl+Shift+D). The main
+/// pet window is only 400×760 and transparent, so any in-window debug overlay
+/// covers Liri's body — a standalone window can be dragged anywhere on screen
+/// via its native title bar and never obscures the pet. It reuses index.html
+/// with `?window=debug`; main.tsx branches on that query to render
+/// DebugStandalone instead of App. If already open, just focus it.
+#[tauri::command]
+pub fn open_debug_window(app_handle: tauri::AppHandle) {
+    if let Some(win) = app_handle.get_webview_window("debug") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return;
+    }
+    use tauri::webview::WebviewWindowBuilder;
+    if let Err(e) = WebviewWindowBuilder::new(
+        &app_handle,
+        "debug",
+        tauri::WebviewUrl::App("index.html?window=debug".into()),
+    )
+    .title("DesktopPet · Debug")
+    .inner_size(360.0, 720.0)
+    .min_inner_size(300.0, 400.0)
+    .resizable(true)
+    .build()
+    {
+        log::warn!("[debug-window] failed to build: {}", e);
+    }
+}
+
 /// Quit the whole application. Used by the right-click menu item.
 /// `app.exit(0)` terminates the process deterministically.
 #[tauri::command]

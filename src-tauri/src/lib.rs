@@ -245,6 +245,7 @@ pub fn run() {
            commands::complete_onboarding,
            commands::get_user_profile,
            commands::open_devtools,
+           commands::open_debug_window,
            commands::quit_app,
            commands::hide_to_tray,
         ])

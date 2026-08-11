@@ -9,7 +9,6 @@ import { SpineCanvas } from "./SpineCanvas";
 // Liri (Spine) is the default renderer. Live2D (Haru) stays only as the
 // fallback when the Spine asset fails to load (spineFailed state in App).
 import { SettingsPanel } from "./SettingsPanel";
-import { DebugPanel } from "./DebugPanel";
 import { ContextMenu } from "./ContextMenu";
 import { AnimationFSM, BehaviorState } from "./animation/fsm";
 import { pickNextBehavior } from "./animation/microBehavior";
@@ -92,7 +91,6 @@ const SLEEP_AFTER_IDLE_MS = 10 * 60 * 1000;
   const [moodLabel, setMoodLabel] = useState("平静");
   const [emotionVector, setEmotionVector] = useState<EmotionVector>(DEFAULT_EMOTION);
   const [showSettings, setShowSettings] = useState(false);
-  const [showDebug, setShowDebug] = useState(false);
  const [attention, setAttention] = useState(AttentionState.Ignored);
  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 const [awayMode, setAwayMode] = useState(false);
@@ -445,9 +443,12 @@ const transientTimerRef = useRef<number | null>(null);
      // F12 is the default, but some laptops hijack it (e.g. sleep key), so also
      // accept Ctrl+Shift+D as a reliable alternate to toggle the Debug Panel.
      const k = e.key.toLowerCase();
+     // F12 / Ctrl+Shift+D open the Debug Panel as a separate OS window
+     // (open_debug_window) so it never covers the pet. Idempotent — pressing
+     // again while open just focuses the existing window.
      if (e.key === "F12" || (e.ctrlKey && e.shiftKey && k === "d")) {
        e.preventDefault();
-       setShowDebug((v) => !v);
+       invoke("open_debug_window");
      }
    };
    window.addEventListener("keydown", onKey);
@@ -599,7 +600,7 @@ const transientTimerRef = useRef<number | null>(null);
       const canvas = canvasRectRef.current;
       const mb = modelBoundsRef.current;
       // Force-capture: never ignore when the user needs to interact with the whole window.
-      const forceCapture = inputVisible || showSettings || showDebug || isBeingDragged;
+      const forceCapture = inputVisible || showSettings || isBeingDragged;
       if (forceCapture) {
         applyIgnore(false);
         return;
@@ -628,7 +629,7 @@ const transientTimerRef = useRef<number | null>(null);
       unlisten?.();
       unlistenMoved?.();
     };
-  }, [applyIgnore, inputVisible, showSettings, showDebug, isBeingDragged]);
+  }, [applyIgnore, inputVisible, showSettings, isBeingDragged]);
 
   // P12: Physics + circadian loop (Body layer, independent of LLM)
   useEffect(() => {
@@ -1184,13 +1185,6 @@ const handleBodyClick = useCallback(() => {
       )}
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
-      {showDebug && (
-        <DebugPanel
-          anim={{ state: behavior, history: fsmRef.current?.getHistory() ?? [] }}
-          onClose={() => setShowDebug(false)}
-          onQuit={handleQuit}
-        />
-      )}
     </div>
   );
 }
