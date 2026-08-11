@@ -1134,6 +1134,7 @@ const handleBodyClick = useCallback(() => {
       <SpineCanvas
         speedModifier={circadianRef.current.speedModifier}
         behavior={behavior}
+        emotionVector={emotionVector}
         onHeadClick={handleHeadClick}
         onBodyClick={handleBodyClick}
         onModelBounds={handleModelBounds}
