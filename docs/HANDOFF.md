@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-12（续¹⁸·Debug 窗口死锁修复(async)✅ + Emotion 编辑器动画测试链路诊断/修复/回退——pixi-spine sprite 缓存机制是"表情不动"真根因；当前渲染层回退 366ffc8 眼睛正常，DebugPanel 增强保留）**。上一轮 续¹⁴·Spine driver phase3-A 情绪→半睁眼持续映射——疲惫外显；上轮 续¹³·driver phase1 串行通道+呼吸对齐治跳变；再上 续¹²·Liri 全身显示修两个 release-only bug：① CSP 缺 `worker-src` 致 release 空白（PIXI/pixi-spine 建 `blob:` worker 被阻；dev 自动放宽 CSP 故 dev 隐身，踩坑#7 同类）② pixi-spine `getBounds` 返回 scale=1 缓存 vertices，post-scale centering 把璃推到只露上半身 → 改 scale=1 量 bounds 手动缩放 centering，worldBounds y∈[30,570] 全入画布；CSP 加 `worker-src 'self' blob:`；用户目视确认全身）**。上一轮 续¹¹·补²（Liri 设默认渲染+加载失败回退 Haru，release 绿）。再上 续¹¹·Spine 链路里程碑1（加载+显示+body_breath）。再上一轮 续¹⁰·选择性遗忘多轮消歧义 —— 补遗忘链路两个体验缺口：① 多候选不澄清（「忘掉咖啡」同时命中 fact+episode，旧逻辑直接猜删一个可能删错）② fact/pending 措辞不匹配太硬（char_overlap 字面不重叠，「忘掉早睡的事」匹配不到 fact「想早睡总是熬夜」→ 生硬"不记得"）。`forget_best_match` 改三态 `ForgetOutcome::{Deleted,Declined,Ambiguous}`——≥2 候选**不再删而是反问**；新 `PendingForget` 跨轮 slot（抄 `pacing` Mutex 范式）+ `resolve_candidate`（序数词 第N个/前者/后者/甲乙 + char_overlap≥0.4）+ 90s 超时 + 只重问一次；converse 在 ingest **前**拦第二轮（"第一个"不进 Forget gate→必须 gate 前拦截，#1）→ 解析→`execute_candidate` 删→跳 ingest（二轮不被存为新记忆）；fact/pending 加 `semantic_rerank`（char_overlap top-5 现场 embed+cosine 归一映射 0.7 门，模型不可用退回 char_overlap，#6）。踩坑#4 全程避（只加 enum/字段不改签名；3 harness ConverseCtx 构造点同步 + prompt_quality case 1009 ForgetAck→ForgetAsk + ForgetAsk 启发式）。**lib 293（+6 forget 测）/ check --tests ✅ / release 已 rebuild（17:20）**。→ 待实跑见 D15。详见 §最近一轮 (续¹⁰)。**原 续⁹·记忆卫生层 —— 结构性治理记忆三类易复发缺陷：A 抽取无校验 / B 读路径强化 / C 去重视野。新 `mind/memory_gate.rs`（category 白名单 + 噪声 key/value deny，store 写库前过滤，中文 trivia 靠 key 抓）；`retrieve()` 删 reinforce 副作用 → 纯读 + 新 `reinforce_top`（仅 converse+proactive genuine-recall 调用，零签名变更）；converse known_facts preference-only → `get_all_active(30)`。复盘纠正：原以为 strength 只升不降→**错**，`decay_strength`(0.998/天) 已每日运行，故砍掉新衰减子系统。ADR `docs/decisions/2026-08-09-memory-hygiene-layer.md`（含三次多视角复盘）。**代码 lib 287 + golden 29 passed / 17 测试二进制全编译，commit `7f4af17`**。**一次性数据治理已执行**：expire 10 噪声 facts（知识问答/自我语境/越界类，保留 current_reading+糯米副本）+ 19 非地标 episode strength snap 回 importance（解测试期 rc382/445/446 饱和，排序现按 importance：小猪去世0.8居顶/素数trivia0.1落底），DB 备份 `.bak-hygiene`。**测试全绿**：lib 287 + golden 29 + memory_gate 6 + **闭环2 真实 LLM 验证 ✅ pass**（途中发现并修**续⁸ 既存 bug**：lively 70% 概率早返回跳过到期 pending，`proactive.rs::generate` 加一行守卫 `pending_due.is_empty() &&` 掷 lively 骰 → 到期提醒现确定性触发，70/30 多样性对无 pending 场景保留）。**release 待 rebuild**。详见 §最近一轮 (续⁹)。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70），lively 多样性"先观察"。**
+> 最后更新：**2026-08-12（续¹⁹·Spine 表情架构转向——状态→调动画，代码不碰 attachment✅）。续¹⁸·Debug 窗口死锁修复(async)✅ + Emotion 编辑器动画测试链路诊断/修复/回退——pixi-spine sprite 缓存机制是"表情不动"真根因；当前渲染层回退 366ffc8 眼睛正常，DebugPanel 增强保留）**。上一轮 续¹⁴·Spine driver phase3-A 情绪→半睁眼持续映射——疲惫外显；上轮 续¹³·driver phase1 串行通道+呼吸对齐治跳变；再上 续¹²·Liri 全身显示修两个 release-only bug。详见 §当前任务 + §最近一轮 (续¹⁹)。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70），lively 多样性"先观察"。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -29,9 +29,34 @@
 
 ## §当前任务（接手者先看这）
 
+> **2026-08-12（续¹⁹）更新 · Spine 表情架构转向 —— 状态→调动画，代码绝不碰 attachment ✅ 代码完成（⏳ 待美术资产补 + release rebuild）**。用户反馈"现在的嘴绝对不是呼吸状态的嘴，一直张开"+"smile 动画张大嘴笑幅度比现在大2倍"+"我的动画里做了相关内容，不需要再从骨的状态拆解"。**CDP 深查坐实根因（纯美术资产问题，不是代码 bug）**：
+> - **idle 嘴一直张开** = setup pose 把 `嘴`/`张大笑嘴`/`小笑嘴` 三个 slot 的默认 attachment 全设成显示状态（应是 null）。`张大笑嘴` 被 body_breath 在 t=0 null 救回，但 `嘴` 和 `小笑嘴` 没有任何动画碰它们 → 永远显示 → 叠在 `脸`（含闭合嘴）之上 = 看着张开。
+> - **smile 张大嘴看不见** = smile 动画**只在 deform 里改 `嘴`/`张大笑嘴` 的 mesh 顶点**，**没有任何 slot attachment 时间轴**来 show 这些 attachment。deform 只在 attachment shown 时可见；body_breath 又把 `张大笑嘴` 钉死 null → deform 不可见 → smile 视觉只靠眼睛 slot 切换（笑眯眼）。
+> - 用户美术意图（实跑确认）：idle 只有 `脸`（含闭合嘴）显示；smile 动画里才有 `嘴`/`张大笑嘴` 的 attachment 切换 + deform；`小笑嘴` 暂时不涉及。
+>
+> **架构原则转向（用户钦定）**：**状态/情绪 → 播放对应动画（叠加 track）；动画 timeline 自己管 slot attachment（美术在 Spine 里做）；代码绝不 setAttachment 改 slot**。之前 phase3（emotion→半睁眼）+ phase1 smile 嘴覆盖 + 续¹⁸ forceSyncSlot 都是**错误前提下的产物**（假设 idle slot 要运行时覆盖）——破坏了美术 timeline，导致空眼/双层/嘴常开。
+>
+> **本轮代码改动（已 commit）**：
+> - 删 `spineIntent.ts` 的 `applyEmotionFace`/`fatigueLevel`/FaceState 的 eye/mouth 字段/阈值常量（phase3 emotion 映射全删）；FaceState 只剩 `smileDuration`（串行通道计时用）
+> - 删 `triggerSmile` 的手动 `嘴/张大笑嘴.setAttachment`（phase1 嘴覆盖全删）+ `endSmileMouth`；`endAction` 改空 hook（动画自清 slot）
+> - 删 `SpineCanvas.tsx` 的 `applyEmotionFace` 调用 + 整个 forceSyncSlot 循环（续¹⁸ 渲染热路径逻辑全删）+ `emotionVector` prop + `emoRef`
+> - 删 `App.tsx` 给 `SpineCanvas` 传的 `emotionVector` prop（Live2DCanvas 的保留）
+> - **保留**：串行动作通道 + 呼吸对齐 + 4 个 action 全部纯调动画（playAction 只 setAnimation 不碰 attachment）
+> - `tsc exit0 / vitest 24 ✅ / build ✅`
+>
+> 📋 **待办（下一会话起点）· 美术资产补 + release**：
+> 1. **美术在 Spine 里改两处**（用户做，几分钟）：
+>    - **setup pose**：把 `嘴`、`张大笑嘴`、`小笑嘴` 三个 slot 的默认 attachment 设为 **null**（idle 只有 `脸` 显示）
+>    - **smile 动画加 slot attachment 关键帧**：`嘴` slot（t=0 show `嘴` → t=3.93 null）、`张大笑嘴` slot（t=0 show `张大笑嘴` → t=3.93 null）——让 deform 可见
+> 2. 美术补完 → 用户把更新后的 `liri.json`/`liri.atlas`/`skeleton.png` 拷到 `public/spine/liri/` → dev 验证（idle 嘴闭合 + smile 时大张嘴 + 笑眯眼）
+> 3. **release rebuild**（前端有改动）
+> 4. 后续动画（疲惫半睁眼常驻、害羞、惊讶等）按"状态→叠加 track 调对应动画"模式接，不碰 attachment
+>
+> 详见 §最近一轮 (续¹⁹)。
+
 > **2026-08-12（续¹⁸）更新 · Debug 窗口死锁修复 + Emotion 编辑器动画测试链路（诊断→修复→回退）**：用户"继续修 debug 白屏"+"用面板测试动画看不到效果"。**① 白屏真根因（已修✅）**：`open_debug_window` 是 **sync command 在主线程直接 build()** → build() 等 WebView2 回调但主线程消息循环被阻塞 → **死锁**（日志证据：build 前日志出现、build 后无输出、所有 invoke 全挂起）。修：**改 async command**（tokio 线程执行 build，主线程保持消息循环）→ 用户确认 F12 窗口正常 ✅。**② 表情不动根因（pixi-spine 渲染机制，已定位）**：pixi-spine 渲染走**缓存显示对象** `slot.currentSprite/currentMesh`，**只在 Spine.update() 内按 `slot.getAttachment()` 同步**——`setAttachment()` 只改数据不更新渲染 → 下一帧 update() 又把 sprite 同步回动画值 → 视觉永不变。修复 `forceSyncSlot`（复制 update() 的 region/mesh 分支）后**三态生效**（dev 截图+视觉模型验证：normal 睁眼 / tired 半睁 / happy 笑眯+微笑嘴）。**踩坑记录**：① region 分支 sprite 缓存 key 是 **`attachment.name`**（非 id——mesh 分支才用 id）② region 无 `computeWorldVerticesOld` 方法（多余调用报错，删）。**③ 用户反馈双层图层+启动即眯眼 → 已回退**：显示半睁眼时未隐藏默认眼（互斥缺失→双层叠加）+ 默认 fatigue 0.55>阈值 0.5（启动即半睁）。**当前状态：渲染层 `git checkout` 回退 366ffc8（眼睛正常），DebugPanel 增强保留**。详见 §最近一轮 (续¹⁸)。
 
-> 📋 **待办（下一会话起点）· 重新实现表情映射（3 个修复点已定位）**：① **互斥**：半睁眼/笑眯眼显示时**同时隐藏默认眼**（左眼/右眼 setAttachment null，恢复时还原）——治双层图层；② **阈值 0.5→0.65**（默认 fatigue 0.55 不触发，energy≤0.15 才半睁）——治启动即眯眼；③ **forceSyncSlot 用 name key**（已验证生效）。全部 try/catch 包裹（防透明，已验证）。改完 dev 截图三态验证 → release。**DebugPanel 本次增强（保留）**：Face State 分区（后端 snapshot 本地计算 fatigue/halfOpen/smiling，**不跨窗口 emit**——跨窗口事件是透明事故嫌疑）+ 滑块拖动即时生效（250ms 节流自动 Apply）+ EmotionEdit 后端加 rest_need 字段 + 滑块加 rest_need。
+> 📋 ~~**待办（下一会话起点）· 重新实现表情映射（3 个修复点已定位）**~~ **（续¹⁹ 已废弃——架构转向，不再用运行时 attachment 覆盖）**：原计划的 ① 互斥隐藏默认眼 ② 阈值 0.5→0.65 ③ forceSyncSlot name key 全部基于"运行时覆盖 slot"的错误前提，续¹⁹ 已彻底删掉这套机制，改由美术在 timeline 里做。**DebugPanel 本次增强（保留）**：Face State 分区（后端 snapshot 本地计算 fatigue/halfOpen/smiling，**不跨窗口 emit**——跨窗口事件是透明事故嫌疑）+ 滑块拖动即时生效（250ms 节流自动 Apply）+ EmotionEdit 后端加 rest_need 字段 + 滑块加 rest_need。
 
 > **2026-08-11（续¹⁵）Debug Panel 独立 OS 窗口 —— ⚠️ 代码+release 已成 / 实跑白屏（用户明示暂不修，留 follow-up）**。续¹⁴·补 的内嵌可拖浮窗(300px)仍挡 Liri 下半身——根因：主窗 400×760 透明，`position:fixed` 被窗口边界裁剪、拖到哪都重叠。唯一彻底解=独立 Tauri 第二窗口。落地 8 处：①`commands.rs::open_debug_window`(WebviewWindowBuilder label=debug，已存在则 show+focus；360×720 resizable) ②`lib.rs` invoke_handler 注册 ③`capabilities/default.json` windows `["main"]`→`["main","debug"]`(授权 debug 窗 invoke) ④`main.tsx` 按 `?window=debug` 分支渲染 `DebugStandalone` ⑤新 `DebugStandalone.tsx`(onClose=关 debug 窗/onQuit=quit_app/anim 占位) ⑥`App.tsx` F12/Ctrl+Shift+D→`invoke("open_debug_window")`+删 showDebug 全家(state/import/forceCapture/内嵌渲染) ⑦`DebugPanel.tsx` 删自绘拖拽全套 ⑧`styles.css` `.debug-panel` 还原全屏(`fixed inset:0`)+`.debug-toolbar` 删 `cursor:move`。AnimFSM 分区主窗独占(前端 state 不跨窗)，余照常轮询后端。**cargo check 34.44s ✅ / tauri build --no-bundle 52.98s ✅ / commit 7f5e912 + push(6dcbe90..7f5e912)**。**⚠️ 实跑白屏**：F12 弹独立窗但内容全白。疑似 `WebviewUrl::App("index.html?window=debug")` query 未被保留→main.tsx 分支没命中(或 DebugStandalone 渲染了但 `if(!snapshot)return null` 因 invoke 失败永空)。修复方向：改 `getCurrentWindow().label==="debug"` 判据 + WebviewUrl 纯 `index.html`。详见 §最近一轮 (续¹⁵)。
 
@@ -169,6 +194,63 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-12 续¹⁹)：Spine 表情架构转向 —— 状态→调动画，代码不碰 attachment
+
+**任务**：续¹⁸ 留的"重新实现表情映射（互斥隐藏默认眼 + 阈值 0.65 + forceSyncSlot name key）"待办。我按计划做完 + dev 三态截图验证，**用户实跑反馈推翻前提**，最终架构转向。
+
+### 第一阶段：按续¹⁸ 待办实现（后废弃）
+
+按 3 修复点做：`spineIntent.ts` 加 `eyeLSlot/RSlot` + 默认眼 attachment（互斥用）+ 阈值 0.5→0.65；`applyEmotionFace` 改返回 `changedSlots`；`SpineCanvas.tsx` 在 update 后 forceSyncSlot 循环（复制 pixi-spine update() 的 region 分支：sprite 缓存 key=attachment.name、createSprite/addChild/setSpriteRegion）。踩坑 `setSpriteRegion` 是 TS private，用 `(spine as any)` 绕过。`tsc/vitest 24/build` 全绿。
+
+### 第二阶段：dev CDP 三态验证（推翻前提）
+
+通过 `__TAURI_INTERNALS__.invoke('set_emotion', {edit:{...}})` 注入情绪（Tauri v2 dev 无 `__TAURI__` 全局，但 `__TAURI_INTERNALS__.invoke(cmd, payload)` 可用，9ms 返回；signature 是 `invoke(cmd, payload={})` 非 args）。三态截图（normal energy0.6 / tired energy0.1+rest_need0.8 fatigue1.02 / restored），用户目视 + GLM 视觉模型确认 normal 完全睁眼 ✓、tired 半闭眯眼 ✓。
+
+**但用户反馈两个新问题，推翻 phase3 整套前提**：
+1. **"现在的嘴绝对不是呼吸状态的嘴，一直张开"** —— 呼吸态嘴应是闭合线。
+2. **"smile 动画张大嘴笑幅度比现在大2倍，通过 mesh 实现的"** —— 当前幅度不够。
+
+### 第三阶段：CDP 深查根因（纯美术资产问题）
+
+加临时 dev-only `window.__spineDiag = spine`（验证完删）暴露 spine 实例，CDP 读 slot attachment：
+- **idle 状态**：`嘴`→`嘴`(显示)、`小笑嘴`→`小笑嘴`(显示)、`张大笑嘴`→`NULL`(body_breath 救了)、`左眼/右眼`→正常。
+- **force smile**（`state.setAnimation(5,'smile')`）：`张大笑嘴`→`NULL`、`嘴`→`嘴`、`小笑嘴`→`小笑嘴`。
+
+**结合 node 解析 liri.json 坐实**：
+- **setup pose**：`嘴`/`张大笑嘴`/`小笑嘴` 三个 slot 默认 attachment 都设成显示（应 null）。`张大笑嘴` 被 body_breath t=0 null 救回，但 `嘴` 和 `小笑嘴` 没有任何动画碰 → 永远显示 → 叠在 `脸`（含闭合嘴）之上 = 看着张开。
+- **smile 动画结构**：`slots` 部分**只切眼睛**（左笑眯眼/右笑眯眼/左半笑眼/右半笑眼/左眼/右眼），**完全不碰 `嘴`/`张大笑嘴`/`小笑嘴` 的 attachment**；deform 部分改 `嘴`+`张大笑嘴` mesh 顶点（42 顶点大幅形变 0-0.4s + 半张保持 + 3.33-3.93s 恢复）。但 deform 只在 attachment shown 时可见 → body_breath 钉死 `张大笑嘴` null → smile 期间张大嘴 deform 不可见 → 视觉只看到眼睛笑眯眼。
+- 用户美术意图（实跑确认）：idle 只有 `脸`（含闭合嘴）显示；smile 才有嘴部变化；`小笑嘴` 暂不涉及。
+
+### 第四阶段：架构原则转向（用户钦定）+ 代码清理
+
+用户："我的动画里面做了相关的内容，不需要再去从骨的状态拆解" + "后续会补充更多动画，现在只是对已经做好的基础部分进行测试。后续只需要相应状态可叠加的调用相应的动画即可。现在的任务是特定动作或特定设定能精准调动合适的动画。还没做动画的部分一律先不用管"。
+
+**新原则**：**状态/情绪 → 播放对应动画（叠加 track）；动画 timeline 自己管 slot attachment；代码绝不 setAttachment 改 slot**。
+
+**代码清理（删掉所有错误前提产物）**：
+- `spineIntent.ts`：删 `applyEmotionFace`/`fatigueLevel`/FaceState 的 eye/mouth 字段/阈值常量/EmotionVector import；`triggerSmile` 删手动 `嘴/张大笑嘴.setAttachment`；`endSmileMouth` 删；`endAction` 改空 hook；FaceState 只剩 `smileDuration`（计时用）；initFace 只 findAnimation 拿 duration。
+- `SpineCanvas.tsx`：删 `applyEmotionFace` 调用 + forceSyncSlot 循环 + `emotionVector` prop + `emoRef` + 临时 `__spineDiag`；updateFn 回到 phase1 纯调动画形态。
+- `App.tsx`：删给 `SpineCanvas` 传的 `emotionVector` prop（Live2DCanvas 的保留）。
+- **保留**：串行动作通道 + 呼吸对齐 + 4 个 action 全部纯调动画（playAction 只 setAnimation 不碰 attachment）+ setupMix/setupIdleTracks/triggerBehavior(Embarrassed→wink)。
+- `tsc exit0 / vitest 24 ✅ / build 3.28s`。
+
+### 验证
+
+- 静态全绿。
+- **运行时验证（待美术补资产）**：dev 看到 idle 嘴闭合、smile 张大嘴 + 笑眯眼 —— 都依赖美术在 Spine 里改 setup pose + smile slot 关键帧。代码侧已干净，等资产到位。
+
+### 待美术资产补（下一会话起点见 §当前任务）
+
+1. **setup pose**：`嘴`、`张大笑嘴`、`小笑嘴` slot 默认 attachment 设 null。
+2. **smile 动画 slot 关键帧**：`嘴`/`张大笑嘴` t=0 show → t=3.93 null。
+3. 拷贝更新后的 `liri.json`/`liri.atlas`/`skeleton.png` 到 `public/spine/liri/` → dev 验证 → release rebuild。
+
+### 架构契合
+
+#1（表情映射纯前端规则，但前提错了——改为纯美术 timeline）/ #5（mind-body 解耦：intent→anim，不直接操控 slot）/ #6（graceful degrade：FaceState 缺 slot 只降级 smileDuration 计时）/ #10（情绪→表情外显：通过播放对应动画实现，未来补动画即可接）/ 踩坑新增（写入避免重复踩）：**setup pose 默认显示的 slot 会永显，必须有动画 null 它才会隐藏；deform 只在 attachment shown 时可见；Tauri v2 dev 无 `__TAURI__` 全局，用 `__TAURI_INTERNALS__.invoke(cmd, payload)`；pixi-spine setSpriteRegion 是 TS private，运行时可用 `(spine as any)`；改渲染层任何代码前先确认前提（运行时覆盖 slot vs 调动画）——phase3 整套建立在"美术没做 timeline 才需要运行时覆盖"的假设上，但实际美术做了 deform 只是漏了 attachment show 关键帧，应美术补而非代码补**。
 
 ---
 

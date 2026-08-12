@@ -1,8 +1,7 @@
 import { useEffect, useRef } from "react";
 import { BehaviorState } from "./animation/fsm";
-import { setupMix, setupIdleTracks, triggerBehavior, initFace, playAction, actionDuration, beginFadeOut, endAction, nextBlinkDelay, nextSmileDelay, nextSpineDelay, IDLE_FADE, fatigueLevel, applyEmotionFace } from "./animation/spineIntent";
+import { setupMix, setupIdleTracks, triggerBehavior, initFace, playAction, actionDuration, beginFadeOut, endAction, nextBlinkDelay, nextSmileDelay, nextSpineDelay, IDLE_FADE } from "./animation/spineIntent";
 import type { ActionKind } from "./animation/spineIntent";
-import type { EmotionVector } from "./animation/emotionDriver";
 
 // Spine (3.8) + PixiJS rendering layer for Liri. Replaces the Live2DCanvas
 // placeholder once verified.
@@ -33,8 +32,6 @@ export interface SpineCanvasProps {
   speedModifier: number;
   // FSM BehaviorState → drives the expression track (blink/wink on change).
   behavior: BehaviorState;
-  // Continuous emotion vector → drives half-open eye slots (fatigue). Phase 3.
-  emotionVector: EmotionVector;
   onHeadClick: () => void;
   onBodyClick: () => void;
   // Loose bounding rect for gaze/click-through (mirrors Live2DCanvas semantics).
@@ -46,7 +43,7 @@ export interface SpineCanvasProps {
   onLoadError?: () => void;
 }
 
-export function SpineCanvas({ speedModifier, behavior, emotionVector, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onLoadError }: SpineCanvasProps) {
+export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onLoadError }: SpineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const spineRef = useRef<any>(null);
@@ -57,8 +54,6 @@ export function SpineCanvas({ speedModifier, behavior, emotionVector, onHeadClic
   speedRef.current = speedModifier;
   const behaviorRef = useRef(behavior);
   behaviorRef.current = behavior;
-  const emoRef = useRef(emotionVector);
-  emoRef.current = emotionVector;
   const lastBehaviorRef = useRef<BehaviorState | null>(null);
 
   useEffect(() => {
@@ -146,16 +141,25 @@ export function SpineCanvas({ speedModifier, behavior, emotionVector, onHeadClic
             width: w * (1 - 2 * INSET),
             height: h * (1 - 2 * INSET),
           });
-          const PAD = 0.40;
-          const TOP_BIAS = 0.15;
+          // Loose bounds drive click-through (transparent regions forward clicks
+          // to the desktop). User: "人物本体 + 小圈可交互,其余穿透". PAD=0.10
+          // gives a small 10% margin around the model so the edges are still
+          // draggable but blank area passes through. (Was 0.40, which made the
+          // hit rect cover most of the 400×600 canvas → clicks on blank area
+          // never reached the desktop.) TOP_BIAS=0.05 keeps a little headroom.
+          const PAD = 0.10;
+          const TOP_BIAS = 0.05;
           onModelBounds?.({
             x: b.x - w * PAD,
             y: b.y - h * PAD - h * TOP_BIAS,
             width: w * (1 + 2 * PAD),
             height: h * (1 + 2 * PAD) + h * TOP_BIAS,
           });
-        } catch {
+        } catch (e) {
           // getBounds unavailable -- App keeps fully interactive (safe default).
+          // Log so a silent throw (the click-through "never reports bounds"
+          // failure mode) is visible instead of swallowed.
+          console.warn("[Spine] bounds report failed", e);
         }
 
         // Drive the skeleton ourselves (autoUpdate is off). Two clocks:
@@ -209,11 +213,6 @@ export function SpineCanvas({ speedModifier, behavior, emotionVector, onHeadClic
           const dt = app.ticker.deltaMS / 1000;
           const wall = app.ticker.elapsedMS / 1000;
           spine.update(dt);
-          // Phase 3: continuous emotion → half-open eye slots, AFTER update() so
-          // we override the idles' slot timelines this frame. Suppressed while a
-          // blink/smile one-shot owns the expr track (they switch eyes themselves).
-          const suppressed = busy && (busyKind === "blink" || busyKind === "smile");
-          applyEmotionFace(face, fatigueLevel(emoRef.current), suppressed);
           if (busy) {
             busyRem -= wall;
             if (!faded && busyRem <= IDLE_FADE) {

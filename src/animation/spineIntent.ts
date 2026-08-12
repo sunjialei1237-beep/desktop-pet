@@ -7,7 +7,6 @@
 // skeleton_structure.md.
 
 import { BehaviorState } from "./fsm";
-import type { EmotionVector } from "./emotionDriver";
 
 // Track layout. body_breath (track0) is the ONLY continuously-looping track
 // (base life). ear/tail idle fire as ONE-SHOT events on their own tracks and
@@ -68,90 +67,23 @@ export function triggerBehavior(spine: any, behavior: BehaviorState) {
   }
 }
 
-// ── Face (smile mouth-slot override + emotion eye slots) ──
-// smile.json keys only EYE slots (笑眯眼) — the mouth is never touched, so the
-// smile animation alone leaves the default mouth on. We manually swap 嘴→hidden
-// and 小笑嘴→shown for the smile's duration. initFace also captures the
-// half-open eye slots (半睁眼左/右) used by the continuous emotion→face map
-// (Phase 3, Architecture Principle #10): fatigue (low energy / high rest_need)
-// shows them so a tired Liri actually looks tired.
+// ── Face: smile duration only ──
+// ARCHITECTURE (user directive): 状态/情绪 → 播放对应动画；动画 timeline 自己
+// 管 slot attachment（美术在 Spine 里做）。代码绝不 setAttachment 改 slot——之前
+// 试过运行时手动切嘴/眼，破坏了美术 timeline，导致空眼/双层。FaceState 现在只
+// 保留 smile 动画的时长（用于串行通道的 busy 计时），不再捕获任何 slot 引用。
 export interface FaceState {
-  mouthSlot: any;
-  smileMouthSlot: any;
-  defaultMouthAtt: any;
-  smileMouthAtt: any;
   smileDuration: number;
-  // Phase 3 emotion eyes (nullable: missing 半睁眼 slot → emotion eyes no-op,
-  // smile mouth still works — Architecture Principle #6 graceful degrade).
-  halfEyeLSlot: any;
-  halfEyeRSlot: any;
-  halfEyeLAtt: any;
-  halfEyeRAtt: any;
 }
 
 export function initFace(spine: any): FaceState | null {
   try {
     const sk = spine.skeleton;
-    const mouthSlot = sk.findSlot("嘴");
-    const smileMouthSlot = sk.findSlot("小笑嘴");
-    if (!mouthSlot || !smileMouthSlot) return null;
-    const smileMouthAtt = sk.getAttachmentByName("小笑嘴", "小笑嘴");
     const smileAnim = sk.data.findAnimation("smile");
-
-    // Half-open eye slots for the fatigue map. Captured independently so a
-    // missing/renamed 半睁眼 slot disables only emotion eyes, not the smile.
-    let halfEyeLSlot = null, halfEyeRSlot = null;
-    let halfEyeLAtt = null, halfEyeRAtt = null;
-    try {
-      halfEyeLSlot = sk.findSlot("半睁眼左");
-      halfEyeRSlot = sk.findSlot("半睁眼右");
-      if (halfEyeLSlot) halfEyeLAtt = sk.getAttachmentByName("半睁眼左", "半睁眼左");
-      if (halfEyeRSlot) halfEyeRAtt = sk.getAttachmentByName("半睁眼右", "半睁眼右");
-    } catch {
-      // half-open slots unavailable — emotion eyes stay no-op.
-    }
-
-    return {
-      mouthSlot,
-      smileMouthSlot,
-      defaultMouthAtt: mouthSlot.attachment,
-      smileMouthAtt,
-      smileDuration: smileAnim ? smileAnim.duration : 1.5,
-      halfEyeLSlot, halfEyeRSlot, halfEyeLAtt, halfEyeRAtt,
-    };
+    return { smileDuration: smileAnim ? smileAnim.duration : 1.5 };
   } catch {
     return null;
   }
-}
-
-// ── Continuous emotion → face (Phase 3, Principle #10) ──
-// Fatigue mirrors emotionDriver's Live2D eye formula (low physical_energy +
-// high rest_need droops the lids). Discrete Spine version: fatigue above
-// HALF_EYE_THRESHOLD shows the 半睁眼 slots. Called every frame AFTER
-// spine.update() by SpineCanvas so it overrides the animations' slot timelines
-// for this frame (most idles key 半睁眼 = hidden). Suppressed while a blink or
-// smile one-shot owns the expr track — blink switches 半睁眼/闭眼 itself, and we
-// don't want half-open lids stacked under a smiling eye.
-const EYE_FATIGUE_AT_ENERGY = 0.6;
-const EYE_FATIGUE_GAIN = 1.4;
-const EYE_REST_GAIN = 0.4;
-const HALF_EYE_THRESHOLD = 0.5;
-
-/// Fatigue 0..~1.2 from the emotion vector (mirrors emotionDriver eye formula).
-export function fatigueLevel(e: EmotionVector): number {
-  return (
-    Math.max(0, EYE_FATIGUE_AT_ENERGY - e.physical_energy) * EYE_FATIGUE_GAIN +
-    e.rest_need * EYE_REST_GAIN
-  );
-}
-
-/// Show/hide the half-open eye slots for this frame. Caller passes `suppressed`
-/// = a blink/smile one-shot currently owns the expr track.
-export function applyEmotionFace(face: FaceState | null, fatigue: number, suppressed: boolean) {
-  if (!face) return;
-  const show = !suppressed && fatigue > HALF_EYE_THRESHOLD;
-  if (face.halfEyeLSlot) face.halfEyeLSlot.setAttachment(show ? face.halfEyeLAtt : null);
-  if (face.halfEyeRSlot) face.halfEyeRSlot.setAttachment(show ? face.halfEyeRAtt : null);
 }
 
 // ── Single serial action channel ──
@@ -167,26 +99,17 @@ function playTail(spine: any) {
 function triggerBlink(spine: any) {
   spine.state.setAnimation(TRACK.expr, "blink", false);
 }
-function triggerSmile(spine: any, face: FaceState | null) {
+function triggerSmile(spine: any) {
   spine.state.setAnimation(TRACK.expr, "smile", false);
-  if (face) {
-    face.mouthSlot.setAttachment(null);
-    face.smileMouthSlot.setAttachment(face.smileMouthAtt);
-  }
-}
-function endSmileMouth(face: FaceState | null) {
-  if (!face) return;
-  face.mouthSlot.setAttachment(face.defaultMouthAtt);
-  face.smileMouthSlot.setAttachment(null);
 }
 
 /// Start a one-shot action on its track.
-export function playAction(spine: any, kind: ActionKind, face: FaceState | null) {
+export function playAction(spine: any, kind: ActionKind, _face: FaceState | null) {
   switch (kind) {
     case "ear": playEar(spine); break;
     case "tail": playTail(spine); break;
     case "blink": triggerBlink(spine); break;
-    case "smile": triggerSmile(spine, face); break;
+    case "smile": triggerSmile(spine); break;
   }
 }
 
@@ -208,9 +131,11 @@ export function beginFadeOut(spine: any, kind: ActionKind) {
   else if (kind === "tail") spine.state.setEmptyAnimation(TRACK.tail, IDLE_FADE);
 }
 
-/// End-of-action cleanup (smile: turn the mouth override off).
-export function endAction(kind: ActionKind, face: FaceState | null) {
-  if (kind === "smile") endSmileMouth(face);
+/// End-of-action cleanup. smile's mouth slot is owned by the animation timeline
+/// (artist keys 嘴/张大笑嘴 attachment in the smile anim), so there is nothing
+/// for code to restore — kept as a hook in case a future anim needs it.
+export function endAction(_kind: ActionKind, _face: FaceState | null) {
+  // intentionally empty: animations own their slot cleanup now
 }
 
 // ── Random intervals (seconds, wall-clock) ──
