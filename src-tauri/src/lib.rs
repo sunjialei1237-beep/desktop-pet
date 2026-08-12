@@ -114,6 +114,7 @@ pub fn run() {
             last_decision: std::sync::Mutex::new(None),
             last_proactive_bubble: std::sync::Mutex::new(None),
             pending_forget: std::sync::Mutex::new(None),
+            clickthrough_diag: std::sync::Mutex::new(None),
         })
         .manage(db_state)
         .setup(|app| {
@@ -233,6 +234,8 @@ pub fn run() {
             commands::get_llm_config,
             commands::update_llm_config,
             commands::get_debug_snapshot,
+            commands::set_clickthrough_diag,
+            commands::get_clickthrough_diag,
             commands::get_scheduler_stats,
             commands::forget_fact,
             commands::delete_episode,

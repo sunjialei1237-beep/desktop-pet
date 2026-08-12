@@ -170,10 +170,12 @@ export function Live2DCanvas({ emotionVector, behavior, attention, pointerRef, i
             width: w * (1 - 2 * INSET),
             height: h * (1 - 2 * INSET),
           });
-          // Loose (40% padding + 15% top bias): gaze/click-through, keeps
-          // head-above and feet inside so vision isn't yanked to center.
-          const PAD = 0.40;
-          const TOP_BIAS = 0.15;
+          // Loose bounds drive click-through. User: "人物本体 + 小圈". PAD=0.10
+          // (was 0.40 — that made the hit rect cover most of the canvas and
+          // blank-area clicks never reached the desktop). Keep in sync with
+          // SpineCanvas.tsx. TOP_BIAS=0.05 keeps a little headroom.
+          const PAD = 0.10;
+          const TOP_BIAS = 0.05;
           onModelBounds?.({
             x: b.x - w * PAD,
             y: b.y - h * PAD - h * TOP_BIAS,

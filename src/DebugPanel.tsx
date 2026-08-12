@@ -60,6 +60,33 @@ interface JobStat {
   last_message: string | null;
 }
 
+// Click-through diagnostics written by the main window's frontend and relayed
+// through the backend (set/get_clickthrough_diag) — the Debug Panel lives in a
+// separate OS window, so it can't share React state with App. Mirrors the
+// 续¹⁸ Face State "backend-relay" pattern. Used to diagnose transparent-window
+// click-through failures ("人物周围空白区域挡住桌面").
+interface ClickthroughDiag {
+  has_origin: boolean;
+  has_scale: boolean;
+  has_canvas: boolean;
+  has_bounds: boolean;
+  sx: number;
+  sy: number;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  inside: boolean;
+  ignore: boolean;
+  bounds_x: number;
+  bounds_y: number;
+  bounds_w: number;
+  bounds_h: number;
+  origin_x: number;
+  origin_y: number;
+  scale: number;
+}
+
 const EMO_KEYS = ["mood", "physical_energy", "social_battery", "stress", "loneliness", "rest_need"] as const;
 type EmoKey = (typeof EMO_KEYS)[number];
 type EmoDraft = Record<EmoKey, number>;
@@ -71,6 +98,7 @@ export function DebugPanel({ anim, onClose, onQuit }: {
 }) {
   const [snapshot, setSnapshot] = useState<DebugSnapshot | null>(null);
   const [jobs, setJobs] = useState<JobStat[]>([]);
+  const [clickthrough, setClickthrough] = useState<ClickthroughDiag | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   // Debounce timer for drag-to-apply (sliders apply live, 250ms settle).
   const applyTimerRef = useRef<number | null>(null);
@@ -100,6 +128,7 @@ export function DebugPanel({ anim, onClose, onQuit }: {
       })
       .catch(() => {});
     invoke<JobStat[]>("get_scheduler_stats").then(setJobs).catch(() => {});
+    invoke<ClickthroughDiag | null>("get_clickthrough_diag").then(setClickthrough).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -184,6 +213,59 @@ export function DebugPanel({ anim, onClose, onQuit }: {
               </div>
               <div className="debug-bar">
                 <span className="debug-hint">拖滑块后这里应实时切换 → 确认情绪→表情映射链路在工作</span>
+              </div>
+            </>
+          );
+        })()}
+      </div>
+
+      <div className="debug-section">
+        <span className="debug-title">点击穿透（Click-through）</span>
+        <span className="debug-hint">把鼠标停在①脸上②人物边缘③远处空白，看 inside/ignore 判定</span>
+        {(() => {
+          const d = clickthrough;
+          if (!d) {
+            return <div className="debug-bar"><span className="debug-hint">等待 global-cursor 事件…（主窗口鼠标移动后 ~200ms 出现）</span></div>;
+          }
+          const geo = d.has_origin && d.has_scale && d.has_canvas && d.has_bounds;
+          return (
+            <>
+              <div className="debug-bar">
+                <span>几何就绪:{" "}
+                  origin <strong className={d.has_origin ? "debug-on" : ""}>{d.has_origin ? "✓" : "✗"}</strong>{" | "}
+                  scale <strong className={d.has_scale ? "debug-on" : ""}>{d.has_scale ? "✓" : "✗"}</strong>{" | "}
+                  canvas <strong className={d.has_canvas ? "debug-on" : ""}>{d.has_canvas ? "✓" : "✗"}</strong>{" | "}
+                  bounds <strong className={d.has_bounds ? "debug-on" : ""}>{d.has_bounds ? "✓" : "✗"}</strong>
+                </span>
+              </div>
+              {!geo && (
+                <div className="debug-bar">
+                  <span className="debug-hint">⚠ 几何缺失 → listener 走 safe default，窗口永不穿透。bounds ✗ = canvas 没上报 onModelBounds（看主窗口 console 有无「[clickthrough] modelBounds reported」）</span>
+                </div>
+              )}
+              <div className="debug-bar">
+                <span>鼠标(屏幕物理px): <strong>({d.sx}, {d.sy})</strong></span>
+              </div>
+              <div className="debug-bar">
+                <span>模型屏幕矩形: L{d.left.toFixed(0)} T{d.top.toFixed(0)} R{d.right.toFixed(0)} B{d.bottom.toFixed(0)}{" "}
+                  → <strong>{(d.right - d.left).toFixed(0)}×{(d.bottom - d.top).toFixed(0)}</strong>
+                </span>
+              </div>
+              <div className="debug-bar">
+                <span>
+                  inside <strong className={d.inside ? "debug-on" : ""}>{d.inside ? "✓ 在模型内" : "✗ 在模型外"}</strong>
+                  {" | "}
+                  ignore <strong className={d.ignore ? "debug-on" : ""}>{d.ignore ? "▶ 穿透中" : "不穿透(接收事件)"}</strong>
+                </span>
+              </div>
+              <div className="debug-bar">
+                <span className="debug-hint">
+                  bounds(canvas-local): x{d.bounds_x.toFixed(0)} y{d.bounds_y.toFixed(0)} w{d.bounds_w.toFixed(0)} h{d.bounds_h.toFixed(0)}
+                  {" | "}origin: ({d.origin_x}, {d.origin_y}) scale {d.scale.toFixed(2)}
+                </span>
+              </div>
+              <div className="debug-bar">
+                <span className="debug-hint">诊断：inside 永远 ✓ → bounds 太大(当前 PAD=0.40 外扩)；鼠标在空白处 inside 应为 ✗ → ignore 应为 ▶ 穿透</span>
               </div>
             </>
           );

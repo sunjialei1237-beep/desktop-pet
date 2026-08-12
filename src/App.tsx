@@ -173,6 +173,20 @@ const transientTimerRef = useRef<number | null>(null);
   const modelBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
   const modelHitBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
   const canvasRectRef = useRef<{ left: number; top: number } | null>(null);
+  // Click-through diagnostics (Architecture #11 observability). Mirrored to
+  // the backend (set_clickthrough_diag, throttled ~200ms) so the Debug Panel's
+  // separate OS window can read them via get_clickthrough_diag. DebugStandalone
+  // can't share React state with App — the backend Mutex is the bridge (续¹⁸
+  // Face State "backend-relay" pattern).
+  const clickthroughDiagRef = useRef<{
+    has_origin: boolean; has_scale: boolean; has_canvas: boolean; has_bounds: boolean;
+    sx: number; sy: number;
+    left: number; top: number; right: number; bottom: number;
+    inside: boolean; ignore: boolean;
+    bounds_x: number; bounds_y: number; bounds_w: number; bounds_h: number;
+    origin_x: number; origin_y: number; scale: number;
+  } | null>(null);
+  const lastDiagPushRef = useRef(0); // performance.now() of last backend push (throttle)
 
   if (!fsmRef.current) {
     fsmRef.current = new AnimationFSM();
@@ -209,6 +223,11 @@ const transientTimerRef = useRef<number | null>(null);
       const r = el.getBoundingClientRect();
       canvasRectRef.current = { left: r.left, top: r.top };
     }
+    // Diagnostic: confirms the canvas reported bounds (if this never logs,
+    // modelBoundsRef stays null → the listener's safe default keeps the window
+    // fully interactive forever = "blank area never click-through"). Covers
+    // the SpineCanvas getBounds(true) throw case.
+    console.log("[clickthrough] modelBounds reported", b);
   }, []);
 
   // Receive the tight model bounds (10% inset) from Live2DCanvas; stored for
@@ -552,6 +571,12 @@ const transientTimerRef = useRef<number | null>(null);
   // setIgnoreCursorEvents. Forces capture (ignore=false) when input/settings/drag are active.
   useEffect(() => {
     const win = getCurrentWindow();
+    // cancelled guards the async listen()/onMoved() promises against StrictMode
+    // (dev) double-mount and dep-array rebuilds: the first mount's listen()
+    // Promise can resolve AFTER cleanup ran, leaking a duplicate listener that
+    // fires on every cursor event. Mirrors the bubble listener's pattern
+    // (App.tsx ~302-306). Late-resolving unlisten self-cancels instead.
+    let cancelled = false;
     const refreshOrigin = async () => {
       try {
         const p = await win.outerPosition();
@@ -561,6 +586,12 @@ const transientTimerRef = useRef<number | null>(null);
       } catch { /* leave nulls; safe default keeps window interactive */ }
     };
     refreshOrigin();
+    // Pin the window's ignore state to a known value on mount. Tauri's default
+    // is false, but applyIgnore's dedup (`if (ignoreRef.current === desired)
+    // return`) means the first desired=false would skip the IPC entirely —
+    // leaving the window state relying on the (undocumented) Tauri default.
+    // An explicit set pins it to known-good and removes that implicit coupling.
+    win.setIgnoreCursorEvents(false).catch(() => {});
     let unlistenMoved: UnlistenFn | undefined;
     // B2 (P12.1): native startDragging swallows webview mouse events entirely
     // (verified: no mouseup ever reaches the page), so drag-end is detected
@@ -590,7 +621,7 @@ const transientTimerRef = useRef<number | null>(null);
         lastOriginRefreshRef.current = now;
         void refreshOrigin();
       }
-    }).then((u) => { unlistenMoved = u; }).catch(() => {});
+    }).then((u) => { if (!cancelled) unlistenMoved = u; else u(); }).catch(() => {});
 
     let unlisten: UnlistenFn | undefined;
     // Watchdog: if the global-cursor polling thread stalls (rare but would
@@ -615,6 +646,32 @@ const transientTimerRef = useRef<number | null>(null);
       const mb = modelBoundsRef.current;
       // Force-capture: never ignore when the user needs to interact with the whole window.
       const forceCapture = inputVisible || showSettings || isBeingDragged;
+      // Geometry for the diagnostics snapshot (computed in every branch so the
+      // Debug Panel sees what the listener sees, even when forceCapture / null
+      // geometry short-circuit before the rect math).
+      let left = 0, top = 0, right = 0, bottom = 0, inside = false;
+      if (origin && scale && canvas && mb) {
+        left = origin.x + (canvas.left + mb.x) * scale;
+        top = origin.y + (canvas.top + mb.y) * scale;
+        right = left + mb.width * scale;
+        bottom = top + mb.height * scale;
+        inside = sx >= left && sx <= right && sy >= top && sy <= bottom;
+      }
+      // Push diagnostics to the backend (throttled ~200ms) so the Debug Panel's
+      // separate OS window can render them. Best-effort — a failed invoke must
+      // never break click-through itself.
+      const now = performance.now();
+      if (now - lastDiagPushRef.current > 200) {
+        lastDiagPushRef.current = now;
+        clickthroughDiagRef.current = {
+          has_origin: !!origin, has_scale: !!scale, has_canvas: !!canvas, has_bounds: !!mb,
+          sx, sy, left, top, right, bottom, inside,
+          ignore: forceCapture ? false : !inside,
+          bounds_x: mb?.x ?? 0, bounds_y: mb?.y ?? 0, bounds_w: mb?.width ?? 0, bounds_h: mb?.height ?? 0,
+          origin_x: origin?.x ?? 0, origin_y: origin?.y ?? 0, scale: scale ?? 0,
+        };
+        invoke("set_clickthrough_diag", { diag: clickthroughDiagRef.current }).catch(() => {});
+      }
       if (forceCapture) {
         applyIgnore(false);
         return;
@@ -624,11 +681,6 @@ const transientTimerRef = useRef<number | null>(null);
         applyIgnore(false);
         return;
       }
-      const left = origin.x + (canvas.left + mb.x) * scale;
-      const top = origin.y + (canvas.top + mb.y) * scale;
-      const right = left + mb.width * scale;
-      const bottom = top + mb.height * scale;
-     const inside = sx >= left && sx <= right && sy >= top && sy <= bottom;
       // global-cursor 是穿透期间的唯一权威指针来源。即使后续 ignore=true，
       // focus ticker 仍读 pointerRef，所以必须持续更新它（client 坐标口径，
       // 与 Live2DCanvas focusTickerFn 里 p.x-rect.left 一致）。
@@ -637,9 +689,10 @@ const transientTimerRef = useRef<number | null>(null);
       pointerRef.current = { x: clientX, y: clientY };
      applyIgnore(!inside);
       if (!inside) setAttention(AttentionState.Ignored);
-    }).then((u) => { unlisten = u; }).catch(() => {});
+    }).then((u) => { if (!cancelled) unlisten = u; else u(); }).catch(() => {});
 
     return () => {
+      cancelled = true;
       unlisten?.();
       unlistenMoved?.();
       if (cursorWatchdog) clearTimeout(cursorWatchdog);

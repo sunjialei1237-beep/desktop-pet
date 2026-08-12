@@ -38,6 +38,53 @@ pub struct AppState {
     /// candidate memories from a "忘掉X" that matched several, awaiting the
     /// user's clarifying reply. Mirrors `question_pacing` as a Mutex slot.
     pub pending_forget: std::sync::Mutex<Option<crate::mind::forget::PendingForget>>,
+    /// Click-through diagnostics written by the main window's frontend
+    /// (global-cursor listener) and read by the Debug Panel's separate window.
+    /// The Debug Panel lives in its own OS window (open_debug_window), so it
+    /// can't share React state with App — this Mutex is the bridge, mirroring
+    /// the Face State "backend-relay" pattern (续¹⁸). None until the first
+    /// global-cursor event arrives.
+    pub clickthrough_diag: std::sync::Mutex<Option<ClickthroughDiag>>,
+}
+
+/// Click-through diagnostics snapshot (Architecture #11 observability).
+/// All fields are produced by the frontend App (main window) since only it
+/// knows the model bounds, the inside/ignore judgment, and the cursor screen
+/// position combined into the model's screen rect. The Debug Panel reads it
+/// to diagnose "blank areas block the desktop" (transparent-window
+/// click-through failures).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClickthroughDiag {
+    /// Geometry readiness (any false → the listener keeps the window fully
+    /// interactive via its safe default, which would explain "never
+    /// click-through").
+    pub has_origin: bool,
+    pub has_scale: bool,
+    pub has_canvas: bool,
+    pub has_bounds: bool,
+    /// Cursor physical screen position (from global-cursor / GetCursorPos).
+    pub sx: i32,
+    pub sy: i32,
+    /// Computed model screen rect (physical px); meaningful only when all
+    /// geometry is present.
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    /// The inside judgment this frame (cursor within the model screen rect).
+    pub inside: bool,
+    /// The ignore state actually pushed to setIgnoreCursorEvents.
+    pub ignore: bool,
+    /// Raw model bounds as reported by the canvas (canvas-local CSS px) —
+    /// diagnosing whether the bounds are too large (covering blank area).
+    pub bounds_x: f64,
+    pub bounds_y: f64,
+    pub bounds_w: f64,
+    pub bounds_h: f64,
+    /// Window origin (physical px) + scale factor, for diagnosing offsets.
+    pub origin_x: i32,
+    pub origin_y: i32,
+    pub scale: f64,
 }
 
 // -- Response types --
@@ -1104,6 +1151,29 @@ pub async fn get_debug_snapshot(
             },
         })
     })
+}
+
+/// Write click-through diagnostics from the main window's frontend (called
+/// ~every 200ms, throttled, from the global-cursor listener). The Debug Panel
+/// (separate OS window) reads them via `get_clickthrough_diag` to diagnose
+/// transparent-window click-through failures ("blank area blocks desktop").
+/// Best-effort: a lock failure or poisoned mutex just leaves the old value.
+#[tauri::command]
+pub fn set_clickthrough_diag(state: State<'_, AppState>, diag: ClickthroughDiag) {
+    if let Ok(mut g) = state.clickthrough_diag.lock() {
+        *g = Some(diag);
+    }
+}
+
+/// Read the latest click-through diagnostics (Debug Panel poll). None until
+/// the main window's first global-cursor event writes a value.
+#[tauri::command]
+pub fn get_clickthrough_diag(state: State<'_, AppState>) -> Option<ClickthroughDiag> {
+    state
+        .clickthrough_diag
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or(None)
 }
 
 /// Scheduler registry snapshot (plan §A2, ADR 2026-08-08): one row per
