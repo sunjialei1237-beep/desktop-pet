@@ -80,6 +80,24 @@ export function initFace(spine: any): FaceState | null {
   try {
     const sk = spine.skeleton;
     const smileAnim = sk.data.findAnimation("smile");
+
+    // TEMP PATCH (remove after artist fixes setup pose): the 嘴/小笑嘴/张大笑嘴
+    // slots' setup-pose attachments are set to "shown" in the asset, so they
+    // render on top of 脸 (the full-face layer with closed mouth) and Liri's
+    // mouth looks permanently open. body_breath t=0 nulls 张大笑嘴 every frame,
+    // but NOTHING nulls 嘴/小笑嘴 — so we null them once at init. body_breath
+    // re-applies its own nulls every frame, so a one-shot null here sticks.
+    // Proper fix = artist sets these three slots' setup attachment to null in
+    // Spine; then delete this block.
+    try {
+      for (const slotName of ["嘴", "小笑嘴", "张大笑嘴"]) {
+        const slot = sk.findSlot(slotName);
+        if (slot && slot.attachment) slot.setAttachment(null);
+      }
+    } catch {
+      // best-effort: missing slot is fine, initFace still returns duration
+    }
+
     return { smileDuration: smileAnim ? smileAnim.duration : 1.5 };
   } catch {
     return null;
