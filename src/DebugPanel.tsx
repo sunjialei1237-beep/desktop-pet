@@ -9,6 +9,7 @@ interface DebugSnapshot {
     social_battery: number;
     stress: number;
     loneliness: number;
+    rest_need: number;
   };
   closeness: number;
   trust: number;
@@ -59,7 +60,7 @@ interface JobStat {
   last_message: string | null;
 }
 
-const EMO_KEYS = ["mood", "physical_energy", "social_battery", "stress", "loneliness"] as const;
+const EMO_KEYS = ["mood", "physical_energy", "social_battery", "stress", "loneliness", "rest_need"] as const;
 type EmoKey = (typeof EMO_KEYS)[number];
 type EmoDraft = Record<EmoKey, number>;
 
@@ -71,11 +72,13 @@ export function DebugPanel({ anim, onClose, onQuit }: {
   const [snapshot, setSnapshot] = useState<DebugSnapshot | null>(null);
   const [jobs, setJobs] = useState<JobStat[]>([]);
   const [editError, setEditError] = useState<string | null>(null);
+  // Debounce timer for drag-to-apply (sliders apply live, 250ms settle).
+  const applyTimerRef = useRef<number | null>(null);
   // Emotion editor draft. Seeded once from the live state on first load, then
   // left alone (current values stay visible in the Brain row above) so polling
   // never overwrites the user's in-progress slider drags.
   const [emoDraft, setEmoDraft] = useState<EmoDraft>({
-    mood: 0.5, physical_energy: 0.5, social_battery: 0.5, stress: 0.3, loneliness: 0.3,
+    mood: 0.5, physical_energy: 0.5, social_battery: 0.5, stress: 0.3, loneliness: 0.3, rest_need: 0.3,
   });
   const emoInitRef = useRef(false);
 
@@ -91,6 +94,7 @@ export function DebugPanel({ anim, onClose, onQuit }: {
             social_battery: s.emotion.social_battery,
             stress: s.emotion.stress,
             loneliness: s.emotion.loneliness,
+            rest_need: s.emotion.rest_need,
           });
         }
       })
@@ -112,6 +116,16 @@ export function DebugPanel({ anim, onClose, onQuit }: {
       .catch((e) => setEditError(typeof e === "string" ? e : JSON.stringify(e)));
   }, [refresh]);
 
+  // Drag-to-apply: sliders take effect live (250ms debounce) instead of
+  // requiring a button press — a common "no visible change" cause was
+  // dragging without clicking Apply.
+  const applyEmotion = useCallback((draft: EmoDraft) => {
+    if (applyTimerRef.current) window.clearTimeout(applyTimerRef.current);
+    applyTimerRef.current = window.setTimeout(() => {
+      mutate(invoke("set_emotion", { edit: draft }));
+    }, 250);
+  }, [mutate]);
+
   if (!snapshot) return null;
 
   return (
@@ -124,7 +138,7 @@ export function DebugPanel({ anim, onClose, onQuit }: {
       </div>
 
       <div className="debug-section">
-        <span className="debug-title">Emotion 编辑器（Apply 后即时生效）</span>
+        <span className="debug-title">Emotion 编辑器（拖动即时生效）</span>
         {EMO_KEYS.map((k) => (
           <div key={k} className="debug-bar">
             <label className="debug-slider">
@@ -133,7 +147,9 @@ export function DebugPanel({ anim, onClose, onQuit }: {
                 value={emoDraft[k]}
                 onChange={(e) => {
                   const v = parseFloat(e.target.value);
-                  setEmoDraft((d) => ({ ...d, [k]: v }));
+                  const next = { ...emoDraft, [k]: v };
+                  setEmoDraft(next);
+                  applyEmotion(next);
                 }} />
               <span>{emoDraft[k].toFixed(2)}</span>
             </label>
@@ -144,6 +160,34 @@ export function DebugPanel({ anim, onClose, onQuit }: {
             onClick={() => mutate(invoke("set_emotion", { edit: emoDraft }))}>Apply emotion</button>
           {editError && <span className="debug-err"> ⚠ {editError}</span>}
         </div>
+      </div>
+
+      <div className="debug-section">
+        <span className="debug-title">Face State（由后端情绪值计算）</span>
+        {(() => {
+          const e = snapshot.emotion;
+          const fatigue = Math.max(0, 0.6 - e.physical_energy) * 1.4 + e.rest_need * 0.4;
+          const halfOpen = fatigue > 0.5;
+          const smiling = !halfOpen && e.mood > 0.65;
+          return (
+            <>
+              <div className="debug-bar">
+                <span>fatigue <strong>{fatigue.toFixed(2)}</strong>（阈值 0.5）| mood {e.mood.toFixed(2)}（笑眯阈值 0.65）| energy {e.physical_energy.toFixed(2)} | rest_need {e.rest_need.toFixed(2)}</span>
+              </div>
+              <div className="debug-bar">
+                <span>
+                  <strong className={halfOpen ? "debug-on" : ""}>{halfOpen ? "▶ 半睁眼 ON" : "半睁眼 OFF"}</strong>
+                  {" | "}
+                  <strong className={smiling ? "debug-on" : ""}>{smiling ? "▶ 笑眯眼+微笑嘴 ON" : "笑眯眼 OFF"}</strong>
+                  <span className="debug-hint">（渲染端 blink/smile 动画期间会让位）</span>
+                </span>
+              </div>
+              <div className="debug-bar">
+                <span className="debug-hint">拖滑块后这里应实时切换 → 确认情绪→表情映射链路在工作</span>
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       <div className="debug-section">

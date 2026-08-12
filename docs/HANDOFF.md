@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-11（续¹⁵·Debug Panel 独立 OS 窗口——内嵌浮窗(续¹⁴·补)仍挡 Liri 下半身[主窗 400×760 透明，in-window `position:fixed` 必被窗口边界裁剪重叠]，改 Tauri 第二窗口 label=debug[OS 标题栏全局可拖]；8 处改动 commit 7f5e912 release ✅；**⚠️ 实跑白屏**(用户明示暂不修)：F12 弹独立窗但内容全白，疑似 `WebviewUrl::App("index.html?window=debug")` 的 query string 在 release custom-protocol 下未被保留→main.tsx 分支没命中，修复方向改 `getCurrentWindow().label==="debug"` 判据)**。上一轮 续¹⁴·Spine driver phase3-A 情绪→半睁眼持续映射——疲惫外显；上轮 续¹³·driver phase1 串行通道+呼吸对齐治跳变；再上 续¹²·Liri 全身显示修两个 release-only bug：① CSP 缺 `worker-src` 致 release 空白（PIXI/pixi-spine 建 `blob:` worker 被阻；dev 自动放宽 CSP 故 dev 隐身，踩坑#7 同类）② pixi-spine `getBounds` 返回 scale=1 缓存 vertices，post-scale centering 把璃推到只露上半身 → 改 scale=1 量 bounds 手动缩放 centering，worldBounds y∈[30,570] 全入画布；CSP 加 `worker-src 'self' blob:`；用户目视确认全身）**。上一轮 续¹¹·补²（Liri 设默认渲染+加载失败回退 Haru，release 绿）。再上 续¹¹·Spine 链路里程碑1（加载+显示+body_breath）。再上一轮 续¹⁰·选择性遗忘多轮消歧义 —— 补遗忘链路两个体验缺口：① 多候选不澄清（「忘掉咖啡」同时命中 fact+episode，旧逻辑直接猜删一个可能删错）② fact/pending 措辞不匹配太硬（char_overlap 字面不重叠，「忘掉早睡的事」匹配不到 fact「想早睡总是熬夜」→ 生硬"不记得"）。`forget_best_match` 改三态 `ForgetOutcome::{Deleted,Declined,Ambiguous}`——≥2 候选**不再删而是反问**；新 `PendingForget` 跨轮 slot（抄 `pacing` Mutex 范式）+ `resolve_candidate`（序数词 第N个/前者/后者/甲乙 + char_overlap≥0.4）+ 90s 超时 + 只重问一次；converse 在 ingest **前**拦第二轮（"第一个"不进 Forget gate→必须 gate 前拦截，#1）→ 解析→`execute_candidate` 删→跳 ingest（二轮不被存为新记忆）；fact/pending 加 `semantic_rerank`（char_overlap top-5 现场 embed+cosine 归一映射 0.7 门，模型不可用退回 char_overlap，#6）。踩坑#4 全程避（只加 enum/字段不改签名；3 harness ConverseCtx 构造点同步 + prompt_quality case 1009 ForgetAck→ForgetAsk + ForgetAsk 启发式）。**lib 293（+6 forget 测）/ check --tests ✅ / release 已 rebuild（17:20）**。→ 待实跑见 D15。详见 §最近一轮 (续¹⁰)。**原 续⁹·记忆卫生层 —— 结构性治理记忆三类易复发缺陷：A 抽取无校验 / B 读路径强化 / C 去重视野。新 `mind/memory_gate.rs`（category 白名单 + 噪声 key/value deny，store 写库前过滤，中文 trivia 靠 key 抓）；`retrieve()` 删 reinforce 副作用 → 纯读 + 新 `reinforce_top`（仅 converse+proactive genuine-recall 调用，零签名变更）；converse known_facts preference-only → `get_all_active(30)`。复盘纠正：原以为 strength 只升不降→**错**，`decay_strength`(0.998/天) 已每日运行，故砍掉新衰减子系统。ADR `docs/decisions/2026-08-09-memory-hygiene-layer.md`（含三次多视角复盘）。**代码 lib 287 + golden 29 passed / 17 测试二进制全编译，commit `7f4af17`**。**一次性数据治理已执行**：expire 10 噪声 facts（知识问答/自我语境/越界类，保留 current_reading+糯米副本）+ 19 非地标 episode strength snap 回 importance（解测试期 rc382/445/446 饱和，排序现按 importance：小猪去世0.8居顶/素数trivia0.1落底），DB 备份 `.bak-hygiene`。**测试全绿**：lib 287 + golden 29 + memory_gate 6 + **闭环2 真实 LLM 验证 ✅ pass**（途中发现并修**续⁸ 既存 bug**：lively 70% 概率早返回跳过到期 pending，`proactive.rs::generate` 加一行守卫 `pending_due.is_empty() &&` 掷 lively 骰 → 到期提醒现确定性触发，70/30 多样性对无 pending 场景保留）。**release 待 rebuild**。详见 §最近一轮 (续⁹)。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70），lively 多样性"先观察"。**
+> 最后更新：**2026-08-12（续¹⁸·Debug 窗口死锁修复(async)✅ + Emotion 编辑器动画测试链路诊断/修复/回退——pixi-spine sprite 缓存机制是"表情不动"真根因；当前渲染层回退 366ffc8 眼睛正常，DebugPanel 增强保留）**。上一轮 续¹⁴·Spine driver phase3-A 情绪→半睁眼持续映射——疲惫外显；上轮 续¹³·driver phase1 串行通道+呼吸对齐治跳变；再上 续¹²·Liri 全身显示修两个 release-only bug：① CSP 缺 `worker-src` 致 release 空白（PIXI/pixi-spine 建 `blob:` worker 被阻；dev 自动放宽 CSP 故 dev 隐身，踩坑#7 同类）② pixi-spine `getBounds` 返回 scale=1 缓存 vertices，post-scale centering 把璃推到只露上半身 → 改 scale=1 量 bounds 手动缩放 centering，worldBounds y∈[30,570] 全入画布；CSP 加 `worker-src 'self' blob:`；用户目视确认全身）**。上一轮 续¹¹·补²（Liri 设默认渲染+加载失败回退 Haru，release 绿）。再上 续¹¹·Spine 链路里程碑1（加载+显示+body_breath）。再上一轮 续¹⁰·选择性遗忘多轮消歧义 —— 补遗忘链路两个体验缺口：① 多候选不澄清（「忘掉咖啡」同时命中 fact+episode，旧逻辑直接猜删一个可能删错）② fact/pending 措辞不匹配太硬（char_overlap 字面不重叠，「忘掉早睡的事」匹配不到 fact「想早睡总是熬夜」→ 生硬"不记得"）。`forget_best_match` 改三态 `ForgetOutcome::{Deleted,Declined,Ambiguous}`——≥2 候选**不再删而是反问**；新 `PendingForget` 跨轮 slot（抄 `pacing` Mutex 范式）+ `resolve_candidate`（序数词 第N个/前者/后者/甲乙 + char_overlap≥0.4）+ 90s 超时 + 只重问一次；converse 在 ingest **前**拦第二轮（"第一个"不进 Forget gate→必须 gate 前拦截，#1）→ 解析→`execute_candidate` 删→跳 ingest（二轮不被存为新记忆）；fact/pending 加 `semantic_rerank`（char_overlap top-5 现场 embed+cosine 归一映射 0.7 门，模型不可用退回 char_overlap，#6）。踩坑#4 全程避（只加 enum/字段不改签名；3 harness ConverseCtx 构造点同步 + prompt_quality case 1009 ForgetAck→ForgetAsk + ForgetAsk 启发式）。**lib 293（+6 forget 测）/ check --tests ✅ / release 已 rebuild（17:20）**。→ 待实跑见 D15。详见 §最近一轮 (续¹⁰)。**原 续⁹·记忆卫生层 —— 结构性治理记忆三类易复发缺陷：A 抽取无校验 / B 读路径强化 / C 去重视野。新 `mind/memory_gate.rs`（category 白名单 + 噪声 key/value deny，store 写库前过滤，中文 trivia 靠 key 抓）；`retrieve()` 删 reinforce 副作用 → 纯读 + 新 `reinforce_top`（仅 converse+proactive genuine-recall 调用，零签名变更）；converse known_facts preference-only → `get_all_active(30)`。复盘纠正：原以为 strength 只升不降→**错**，`decay_strength`(0.998/天) 已每日运行，故砍掉新衰减子系统。ADR `docs/decisions/2026-08-09-memory-hygiene-layer.md`（含三次多视角复盘）。**代码 lib 287 + golden 29 passed / 17 测试二进制全编译，commit `7f4af17`**。**一次性数据治理已执行**：expire 10 噪声 facts（知识问答/自我语境/越界类，保留 current_reading+糯米副本）+ 19 非地标 episode strength snap 回 importance（解测试期 rc382/445/446 饱和，排序现按 importance：小猪去世0.8居顶/素数trivia0.1落底），DB 备份 `.bak-hygiene`。**测试全绿**：lib 287 + golden 29 + memory_gate 6 + **闭环2 真实 LLM 验证 ✅ pass**（途中发现并修**续⁸ 既存 bug**：lively 70% 概率早返回跳过到期 pending，`proactive.rs::generate` 加一行守卫 `pending_due.is_empty() &&` 掷 lively 骰 → 到期提醒现确定性触发，70/30 多样性对无 pending 场景保留）。**release 待 rebuild**。详见 §最近一轮 (续⁹)。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70），lively 多样性"先观察"。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,10 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-12（续¹⁸）更新 · Debug 窗口死锁修复 + Emotion 编辑器动画测试链路（诊断→修复→回退）**：用户"继续修 debug 白屏"+"用面板测试动画看不到效果"。**① 白屏真根因（已修✅）**：`open_debug_window` 是 **sync command 在主线程直接 build()** → build() 等 WebView2 回调但主线程消息循环被阻塞 → **死锁**（日志证据：build 前日志出现、build 后无输出、所有 invoke 全挂起）。修：**改 async command**（tokio 线程执行 build，主线程保持消息循环）→ 用户确认 F12 窗口正常 ✅。**② 表情不动根因（pixi-spine 渲染机制，已定位）**：pixi-spine 渲染走**缓存显示对象** `slot.currentSprite/currentMesh`，**只在 Spine.update() 内按 `slot.getAttachment()` 同步**——`setAttachment()` 只改数据不更新渲染 → 下一帧 update() 又把 sprite 同步回动画值 → 视觉永不变。修复 `forceSyncSlot`（复制 update() 的 region/mesh 分支）后**三态生效**（dev 截图+视觉模型验证：normal 睁眼 / tired 半睁 / happy 笑眯+微笑嘴）。**踩坑记录**：① region 分支 sprite 缓存 key 是 **`attachment.name`**（非 id——mesh 分支才用 id）② region 无 `computeWorldVerticesOld` 方法（多余调用报错，删）。**③ 用户反馈双层图层+启动即眯眼 → 已回退**：显示半睁眼时未隐藏默认眼（互斥缺失→双层叠加）+ 默认 fatigue 0.55>阈值 0.5（启动即半睁）。**当前状态：渲染层 `git checkout` 回退 366ffc8（眼睛正常），DebugPanel 增强保留**。详见 §最近一轮 (续¹⁸)。
+
+> 📋 **待办（下一会话起点）· 重新实现表情映射（3 个修复点已定位）**：① **互斥**：半睁眼/笑眯眼显示时**同时隐藏默认眼**（左眼/右眼 setAttachment null，恢复时还原）——治双层图层；② **阈值 0.5→0.65**（默认 fatigue 0.55 不触发，energy≤0.15 才半睁）——治启动即眯眼；③ **forceSyncSlot 用 name key**（已验证生效）。全部 try/catch 包裹（防透明，已验证）。改完 dev 截图三态验证 → release。**DebugPanel 本次增强（保留）**：Face State 分区（后端 snapshot 本地计算 fatigue/halfOpen/smiling，**不跨窗口 emit**——跨窗口事件是透明事故嫌疑）+ 滑块拖动即时生效（250ms 节流自动 Apply）+ EmotionEdit 后端加 rest_need 字段 + 滑块加 rest_need。
 
 > **2026-08-11（续¹⁵）Debug Panel 独立 OS 窗口 —— ⚠️ 代码+release 已成 / 实跑白屏（用户明示暂不修，留 follow-up）**。续¹⁴·补 的内嵌可拖浮窗(300px)仍挡 Liri 下半身——根因：主窗 400×760 透明，`position:fixed` 被窗口边界裁剪、拖到哪都重叠。唯一彻底解=独立 Tauri 第二窗口。落地 8 处：①`commands.rs::open_debug_window`(WebviewWindowBuilder label=debug，已存在则 show+focus；360×720 resizable) ②`lib.rs` invoke_handler 注册 ③`capabilities/default.json` windows `["main"]`→`["main","debug"]`(授权 debug 窗 invoke) ④`main.tsx` 按 `?window=debug` 分支渲染 `DebugStandalone` ⑤新 `DebugStandalone.tsx`(onClose=关 debug 窗/onQuit=quit_app/anim 占位) ⑥`App.tsx` F12/Ctrl+Shift+D→`invoke("open_debug_window")`+删 showDebug 全家(state/import/forceCapture/内嵌渲染) ⑦`DebugPanel.tsx` 删自绘拖拽全套 ⑧`styles.css` `.debug-panel` 还原全屏(`fixed inset:0`)+`.debug-toolbar` 删 `cursor:move`。AnimFSM 分区主窗独占(前端 state 不跨窗)，余照常轮询后端。**cargo check 34.44s ✅ / tauri build --no-bundle 52.98s ✅ / commit 7f5e912 + push(6dcbe90..7f5e912)**。**⚠️ 实跑白屏**：F12 弹独立窗但内容全白。疑似 `WebviewUrl::App("index.html?window=debug")` query 未被保留→main.tsx 分支没命中(或 DebugStandalone 渲染了但 `if(!snapshot)return null` 因 invoke 失败永空)。修复方向：改 `getCurrentWindow().label==="debug"` 判据 + WebviewUrl 纯 `index.html`。详见 §最近一轮 (续¹⁵)。
 
@@ -165,6 +169,42 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-12 续¹⁸)：Debug 窗口死锁修复 + Emotion 编辑器动画测试链路
+
+**任务**：① 用户"继续修 debug 白屏的问题"（续¹⁵ 留的 follow-up）；② 用户问"如何用面板测试动画"，实测"调整 Emotion 编辑器看不到任何效果变化"。
+
+**① Debug 窗口死锁（真根因，已修✅）**：
+- 续¹⁵ 后代码已是 label 判据 + 无 query（1542e84），但用户仍白屏 → 我实测（CDP 合成 F12）发现 **F12 后窗口根本不弹**（比白屏更糟）。
+- 诊断链：CDP 附加主窗 → 合成 F12 → onKey 执行（preventDefault 证明）→ **invoke 全 pending**（get_debug_snapshot/set_emotion 都 pending）→ **Rust 日志停在 "[debug-window] creating new window" 无 build ok/failed** → 定位 **sync command 在主线程执行 `WebviewWindowBuilder::build()`，build() 等 WebView2 回调但主线程消息循环被同步命令阻塞 → 死锁**（主线程卡死解释所有 invoke pending）。
+- **修复**：改 `pub async fn open_debug_window`（async command 在 tokio 线程执行 build，主线程消息循环继续转）→ 用户按 F12 两次均 build ok ✅ → **用户确认"没问题了"**。
+- 诊断方法论教训：**CDP 附加状态会干扰 Tauri IPC**（evaluate 里 invoke 全 pending 是主线程死锁的结果而非 CDP 所致；合成 F12 事件走页面 handler 是可靠触发路径）；`/json` 列出的 page 无法用 title 区分主窗/debug 窗（document.title 相同），**用 `getCurrentWindow().label` 区分**（前几轮截图对比全截在 debug 窗上导致 diff=0 误判"没效果"！）。
+
+**② Emotion 编辑器"看不到效果"（真根因：pixi-spine 渲染机制）**：
+- 数值链路正常（set_emotion→DB→emotion-update→emotionVector→fatigueLevel 计算全通），**渲染不动**。
+- **根因**：pixi-spine 渲染走**缓存显示对象** `slot.currentSprite`（Region）/`slot.currentMesh`（Mesh），**只在 Spine.update() 内按 `slot.getAttachment()` 同步**（SpineBase.js update() 的 slot 遍历）。`slot.setAttachment()` 只改数据、**不更新缓存 sprite** → 下一帧 update() 又按动画值同步 → 视觉永不变。**这就是为什么 face-diag 显示"设置成功"但画面 diff=0**。
+- **修复**：新 `forceSyncSlot(spine, slot)` 复制 update() 的 region/mesh 分支（切换 currentSprite/currentMesh + visible），在 setAttachment 后调用。
+- **踩坑①（key 用错）**：region 分支 sprite 缓存 `slot.sprites` 的 key 是 **`attachment.name`**（SpineBase update() region 分支用 `currentSpriteName !== attachment.name`），mesh 分支才用 `attachment.id`——我初版 region 用 id → `slot.sprites[id]` undefined → `currentSprite.renderable` 崩（try/catch 吞 → 表情不动 + 无感知）。修：region 用 name。
+- **踩坑②**：region attachment 无 `computeWorldVerticesOld` 方法（报错但不影响显示）→ 删。
+- **验证**：dev 截图三态 + GLM 视觉模型确认——**normal 完全睁开 / tired 半睁（位置无异常）/ happy 眯成弯月+微笑嘴** ✓。release 构建后**用户反馈"双层眯眼图层+启动即眯眼"**：
+  - 双层图层 = 显示半睁眼时**未隐藏默认眼**（左眼/右眼 mesh 还在下面）→ 叠加；
+  - 启动即眯眼 = 默认 fatigue 0.55 > 阈值 0.5（默认能量基线低）→ 半睁常驻。
+- **回退（用户要求）**：`git checkout -- src/SpineCanvas.tsx src/animation/spineIntent.ts`（回到 366ffc8，眼睛正常）→ release 重建 → **用户确认正常**。
+
+**③ DebugPanel 增强（保留，未回退）**：
+- **Face State 分区**：后端 snapshot 本地计算 fatigue/halfOpen/smiling/阈值显示（**放弃跨窗口 emit 方案**——updateFn 里每帧 IPC emit 是"桌宠透明"事故的元凶嫌疑，回退时移除；面板本地计算零新增 IPC、零渲染层耦合）。
+- **滑块拖动即时生效**：250ms 节流自动 invoke set_emotion（不用点 Apply——"只拖不点"是用户看不到效果的可能原因之一）。
+- **后端 `EmotionEdit` 加 `rest_need` 字段**（update_fields 第 7 参接通）+ 面板滑块加 rest_need。
+
+**透明事故复盘**：某次 release 桌宠完全不可见（透明）。回退后恢复正常。嫌疑：SpineCanvas updateFn 里新加的 `emit("face-state")`（每帧状态变化时跨窗口 IPC）——updateFn 抛错 → PIXI ticker 崩 → 画布空白 → 窗口透明。**结论：渲染热路径（每帧）绝不碰 IPC/emit；任何渲染层改动全 try/catch**。
+
+**架构契合**：#1（表情映射纯前端规则）/ #6（try/catch 静默降级 + slot 缺失优雅退化 + 回退保底）/ #10（情绪→表情外显）/ #11（[debug-window] 日志 + face-diag 诊断 + console.warn 暴露 forceSyncSlot 错误）/ 踩坑新增（写入避免重复踩）：**pixi-spine setAttachment 不更新渲染、region 缓存 key=name、渲染热路径禁 IPC、CDP 区分窗口用 label、PowerShell 不写 UTF8 中文文件（Set-Content 编码损坏 HANDOFF，git checkout 恢复）**。
+
+**验证**：tsc exit0 / vitest 24 / lib 293（未动 Rust 逻辑，rest_need 字段加后全绿）/ dev 截图三态验证 ✓ / release 重建（回退版）。
+
+**当前无进行中任务**。下一会话起点：按 §当前任务 待办重新实现表情映射（互斥隐藏默认眼 + 阈值 0.65 + forceSyncSlot name key，全 try/catch）。
 
 ---
 

@@ -1174,6 +1174,7 @@ pub struct EmotionEdit {
     pub social_battery: Option<f64>,
     pub stress: Option<f64>,
     pub loneliness: Option<f64>,
+    pub rest_need: Option<f64>,
 }
 
 /// Sets emotion fields directly — for testing animation/emotion 手感 (e.g. drop
@@ -1191,7 +1192,7 @@ pub async fn set_emotion(
     let emo = db.with_conn(|conn| {
         crate::db::emotion::update_fields(
             conn, edit.mood, None, edit.physical_energy, edit.social_battery,
-            edit.stress, edit.loneliness, None, &now,
+            edit.stress, edit.loneliness, edit.rest_need, &now,
         )?;
         // Re-derive the label from the merged values so the panel and pet agree
         // on "calm"/"tense"/etc. for the manually-set mood.
@@ -1260,14 +1261,24 @@ pub fn open_devtools(app_handle: tauri::AppHandle) {
 /// DebugStandalone instead of App.  Query strings are not preserved by Tauri's
 /// release custom protocol, so we rely on getCurrentWindow().label. If the
 /// window is already open, just focus it.
+///
+/// MUST be async: a sync command runs on the main thread, and
+/// WebviewWindowBuilder::build() waits for WebView2 callbacks that only fire
+/// while the main-thread message loop spins — an inline sync build deadlocks
+/// (observed: log stops at "building", every subsequent invoke hangs). Async
+/// commands run on the tokio pool, so the main loop keeps spinning and the
+/// cross-thread wait completes.
 #[tauri::command]
-pub fn open_debug_window(app_handle: tauri::AppHandle) {
+pub async fn open_debug_window(app_handle: tauri::AppHandle) {
+    log::info!("[debug-window] open_debug_window invoked (async)");
     if let Some(win) = app_handle.get_webview_window("debug") {
+        log::info!("[debug-window] already exists, focusing");
         let _ = win.show();
         let _ = win.set_focus();
         return;
     }
     use tauri::webview::WebviewWindowBuilder;
+    log::info!("[debug-window] building (async context)");
     if let Err(e) = WebviewWindowBuilder::new(
         &app_handle,
         "debug",
@@ -1280,6 +1291,8 @@ pub fn open_debug_window(app_handle: tauri::AppHandle) {
     .build()
     {
         log::warn!("[debug-window] failed to build: {}", e);
+    } else {
+        log::info!("[debug-window] build ok");
     }
 }
 
