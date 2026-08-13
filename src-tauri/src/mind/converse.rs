@@ -164,7 +164,7 @@ fn disambig_prompt(candidates: &[crate::mind::forget::ForgetCandidate]) -> Strin
     let first = candidates.first().map(|c| c.summary.as_str()).unwrap_or("");
     let second = candidates.get(1).map(|c| c.summary.as_str()).unwrap_or("");
     format!(
-        "（系统提示：用户想让你忘掉某件事，但你记忆里有几条都可能对应：\n{}\n请自然地问用户具体是哪一条，比如「你说的是「{}」还是「{}」？」——只在这轮澄清，不要擅自删掉任何一条。）",
+        "（系统提示：你想确认对方要你忘掉的是哪一件事，因为记忆里有几条都可能对应：\n{}\n请自然地问清楚具体是哪一条，比如「你说的是「{}」还是「{}」？」——只在这轮澄清，不要擅自删掉任何一条。注意：称呼对方用「你」，不要用「用户」这种词。）",
         opts.join("\n"),
         first,
         second,

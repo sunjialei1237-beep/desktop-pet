@@ -28,6 +28,16 @@ use std::cmp::Ordering;
 /// (Architecture Principle #11: explainable threshold.)
 const FORGET_CONFIDENCE: f64 = 0.7;
 
+/// When ≥2 candidates clear the gate, only ask back if the top two are
+/// genuinely close in confidence. If the best match clearly outranks the
+/// runner-up (gap ≥ this), "忘掉火锅" plainly means the high-confidence
+/// "喜欢火锅" fact, not the lower-scoring "吃火锅经历" episode — asking back
+/// about the latter feels over-cautious. Below the gap, both are plausible and
+/// she asks which (using full summaries, never a bare keyword). (#1 trade-off:
+/// a large gap means the runner-up is unlikely to be the intended target, so
+/// skipping the ask-back is safe; a small gap is true ambiguity.)
+const AMBIGUITY_GAP: f64 = 0.15;
+
 /// Outcome of a forget request. Three states instead of a bool+Option: she
 /// erased one, honestly declined (no confident match — never deletes the wrong
 /// thing), or needs to ask which of several matches the user means (multi-turn
@@ -320,43 +330,84 @@ pub fn forget_best_match(
         cands.push(c);
     }
 
-    // Two or more memories cleared the gate → ambiguous. Don't guess (over-
-    // delete risk): surface the candidates so she can ask which one, and the
-    // caller stores them for cross-turn resolution. Landmarks are already
-    // filtered out of the episode leg, so every candidate here is safe to
-    // erase once the user picks one.
-    if cands.len() >= 2 {
-        log::info!(
-            "[forget] {} candidates matched {:?} — asking back",
-            cands.len(),
-            text.chars().take(40).collect::<String>()
-        );
-        return Ok(ForgetOutcome::Ambiguous { candidates: cands });
-    }
-
-    let Some(winner) = cands
-        .into_iter()
-        .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(Ordering::Equal))
-    else {
+    // No candidate cleared the gate → honestly decline (never delete the wrong
+    // thing on a weak match).
+    if cands.is_empty() {
         log::info!(
             "[forget] no confident match for {:?}",
             text.chars().take(40).collect::<String>()
         );
         return Ok(ForgetOutcome::Declined);
-    };
+    }
 
-    let summary = winner.summary.clone();
-    let target = winner.target;
-    if execute_candidate(&winner, db) {
-        log::info!(
-            "[forget] {} {} ({})",
-            target.as_str(),
-            winner.id,
-            summary.chars().take(40).collect::<String>()
-        );
-        Ok(ForgetOutcome::Deleted { summary })
+    // Decide winner vs ambiguity. Don't always ask back when ≥2 candidates
+    // clear the gate: if the best match clearly outranks the runner-up
+    // (confidence gap ≥ AMBIGUITY_GAP), the request plainly means the top one
+    // (e.g. "忘掉火锅" → the "喜欢火锅" fact, not the lower-scoring "吃火锅
+    // 经历" episode). Only when the top two are genuinely close do we surface
+    // candidates for an ask-back. Landmarks are already filtered out of the
+    // episode leg, so every candidate is safe to erase once picked.
+    match pick_winner_or_ambiguous(cands) {
+        Pick::Ambiguous(cands) => {
+            log::info!(
+                "[forget] {} candidates matched {:?} — asking back",
+                cands.len(),
+                text.chars().take(40).collect::<String>()
+            );
+            Ok(ForgetOutcome::Ambiguous { candidates: cands })
+        }
+        Pick::Winner(w) => {
+            let summary = w.summary.clone();
+            let target = w.target;
+            if execute_candidate(&w, db) {
+                log::info!(
+                    "[forget] {} {} ({})",
+                    target.as_str(),
+                    w.id,
+                    summary.chars().take(40).collect::<String>()
+                );
+                Ok(ForgetOutcome::Deleted { summary })
+            } else {
+                Ok(ForgetOutcome::Declined)
+            }
+        }
+    }
+}
+
+/// Result of deciding among ≥0 forget candidates: either one clear target to
+/// erase, or a genuinely-ambiguous set to ask back about. Pure function over
+/// candidates alone (no DB/embedding) so it is unit-testable with synthetic
+/// candidates.
+enum Pick {
+    Winner(ForgetCandidate),
+    Ambiguous(Vec<ForgetCandidate>),
+}
+
+/// Given the candidates that cleared the gate, decide whether there is a clear
+/// winner (erase it) or a genuine ambiguity (ask back).
+///
+/// - 0 candidates → never called (caller handles Declined first).
+/// - 1 candidate → Winner.
+/// - ≥2 candidates sorted by confidence descending: if the top two are within
+///   AMBIGUITY_GAP of each other they are both plausible → Ambiguous; if the
+///   top outranks the runner-up by ≥ AMBIGUITY_GAP the request plainly means
+///   the top one → Winner (asking back about the runner-up feels over-cautious).
+fn pick_winner_or_ambiguous(mut cands: Vec<ForgetCandidate>) -> Pick {
+    if cands.len() <= 1 {
+        return Pick::Winner(cands.pop().unwrap_or_else(|| ForgetCandidate {
+            target: ForgetTarget::Fact,
+            id: String::new(),
+            summary: String::new(),
+            confidence: 0.0,
+        }));
+    }
+    cands.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(Ordering::Equal));
+    let gap = cands[0].confidence - cands[1].confidence;
+    if gap < AMBIGUITY_GAP {
+        Pick::Ambiguous(cands)
     } else {
-        Ok(ForgetOutcome::Declined)
+        cands.truncate(1);
+        Pick::Winner(cands.pop().unwrap())
     }
 }
 
@@ -771,6 +822,60 @@ mod tests {
             id: "x".to_string(),
             summary: summary.to_string(),
             confidence: 0.9,
+        }
+    }
+
+    fn cand_c(target: ForgetTarget, summary: &str, confidence: f64) -> ForgetCandidate {
+        ForgetCandidate {
+            target,
+            id: summary.to_string(),
+            summary: summary.to_string(),
+            confidence,
+        }
+    }
+
+    // --- gap-based ambiguity (pick_winner_or_ambiguous) ---
+
+    #[test]
+    fn pick_single_candidate_is_winner() {
+        // One candidate → erase it directly, no ask-back.
+        let cs = vec![cand_c(ForgetTarget::Fact, "喜欢火锅", 0.9)];
+        match pick_winner_or_ambiguous(cs) {
+            Pick::Winner(w) => assert_eq!(w.summary, "喜欢火锅"),
+            Pick::Ambiguous(_) => panic!("single candidate should be a Winner"),
+        }
+    }
+
+    #[test]
+    fn pick_clear_winner_no_ask_back() {
+        // "忘掉火锅" matches a fact "喜欢火锅" (0.92) and an episode "吃火锅经历"
+        // (0.70). Gap 0.22 ≥ AMBIGUITY_GAP → the fact plainly wins, erase it
+        // without asking. (The user's feedback: an interest + an experience where
+        // semantics already point at the interest shouldn't trigger a question.)
+        let cs = vec![
+            cand_c(ForgetTarget::Episode, "吃火锅经历", 0.70),
+            cand_c(ForgetTarget::Fact, "喜欢火锅", 0.92),
+        ];
+        match pick_winner_or_ambiguous(cs) {
+            Pick::Winner(w) => {
+                assert_eq!(w.target, ForgetTarget::Fact);
+                assert_eq!(w.summary, "喜欢火锅");
+            }
+            Pick::Ambiguous(_) => panic!("clear gap should NOT ask back"),
+        }
+    }
+
+    #[test]
+    fn pick_close_candidates_ask_back() {
+        // Two candidates within AMBIGUITY_GAP (0.88 vs 0.80, gap 0.08) are both
+        // plausible → genuine ambiguity, surface both.
+        let cs = vec![
+            cand_c(ForgetTarget::Fact, "喝咖啡", 0.88),
+            cand_c(ForgetTarget::Pending, "喝咖啡", 0.80),
+        ];
+        match pick_winner_or_ambiguous(cs) {
+            Pick::Ambiguous(cands) => assert_eq!(cands.len(), 2),
+            Pick::Winner(_) => panic!("close candidates should ask back"),
         }
     }
 
