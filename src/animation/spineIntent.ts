@@ -1,9 +1,6 @@
 // Spine intent translation layer for Liri.
 // Maps FSM BehaviorState → Spine track / slot ops, plus a single serial action
-// channel for sporadic life. Replaces the Live2D Cubism-param translation
-// (emotionDriver/behaviorDriver wrote ParamEyeLOpen etc.); intent sources
-// (FSM/circadian/EmotionVector) are reused, only the parameter layer is
-// rewritten to Spine. Contract: docs/specs/liri/animation_spec.md,
+// channel for sporadic life. Contract: docs/specs/liri/animation_spec.md,
 // skeleton_structure.md.
 
 import { BehaviorState } from "./fsm";

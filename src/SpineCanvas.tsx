@@ -4,8 +4,7 @@ import { setupMix, setupIdleTracks, triggerBehavior, initFace, playAction, actio
 import type { ActionKind } from "./animation/spineIntent";
 import { patchLiriJson, isLiriSkeleton, LIRI_JSON_URL } from "./animation/liriAssetPatch";
 
-// Spine (3.8) + PixiJS rendering layer for Liri. Replaces the Live2DCanvas
-// placeholder once verified.
+// Spine (3.8) + PixiJS rendering layer for Liri (the sole renderer).
 //
 // Driver layer (this file + spineIntent.ts): a SINGLE SERIAL action channel
 // fires one of blink/ear/tail/smile at a time over a continuous body_breath
@@ -14,10 +13,7 @@ import { patchLiriJson, isLiriSkeleton, LIRI_JSON_URL } from "./animation/liriAs
 // body_breath's loop boundary so the body is at setup, killing spine jumps);
 // blink/smile key only eye slots, so they fire freely on their own timers. The
 // FSM BehaviorState drives an extra expression (wink) on behavior change.
-// Live2D Cubism-param translation is replaced; intent sources
-// (FSM/circadian/EmotionVector) are reused. Emotion→expression-slot (Phase 3)
-// + gaze (Phase 4) pending. Contract: docs/specs/liri/{skeleton_structure,
-// animation_spec}.md.
+// Contract: docs/specs/liri/{skeleton_structure, animation_spec}.md.
 
 interface Rect {
   x: number;
@@ -65,22 +61,18 @@ export interface SpineCanvasProps {
   behavior: BehaviorState;
   onHeadClick: () => void;
   onBodyClick: () => void;
-  // Loose bounding rect for gaze/click-through (mirrors Live2DCanvas semantics).
+  // Loose bounding rect for gaze/click-through.
   onModelBounds?: (b: Rect) => void;
   // Tight bounding rect for click hit testing.
   onModelHitBounds?: (b: Rect) => void;
-  // Fired when the Spine asset fails to load, so App falls back to Live2D
-  // instead of leaving a blank canvas.
-  onLoadError?: () => void;
 }
 
-export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onLoadError }: SpineCanvasProps) {
+export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds }: SpineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const spineRef = useRef<any>(null);
   // Mirror latest props into refs read each ticker frame / effect (avoids
-  // re-running the heavy load effect on every prop change — same pattern as
-  // Live2DCanvas).
+  // re-running the heavy load effect on every prop change).
   const speedRef = useRef(speedModifier);
   speedRef.current = speedModifier;
   const behaviorRef = useRef(behavior);
@@ -168,8 +160,7 @@ export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick,
           height: b1.height * fit,
         };
 
-        // Report bounding rects for click-through (loose + tight), mirroring
-        // Live2DCanvas so App's hit testing keeps working unchanged.
+        // Report bounding rects for click-through (loose + tight).
         try {
           const w = b.width;
           const h = b.height;
@@ -300,7 +291,6 @@ export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick,
         (app as any).__clickFn = handleClick;
       } catch (err) {
         console.error("[Spine] init/load failed:", err);
-        if (!destroyed) onLoadError?.();
       }
     })();
 

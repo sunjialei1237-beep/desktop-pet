@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-13（续²¹·记忆浮现多样性——novelty+加权抽样+冷却 ✅ 代码+测试入库 `ba87632`，⏳ release rebuild 待另一会话收尾后做。⚠️ 另一会话正在并行改仓库[记忆导出重构：vectors.rs get_all/export.rs/commands 等]，其 vectors.rs 曾半写坏语法阻塞构建，本会话已绕开——只提交自己的 8 个文件。详见 §最近一轮 (续²¹)。上轮 续²⁰·气泡锚点固定璃头顶右侧✅）。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
+> 最后更新：**2026-08-13（续²²·Live2D 全移除——Spine 为唯一渲染 ✅ 代码+实跑确认。删 Live2DCanvas/emotionDriver/behaviorDriver/attention/PetCharacter + public/live2d 3.4MB + npm 依赖；App.tsx 渲染分支塌缩为裸 SpineCanvas。⏳ release rebuild 待做。详见 §最近一轮 (续²²)。上轮 续²¹·记忆浮现多样性 ✅）。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,18 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-13（续²²）更新 · Live2D 全移除——Spine 为唯一渲染 ✅ 代码+静态全绿+实跑确认（⏳ release rebuild 待做）**。用户"Live2D 相关代码全部删掉"。璃最终走 Spine+PixiJS，Live2DCanvas 仅作加载失败回退（永不触发）；续¹⁹ 架构转向后 emotionVector 链路在 Spine 路径无消费方——纯死代码移除。Explore agent 全量扫描确认 emotionVector/EmotionVector/toEmotionVector/DEFAULT_EMOTION **只被 App.tsx(计算)+Live2DCanvas.tsx(唯一消费)引用**，删除零副作用。
+>
+> **删除文件（6 个）**：`src/Live2DCanvas.tsx`(352行)、`src/animation/emotionDriver.ts`(140行)、`src/animation/behaviorDriver.ts`、`src/animation/attention.ts`、`src/PetCharacter.tsx`(SVG 原型占位)、`public/live2d/`整目录(3.4MB,21 tracked+2 untracked PNG)。
+>
+> **连带清理（删 Live2D 暴露的同代孤儿）**：删 Live2DCanvas 后 tsc 报 `attention` 未使用——发现 `attention`/`PetCharacter`/`attention.ts`(computeAttention/AttentionState/PetRect/computeHeadAngle) 整条 gaze 链路是 Live2D 同时代遗留且**全无消费方**（PetCharacter 无人渲染、attention state 只传给它），一并清理（删 Live2D 的自然延伸，非新决策）。`pointerRef` 保留（gaze 基础设施，mousemove 仍更新它）。
+>
+> **改动文件**：① `App.tsx`——删 Live2DCanvas/emotionDriver/attention imports + toEmotionVector 函数 + spineFailed/transientExpression/emotionVector/attention 4 个 state + transientTimerRef + 6 处 setter 调用 + 渲染分支三元塌缩为裸 `<SpineCanvas/>`（删 onLoadError）+ mousemove 里 PetRect/computeAttention 块 + 4 处 Live2D 注释改 Spine 中性表述；② `SpineCanvas.tsx`——删 onLoadError prop(接口+签名+catch 调用)+ Live2D 注释清理；③ `index.html`——删 live2dcubismcore script tag；④ `package.json`——删 pixi-live2d-display-lipsyncpatch 依赖 + keyword/description 的 live2d 字样（npm install removed 8 packages）；⑤ `spineIntent.ts`——清过时注释。
+>
+> **验证**：tsc exit0 / vitest 34 passed / npm run build exit0(1006 modules) / **dev 实跑用户肉眼确认璃正常显示**（PID 540 无报错）。
+>
+> 📋 **待办（下一会话起点）**：① **release rebuild**（前端大改+删依赖，`npx tauri build --no-bundle`）；② **CSP `wasm-unsafe-eval` 复核**——原本给 Live2D Core，Spine/pixi-spine 是否还需要，需 release build 验（保守起见本轮保留未动，踩坑#7）；③ 后端 `transient_expression` 字段前端已停读（soul 反思仍 emit，无害），Spine 路径下"短暂表情强化"暂无前端体现（续¹⁹ 既定：Spine 表情走动画 timeline）。详见 §最近一轮 (续²²)。
 
 > **2026-08-13（续²¹）更新 · 记忆浮现多样性 ✅ 全部收尾（含并行会话合并 + release rebuild + 重启）**。用户"记忆浮现按置信度排序，每次都是星际穿越/糯米，太死板"。**三个根因**：① 强化死循环——每次回忆 strength+=0.03 封顶1.0、日衰减×0.998≈无，主导记忆钉死封顶永远赢；② 锚点选择=置信度 argmax（facts.iter().find(可锚定)=最高置信度第一个）；③ 零多样性机制（无冷却/无探索加分）。**修复**：① reinforce 改边际递减 `+0.03*(1-strength)`；② 评分加 novelty=exp(-recall_count/5)（权重 0.4语义/0.2strength/0.15novelty/0.15recency/0.1情绪）；③ 三条浮现路径（proactive generate/welcome_back/lonely）锚点改加权抽样：episode top-8 softmax(score/0.6)+last_recalled_at 12h 冷却（全冷却放宽）、fact 按 1/(1+mention_count) 抽样；对话路径保持 top-1 相关性优先；到期提醒绝对优先。**零新增 LLM/embedding 调用**。**测试**：lib 301 绿（+8）/ golden 29 绿。**并行会话已合并**：另一会话的记忆导出功能（export.rs JSON/MD + 右键菜单三级导出）代为入库 `3b318ca` 并 push；其遗留 debug 实例已清理。**release 已 rebuild（13:32）+ 桌面快捷方式重启，当前唯一实例**。⏳ **待实跑**：观察浮现多样性（Debug Panel 看 anchor 变化；仍死板调 retrieval.rs 顶部 SURFACE_TEMPERATURE↑ / SURFACE_COOLDOWN_HOURS↓）。详见 §最近一轮 (续²¹)。
 

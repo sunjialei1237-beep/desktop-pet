@@ -4,20 +4,14 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
-import { Live2DCanvas } from "./Live2DCanvas";
 import { SpineCanvas } from "./SpineCanvas";
-
-// Liri (Spine) is the default renderer. Live2D (Haru) stays only as the
-// fallback when the Spine asset fails to load (spineFailed state in App).
 import { SettingsPanel } from "./SettingsPanel";
 import { ContextMenu } from "./ContextMenu";
 import { AnimationFSM, BehaviorState } from "./animation/fsm";
 import { pickNextBehavior } from "./animation/microBehavior";
-import { AttentionState, computeAttention, type PetRect } from "./animation/attention";
 import { type PetPosition } from "./animation/physics";
 import { createGravity, stepGravity, type GravityState } from "./animation/gravity";
 import { getCircadianState, deepNightMessages, TimeOfDay } from "./animation/circadian";
-import { DEFAULT_EMOTION, type EmotionVector } from "./animation/emotionDriver";
 import { typewriterPacing, inferPacingMood } from "./animation/bubblePacing";
 import { shouldAutoSleep } from "./animation/sleepLogic";
 import { sound, INTIMATE_THRESHOLD } from "./audio/soundManager";
@@ -59,20 +53,6 @@ function bubbleClassForMood(label: string): BubbleEmotion {
   return "bubble-calm";
 }
 
-// Project the backend emotion snapshot to the continuous vector the Live2D
-// layer interpolates. `rest_need` is now exposed by the backend (and evolved in
-// the homeostasis loop), so a tired pet's droopy eyes actually show.
-function toEmotionVector(e: EmotionData): EmotionVector {
-  return {
-    mood: e.mood,
-    physical_energy: e.physical_energy,
-    social_battery: e.social_battery,
-    stress: e.stress,
-    loneliness: e.loneliness,
-    rest_need: e.rest_need,
-  };
-}
-
 export default function App() {
 // 方案 B: window dimensions match tauri.conf.json. petPos = window top-left.
 const WINDOW_W = 400;
@@ -92,18 +72,13 @@ const SLEEP_AFTER_IDLE_MS = 10 * 60 * 1000;
   // Glyph sub-kind (only meaningful when bubbleStyle === "bubble-glyph"). The dot
   // is one variant, not a universal prefix — see glyphText() in bubbleVariants.
   const [glyphKind, setGlyphKind] = useState<GlyphKind | undefined>(undefined);
-  // Spine (Liri) is default; flips to true on asset load error → render Haru.
-  const [spineFailed, setSpineFailed] = useState(false);
   const [bubbleStyle, setBubbleStyle] = useState<BubbleEmotion>("bubble-calm");
   const [bubblePos, setBubblePos] = useState("");
   const [inputVisible, setInputVisible] = useState(false);
   const [inputText, setInputText] = useState("");
   const [isThinking, setIsThinking] = useState(false);
-  const [transientExpression, setTransientExpression] = useState<string | null>(null);
   const [moodLabel, setMoodLabel] = useState("平静");
-  const [emotionVector, setEmotionVector] = useState<EmotionVector>(DEFAULT_EMOTION);
   const [showSettings, setShowSettings] = useState(false);
- const [attention, setAttention] = useState(AttentionState.Ignored);
  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 const [awayMode, setAwayMode] = useState(false);
   const [onboarding, setOnboarding] = useState<{
@@ -125,7 +100,6 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     bubbleIdRef.current += 1;
     return bubbleIdRef.current;
   }, []);
-const transientTimerRef = useRef<number | null>(null);
   const welcomeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [behavior, setBehavior] = useState<BehaviorState>(BehaviorState.Idle);
   const fsmRef = useRef<AnimationFSM | null>(null);
@@ -252,7 +226,7 @@ const transientTimerRef = useRef<number | null>(null);
     setInputVisible(true);
   }, [showBubble]);
 
-  // Receive model bounds (canvas-local CSS px) from Live2DCanvas for click-through.
+  // Receive model bounds (canvas-local CSS px) from SpineCanvas for click-through.
   const handleModelBounds = useCallback((b: { x: number; y: number; width: number; height: number }) => {
     modelBoundsRef.current = b;
     // Capture the CANVAS rect (viewport-relative CSS px) — not the wrapper's.
@@ -280,7 +254,7 @@ const transientTimerRef = useRef<number | null>(null);
     console.log("[clickthrough] modelBounds reported", b);
   }, []);
 
-  // Receive the tight model bounds (10% inset) from Live2DCanvas; stored for
+  // Receive the tight model bounds (10% inset) from SpineCanvas; stored for
   // click hit testing (kept separate from the loose gaze/through rect).
   const handleModelHitBounds = useCallback((b: { x: number; y: number; width: number; height: number }) => {
     modelHitBoundsRef.current = b;
@@ -331,14 +305,6 @@ const transientTimerRef = useRef<number | null>(null);
      const el = petRef.current;
      if (!el || awayMode) return;
       pointerRef.current = { x: e.clientX, y: e.clientY };
-     const rect = el.getBoundingClientRect();
-      const petRect: PetRect = {
-        centerX: rect.left + rect.width / 2,
-        centerY: rect.top + rect.height / 2,
-        width: rect.width,
-        height: rect.height,
-      };
-      setAttention(computeAttention(e.clientX, e.clientY, petRect));
     };
     window.addEventListener("mousemove", onMouseMove);
     return () => window.removeEventListener("mousemove", onMouseMove);
@@ -387,7 +353,6 @@ const transientTimerRef = useRef<number | null>(null);
 
     listen<EmotionData>("emotion-update", (event) => {
       setMoodLabel(event.payload.mood_label);
-      setEmotionVector(toEmotionVector(event.payload));
     }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
     listen<{ title: string; event_id: string }>("proactive-prompt", (event) => {
@@ -445,7 +410,6 @@ const transientTimerRef = useRef<number | null>(null);
       try {
         const emo = await invoke<EmotionData>("get_emotion_state");
         setMoodLabel(emo.mood_label);
-        setEmotionVector(toEmotionVector(emo));
         // Idle sigh (architecture #12 silence-is-expression, #10 liveliness):
         // when she's worn down and not busy, occasionally let out a wordless
         // "呼…" glyph bubble. Guards keep it from interrupting an active
@@ -467,7 +431,6 @@ const transientTimerRef = useRef<number | null>(null);
     invoke<EmotionData>("get_emotion_state")
       .then((emo) => {
         setMoodLabel(emo.mood_label);
-        setEmotionVector(toEmotionVector(emo));
       })
       .catch(() => {});
 
@@ -798,13 +761,11 @@ const transientTimerRef = useRef<number | null>(null);
         return;
       }
       // global-cursor 是穿透期间的唯一权威指针来源。即使后续 ignore=true，
-      // focus ticker 仍读 pointerRef，所以必须持续更新它（client 坐标口径，
-      // 与 Live2DCanvas focusTickerFn 里 p.x-rect.left 一致）。
+      // pointerRef 仍持续更新它（client 坐标口径），供 gaze/视线使用。
       const clientX = (sx - origin.x) / scale;
       const clientY = (sy - origin.y) / scale;
       pointerRef.current = { x: clientX, y: clientY };
      applyIgnore(!inside);
-      if (!inside) setAttention(AttentionState.Ignored);
     }).then((u) => { if (!cancelled) unlisten = u; else u(); }).catch(() => {});
 
     return () => {
@@ -906,7 +867,7 @@ const transientTimerRef = useRef<number | null>(null);
   // 方案 B: drag the pet = drag the OS window. NATIVE startDragging() for zero
   // jitter, but DEFERRED until the pointer actually moves past a threshold — so a
   // pure click (press+release without moving) never enters the OS drag loop and
-  // Live2D hit-test clicks (head/body bubbles) still fire normally.
+  // Spine hit-test clicks (head/body bubbles) still fire normally.
   const DRAG_THRESHOLD = 5;
 
   // Any user interaction refreshes the DeepNight sleep-idle timer and wakes the
@@ -1113,17 +1074,11 @@ const transientTimerRef = useRef<number | null>(null);
        else showBubble("…", 2500, "bubble-glyph", "", "surprise");
        setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 2000);
      }
-     if (res.transient_expression) {
-       if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
-       setTransientExpression(res.transient_expression);
-       transientTimerRef.current = window.setTimeout(() => setTransientExpression(null), 8000);
-     }
       // Refresh emotion immediately so the expression changes right after the
       // reply, instead of waiting up to 5s for the next poll.
       invoke<EmotionData>("get_emotion_state")
         .then((emo) => {
           setMoodLabel(emo.mood_label);
-          setEmotionVector(toEmotionVector(emo));
         })
         .catch(() => {});
    } catch (e) {
@@ -1376,31 +1331,14 @@ const handleBodyClick = useCallback(() => {
       }}
       onMouseDown={handleDragStart}
    >
-    {!spineFailed ? (
-      <SpineCanvas
-        speedModifier={circadianRef.current.speedModifier}
-        behavior={behavior}
-        onHeadClick={handleHeadClick}
-        onBodyClick={handleBodyClick}
-        onModelBounds={handleModelBounds}
-        onModelHitBounds={handleModelHitBounds}
-        onLoadError={() => setSpineFailed(true)}
-      />
-    ) : (
-      <Live2DCanvas
-        emotionVector={emotionVector}
-        behavior={behavior}
-        attention={attention}
-        pointerRef={pointerRef}
-        isThinking={isThinking}
-        onHeadClick={handleHeadClick}
-        onBodyClick={handleBodyClick}
-        onModelBounds={handleModelBounds}
-        onModelHitBounds={handleModelHitBounds}
-        transientExpression={transientExpression}
-        speedModifier={circadianRef.current.speedModifier}
-      />
-    )}
+    <SpineCanvas
+      speedModifier={circadianRef.current.speedModifier}
+      behavior={behavior}
+      onHeadClick={handleHeadClick}
+      onBodyClick={handleBodyClick}
+      onModelBounds={handleModelBounds}
+      onModelHitBounds={handleModelHitBounds}
+    />
     {/* Click-through boundary visualization (AIRI-style). Hidden by default;
         gains .bounds-visible when the cursor is near the model rect's outline
         (±BAND px). pointer-events:none so it never blocks clicks. Position is
