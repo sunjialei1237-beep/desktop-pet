@@ -10,8 +10,10 @@ pub mod consolidation;
 pub mod monologue;
 pub mod reflection;
 pub mod review;
+pub mod ritual;
 
 pub use consolidation::{consolidate, lifecycle_cleanup};
 pub use monologue::surface_thoughts;
 pub use reflection::{run_reflection, ReflectionResult, ReflectionTrigger};
 pub use review::{maybe_run_review_if_due, run_review, ReviewResult};
+pub use ritual::{generate_goodmorning, goodmorning_canned, mark_goodmorning_done, should_run_goodmorning};

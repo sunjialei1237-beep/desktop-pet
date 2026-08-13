@@ -398,6 +398,21 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
         .catch((e) => console.warn("[lonely-nudge] lonely_bubble failed", e));
     }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
+    // Ritual greeting (早安 first iteration): the backend fires this once per
+    // day on the first meeting during Morning/Afternoon. Mirrors the
+    // lonely-nudge guard set (onboarding / away / sleeping). #12: a sleeping
+    // 璃 isn't woken to say 早安.
+    listen<{ kind: string }>("ritual-bubble", (event) => {
+      if (onboardingActiveRef.current) return;
+      if (awayMode) return;
+      if (fsmRef.current?.state === BehaviorState.Sleeping) return;
+      invoke<string | null>("ritual_bubble", { kind: event.payload.kind })
+        .then((reply) => {
+          if (reply) showBubble(reply, 10000, bubbleClassForMood(moodLabel));
+        })
+        .catch((e) => console.warn("[ritual-bubble] ritual_bubble failed", e));
+    }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
+
     listen<{ status: string; elapsed_secs: number }>("app-status", (event) => {
       if (event.payload.status === "resumed") {
         const hours = Math.round(event.payload.elapsed_secs / 3600);

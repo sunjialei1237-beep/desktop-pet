@@ -123,7 +123,7 @@ pub struct BubbleOutcome {
 /// stays warn-only observability (Debug Panel). Proactive bubbles return a full
 /// string with no streaming, so the block is clean — this is also where the
 /// 07-31 hallucination actually occurred.
-async fn grounding_guard(
+pub async fn grounding_guard(
     reply: String,
     retrieval: &crate::mind::retrieval::RetrievalResult,
     messages: &[ChatMessage],
@@ -679,7 +679,7 @@ pub async fn generate_lonely_bubble(
 /// A fact the pet has already voiced many times is de-prioritized, so proactive
 /// bubbles explore newer facts instead of always taking the single highest-
 /// confidence one (user feedback 2026-08-13: 浮现按置信度排序太死板).
-fn sample_anchorable_fact<'a>(facts: &'a [Fact], rng: &mut impl rand::Rng) -> Option<&'a Fact> {
+pub fn sample_anchorable_fact<'a>(facts: &'a [Fact], rng: &mut impl rand::Rng) -> Option<&'a Fact> {
     let candidates: Vec<&Fact> = facts.iter().filter(|f| is_anchorable_fact(f)).collect();
     if candidates.is_empty() {
         return None;

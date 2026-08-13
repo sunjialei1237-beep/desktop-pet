@@ -23,6 +23,12 @@ fn read_config(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     .map_err(|e| format!("read app_config {}: {}", key, e))
 }
 
+/// Generic app_config read. The counterpart to `save` — lets any module
+/// persist and read arbitrary key/value state (e.g. ritual "last run" dates).
+pub fn get(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    read_config(conn, key)
+}
+
 pub fn load(conn: &Connection) -> Result<UserProfile, String> {
     Ok(UserProfile {
         user_nickname: read_config(conn, "user_nickname")?,

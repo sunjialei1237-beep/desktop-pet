@@ -646,6 +646,59 @@ pub async fn welcome_back_bubble(
     ))
 }
 
+/// Voices a ritual greeting (早安 first iteration). The loop_runner gates
+/// emission (time-of-day window + once-per-day + presence); this generates the
+/// text once the frontend asks. Mirrors `welcome_back_bubble`: memory-grounded
+/// LLM path first, mood/time-aware canned fallback when unconfigured (Principle 8).
+#[tauri::command]
+pub async fn ritual_bubble(
+    kind: String,
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<Option<String>, String> {
+    if kind != "goodmorning" {
+        log::warn!("[ritual] unknown kind: {}", kind);
+        return Ok(None);
+    }
+    let wm_context = {
+        let wm = state
+            .working_memory
+            .lock()
+            .map_err(|e| format!("WM lock error: {}", e))?;
+        wm.get_context()
+    };
+    // Bind cloned Option before await so the MutexGuard drops (non-Send guard,
+    // same pattern as welcome_back_bubble / proactive_bubble).
+    let llm = state
+        .llm
+        .lock()
+        .map_err(|e| format!("LLM lock error: {}", e))?
+        .as_ref()
+        .cloned();
+    if let Some(llm) = llm {
+        let outcome = crate::soul::ritual::generate_goodmorning(
+            &db,
+            &llm,
+            Some(&state.embedding),
+            &wm_context,
+        )
+        .await?;
+        if let Some(o) = outcome {
+            return Ok(Some(o.reply));
+        }
+        // LLM returned nothing → fall through to canned.
+    }
+    // Fallback: mood + time-of-day canned line. Never fails.
+    let mood = db
+        .with_conn(crate::db::emotion::get)
+        .map(|e| e.mood)
+        .unwrap_or(0.5);
+    let tod = crate::perception::time::current_time_of_day();
+    Ok(Some(
+        crate::soul::ritual::goodmorning_canned(mood, tod).to_string(),
+    ))
+}
+
 /// Generates a loneliness-driven "想你了" bubble when the user has been idle at
 /// the desk (homeostasis let loneliness climb) and the relationship is
 /// established. The loop_runner gates emission (loneliness threshold + closeness

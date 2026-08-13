@@ -30,6 +30,10 @@ pub fn start_life_loop(app: AppHandle) {
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(30));
             medium_tick(&app);
+            // Rituals (早安) run BEFORE presence-transition so that an overnight
+            // return fires 早安 (date-driven) first; the welcome-back path then
+            // sees today's 早安 already done and yields to it.
+            check_goodmorning(&app);
             check_presence_transition(&app, &mut last_presence, &mut away_since);
             check_lonely_nudge(&app, &mut last_lonely_nudge);
         });
@@ -185,14 +189,38 @@ fn check_presence_transition(
     {
         let just_talked = recent_interaction_secs(app).map(|s| s < 30).unwrap_or(false);
         if !just_talked {
-            log::info!(
-                "Life loop: user returned after {}s away — emitting welcome-back",
-                away_secs
+            // Yield to 早安 when both qualify (overnight return during
+            // Morning/Afternoon): if today's 早安 has already fired (or is
+            // about to, having just run in check_goodmorning above), the
+            // ritual greeting is more fitting than a generic welcome-back.
+            // should_run_goodmorning == false ⇒ already done today.
+            let tod = crate::perception::time::current_time_of_day();
+            let morning_window = matches!(
+                tod,
+                crate::perception::time::TimeOfDay::Morning
+                    | crate::perception::time::TimeOfDay::Afternoon
             );
-            let _ = app.emit(
-                "welcome-back",
-                serde_json::json!({ "away_secs": away_secs }),
-            );
+            let goodmorning_already_done = get_db(app)
+                .and_then(|db| {
+                    db.with_conn(|conn| Ok(!crate::soul::ritual::should_run_goodmorning(conn)))
+                        .ok()
+                })
+                .unwrap_or(false);
+            if morning_window && goodmorning_already_done {
+                log::info!(
+                    "Life loop: user returned after {}s, but 早安 already fired today — yielding to ritual",
+                    away_secs
+                );
+            } else {
+                log::info!(
+                    "Life loop: user returned after {}s away — emitting welcome-back",
+                    away_secs
+                );
+                let _ = app.emit(
+                    "welcome-back",
+                    serde_json::json!({ "away_secs": away_secs }),
+                );
+            }
         }
         // Reset: the return has been acted on (or skipped). Next away starts fresh.
         *away_since = None;
@@ -274,6 +302,64 @@ fn check_lonely_nudge(app: &AppHandle, last_nudge: &mut Option<std::time::Instan
         Some(format!("loneliness={:.2}", loneliness)),
     );
     *last_nudge = Some(now);
+}
+
+/// 早安 ritual: the first meeting each day (Morning/Afternoon, user present).
+/// Date-driven (at most once per local day), persisted in app_config. Fires a
+/// "ritual-bubble" event the frontend turns into a greeting; the LLM generation
+/// happens on-demand in the `ritual_bubble` command (mirrors welcome-back).
+fn check_goodmorning(app: &AppHandle) {
+    use crate::perception::time::{current_time_of_day, TimeOfDay};
+
+    // Capability toggle (Architecture #6).
+    let enabled = app
+        .try_state::<AppState>()
+        .map(|s| s.config.scheduler.enable_rituals)
+        .unwrap_or(true);
+    if !crate::lifecycle::scheduler::should_run(enabled) {
+        crate::lifecycle::scheduler::record("ritual_goodmorning", false, "skipped", None);
+        return;
+    }
+
+    // Only during the daytime greeting window.
+    let tod = current_time_of_day();
+    if !matches!(tod, TimeOfDay::Morning | TimeOfDay::Afternoon) {
+        return;
+    }
+
+    // Only when the user is actually at the desk.
+    if crate::perception::presence::current_presence()
+        != crate::perception::presence::PresenceState::Active
+    {
+        return;
+    }
+
+    let db = match get_db(app) {
+        Some(s) => s,
+        None => return,
+    };
+    let due = db
+        .with_conn(|conn| Ok(crate::soul::ritual::should_run_goodmorning(conn)))
+        .unwrap_or(false);
+    if !due {
+        return;
+    }
+
+    // Mark done BEFORE emitting so a crash or rapid re-tick can't double-fire.
+    // (Idempotent: re-writing today is a no-op.)
+    let _ = db.with_conn(|conn| crate::soul::ritual::mark_goodmorning_done(conn));
+
+    log::info!("Life loop: 早安 ritual firing (tod={})", tod);
+    let _ = app.emit(
+        "ritual-bubble",
+        serde_json::json!({ "kind": "goodmorning" }),
+    );
+    crate::lifecycle::scheduler::record(
+        "ritual_goodmorning",
+        true,
+        "ok",
+        Some(format!("tod={}", tod)),
+    );
 }
 
 /// Seconds since the last recorded interaction, or None if unavailable.

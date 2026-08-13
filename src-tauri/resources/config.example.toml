@@ -43,3 +43,4 @@ enable_reflection = true          # daily self-reflection → internal thoughts
 enable_consolidation = true       # compress >100 episodes into landmark memories
 enable_relationship_review = true # periodic "where the relationship stands" summary
 enable_lifecycle_cleanup = true   # purge old low-importance episodes
+enable_rituals = true             # 早安 (first meeting each day) greeting
