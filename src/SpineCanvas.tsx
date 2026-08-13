@@ -246,7 +246,10 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         const bodyBone = spine.skeleton.findBone("spine");
         let gazeHead = 0; // current smoothed head rotation (deg)
         let gazeBody = 0; // current smoothed body lean (deg)
-        let lastWallElapsed = app.ticker.elapsedMS;
+        // Live diagnostics for CDP debugging (mirrors __updateFn pattern).
+        const gazeDiag = { head: 0, body: 0, dist: 0, f: 0, cx: 0, cy: 0, hx: 0, hy: 0 };
+        (app as any).__gazeDiag = gazeDiag;
+        (window as any).__gazeDiag = gazeDiag;
 
         const fireSpineAction = () => {
           const k: ActionKind = Math.random() < 0.5 ? "ear" : "tail";
@@ -274,11 +277,13 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
           spine.update(dt);
 
           // --- Gaze: head follows cursor within range (AIRI-style) ---
-          // Wall-clock dt (elapsedMS is real time, unaffected by ticker.speed)
-          // so gaze responsiveness never slows with circadian speed.
+          // Wall-clock frame delta: app.ticker.elapsedMS is the PER-FRAME
+          // elapsed ms (like the action timers above), unaffected by
+          // ticker.speed — gaze responsiveness never slows with circadian
+          // speed. (Do NOT subtract consecutive elapsedMS values: it is
+          // already a delta, the difference is ~0 and the smoothing freezes.)
           {
-            const wallDt = (app.ticker.elapsedMS - lastWallElapsed) / 1000;
-            lastWallElapsed = app.ticker.elapsedMS;
+            const wallDt = app.ticker.elapsedMS / 1000;
             const canvas = canvasRef.current;
             if (canvas && headBone && bodyBone) {
               const rect = canvas.getBoundingClientRect();
@@ -301,6 +306,14 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
               const k = wallDt > 0 ? Math.min(1, wallDt / GAZE_TAU) : 0;
               gazeHead += (targetHead - gazeHead) * k;
               gazeBody += (targetBody - gazeBody) * k;
+              gazeDiag.head = gazeHead;
+              gazeDiag.body = gazeBody;
+              gazeDiag.dist = dist;
+              gazeDiag.f = f;
+              gazeDiag.cx = cx;
+              gazeDiag.cy = cy;
+              gazeDiag.hx = hx;
+              gazeDiag.hy = hy;
               // Additive: keeps the animations' own head/spine motion
               // (body_breath keys them every frame) with gaze on top.
               headBone.rotation += gazeHead;
