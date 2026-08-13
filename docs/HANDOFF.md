@@ -29,7 +29,7 @@
 
 ## §当前任务（接手者先看这）
 
-> **2026-08-13（续²²）更新 · Live2D 全移除——Spine 为唯一渲染 ✅ 代码+静态全绿+实跑确认（⏳ release rebuild 待做）**。用户"Live2D 相关代码全部删掉"。璃最终走 Spine+PixiJS，Live2DCanvas 仅作加载失败回退（永不触发）；续¹⁹ 架构转向后 emotionVector 链路在 Spine 路径无消费方——纯死代码移除。Explore agent 全量扫描确认 emotionVector/EmotionVector/toEmotionVector/DEFAULT_EMOTION **只被 App.tsx(计算)+Live2DCanvas.tsx(唯一消费)引用**，删除零副作用。
+> **2026-08-13（续²²）更新 · Live2D 全移除——Spine 为唯一渲染 ✅ 代码+静态全绿+实跑确认（release rebuild 已完成 ✅ + 音效治理同轮入库）**。用户"Live2D 相关代码全部删掉"。璃最终走 Spine+PixiJS，Live2DCanvas 仅作加载失败回退（永不触发）；续¹⁹ 架构转向后 emotionVector 链路在 Spine 路径无消费方——纯死代码移除。Explore agent 全量扫描确认 emotionVector/EmotionVector/toEmotionVector/DEFAULT_EMOTION **只被 App.tsx(计算)+Live2DCanvas.tsx(唯一消费)引用**，删除零副作用。
 >
 > **删除文件（6 个）**：`src/Live2DCanvas.tsx`(352行)、`src/animation/emotionDriver.ts`(140行)、`src/animation/behaviorDriver.ts`、`src/animation/attention.ts`、`src/PetCharacter.tsx`(SVG 原型占位)、`public/live2d/`整目录(3.4MB,21 tracked+2 untracked PNG)。
 >
@@ -39,7 +39,7 @@
 >
 > **验证**：tsc exit0 / vitest 34 passed / npm run build exit0(1006 modules) / **dev 实跑用户肉眼确认璃正常显示**（PID 540 无报错）。
 >
-> 📋 **待办（下一会话起点）**：① **release rebuild**（前端大改+删依赖，`npx tauri build --no-bundle`）；② **CSP `wasm-unsafe-eval` 复核**——原本给 Live2D Core，Spine/pixi-spine 是否还需要，需 release build 验（保守起见本轮保留未动，踩坑#7）；③ 后端 `transient_expression` 字段前端已停读（soul 反思仍 emit，无害），Spine 路径下"短暂表情强化"暂无前端体现（续¹⁹ 既定：Spine 表情走动画 timeline）。详见 §最近一轮 (续²²)。
+> 📋 **待办（下一会话起点）**：~~① **release rebuild**（前端大改+删依赖，`npx tauri build --no-bundle`）~~ **✅ 已完成 14:1x（含本轮音效治理，全量验证 tsc/vitest 34/cargo lib 301 绿）**；② **CSP `wasm-unsafe-eval` 复核**——原本给 Live2D Core，Spine/pixi-spine 是否还需要，需 release build 验（保守起见本轮保留未动，踩坑#7）；③ 后端 `transient_expression` 字段前端已停读（soul 反思仍 emit，无害），Spine 路径下"短暂表情强化"暂无前端体现（续¹⁹ 既定：Spine 表情走动画 timeline）。详见 §最近一轮 (续²²)。
 
 > **2026-08-13（续²¹）更新 · 记忆浮现多样性 ✅ 全部收尾（含并行会话合并 + release rebuild + 重启）**。用户"记忆浮现按置信度排序，每次都是星际穿越/糯米，太死板"。**三个根因**：① 强化死循环——每次回忆 strength+=0.03 封顶1.0、日衰减×0.998≈无，主导记忆钉死封顶永远赢；② 锚点选择=置信度 argmax（facts.iter().find(可锚定)=最高置信度第一个）；③ 零多样性机制（无冷却/无探索加分）。**修复**：① reinforce 改边际递减 `+0.03*(1-strength)`；② 评分加 novelty=exp(-recall_count/5)（权重 0.4语义/0.2strength/0.15novelty/0.15recency/0.1情绪）；③ 三条浮现路径（proactive generate/welcome_back/lonely）锚点改加权抽样：episode top-8 softmax(score/0.6)+last_recalled_at 12h 冷却（全冷却放宽）、fact 按 1/(1+mention_count) 抽样；对话路径保持 top-1 相关性优先；到期提醒绝对优先。**零新增 LLM/embedding 调用**。**测试**：lib 301 绿（+8）/ golden 29 绿。**并行会话已合并**：另一会话的记忆导出功能（export.rs JSON/MD + 右键菜单三级导出）代为入库 `3b318ca` 并 push；其遗留 debug 实例已清理。**release 已 rebuild（13:32）+ 桌面快捷方式重启，当前唯一实例**。⏳ **待实跑**：观察浮现多样性（Debug Panel 看 anchor 变化；仍死板调 retrieval.rs 顶部 SURFACE_TEMPERATURE↑ / SURFACE_COOLDOWN_HOURS↓）。详见 §最近一轮 (续²¹)。
 
@@ -210,6 +210,24 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-13 续²²b)：音效治理 —— 全局单音互斥 + 800ms 间隔 + 静默优先
+
+**任务**（用户三轮反馈收敛）：①"每次点击都有音效，混乱，有时同时两个音效"→ ②"连着出声，先笑后ha"→ ③ 修完仍不符"我们制定的规范"（soundManager #10 宁少勿突兀 + 设计 6.5 行为-音效映射）。
+
+### 三处改动（commit `c5c3a6b` + `fa2954b`）
+
+1. **全局单音互斥**（`c5c3a6b`）：`playSample` 加 `currentSource`——新音效先 `stop()` 上一个，跨触发器永不重叠（右键菜单 send + 摸头/戳、拖拽 + 落地）。
+2. **静默优先**（`c5c3a6b`）：menu 100% 必响 → 60 静默/40 出声；poke1 75% → 50 静默/30/20。
+3. **全局最小间隔 800ms**（`fa2954b`）：`play()` 加 `GLOBAL_MIN_GAP_MS`——任何**可听**音效后 800ms 内的新请求直接拒绝（静默结果不占闸）。治"连着出声"根因：**点身体无时间闸**（摸头有 3s 闸）+ **poke1/2/3 是三个独立触发器、冷却互不共享**（快速连点 3 下 = 3 音效 ~600ms 连响）+ **跨触发器零间隔**（摸头 laugh + 随即戳身体 surprise 相接）；上一轮互斥只是"截断+下一个立刻起"= 正是"先笑后ha"听感。
+
+### 验证与合并
+
+- soundManager 独立 tsc 验证（无 import 可单文件编译）；全量 tsc/vitest 34/cargo lib 301/check --tests 绿。
+- ⚠️ 两次误提交教训：① 对方会话已 stage 的 haru 删除混入我的 commit（`git reset --soft` + `restore --staged` 撤销重来）；② 构建前必须确认无运行中实例（对方会话又启动了一个，踩坑#6 os error 5）——**提交前先 `git status` 查对方 stage，构建前先 taskkill**。
+- 对方 Live2D 移除 `1e3cb0f` + 抽取器中文化 `f6c9c0a` 已入库 push；**release rebuild + 干净重启完成（14:1x）**，当前唯一实例。
 
 ---
 
