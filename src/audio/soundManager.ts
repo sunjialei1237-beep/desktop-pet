@@ -28,6 +28,17 @@ export type TriggerId =
  */
 export const INTIMATE_THRESHOLD = 40;
 
+/**
+ * Min ms between any two AUDIBLE sounds, across ALL triggers (global gap).
+ * Fixes "连着出声": body-poke has no click gate (unlike head-pet's 3s) and
+ * poke1/2/3 are separate triggers with separate cooldowns, so rapid clicks or
+ * a pet-then-poke could sound two clips ~280ms apart. The per-trigger
+ * cooldown only throttles the SAME trigger; this gap throttles everything.
+ * Silent outcomes do NOT reserve the gap (a silent roll never blocks a later
+ * sound). 宁少勿突兀 (#10).
+ */
+const GLOBAL_MIN_GAP_MS = 800;
+
 // --- Asset keys -> public paths. Vite serves public/ at BASE_URL root. ---
 type AssetKey =
     | "surprise-soft" | "startle-short" | "soft-ah" | "annoyed" | "laugh"
@@ -110,6 +121,8 @@ class SoundManager {
     private muted = false;
     private buffers = new Map<AssetKey, Promise<AudioBuffer | null>>();
     private lastAttemptAt = new Map<TriggerId, number>();
+    /** Timestamp of the last AUDIBLE sound (global gap, #10). */
+    private lastSoundedAt = 0;
     /** Currently playing source — global one-sound-at-a-time mutex (#10). */
     private currentSource: AudioBufferSourceNode | null = null;
     private greeted = false;    // startup "hi" has fired
@@ -173,15 +186,23 @@ class SoundManager {
         if (!ctx) return;
         const cfg = TRIGGERS[trigger];
 
+        // Global cross-trigger gap (#10): never start a sound within
+        // GLOBAL_MIN_GAP_MS of the previous AUDIBLE one. Kills back-to-back
+        // clips (pet-then-poke "先笑后ha", poke1/2/3 rapid bursts) that the
+        // per-trigger cooldowns can't catch — they only throttle the same
+        // trigger. Silence does not reserve the gap.
+        const now = Date.now();
+        if (now - this.lastSoundedAt < GLOBAL_MIN_GAP_MS) return;
+
         // Cooldown: both sounding and silent outcomes reset it, so rapid taps
         // cannot stack sounds (the "less is more" guarantee, #10).
-        const now = Date.now();
         const last = this.lastAttemptAt.get(trigger) ?? 0;
         if (now - last < cfg.cooldownMs) return;
         this.lastAttemptAt.set(trigger, now);
 
         const variant = this.pick(cfg.variants);
         if (!variant.key) return; // silence chosen — still counts (cooldown set above)
+        this.lastSoundedAt = now;
         this.playSample(variant.key, ctx);
     }
 
