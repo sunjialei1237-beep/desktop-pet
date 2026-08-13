@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { MutableRefObject } from "react";
 import { BehaviorState } from "./animation/fsm";
 import { setupMix, setupIdleTracks, triggerBehavior, initFace, playAction, actionDuration, beginFadeOut, endAction, nextBlinkDelay, nextSmileDelay, nextSpineDelay, IDLE_FADE } from "./animation/spineIntent";
 import type { ActionKind } from "./animation/spineIntent";
@@ -21,6 +22,21 @@ interface Rect {
   width: number;
   height: number;
 }
+
+// --- Gaze (AIRI-style head-follow) tuning constants ---
+// The head turns toward the cursor ONLY within GAZE_RANGE canvas px of the
+// head bone, with a radial falloff (full effect at the head, zero at the
+// range edge, smooth return to neutral beyond — AIRI's ignored-return).
+// Amplitudes are deliberately small (user: 幅度都不用太大): head ±8°h/±3.5°v,
+// body (spine bone) leans ±2.5° — 身体微侧. Applied ADDITIVELY on top of
+// whatever the animations set each frame (post-update), so body_breath /
+// ear / tail keep playing underneath and nothing accumulates.
+const GAZE_RANGE = 320;      // canvas px radius around the head bone
+const GAZE_HEAD_H = 8;       // max head rotation (deg), horizontal
+const GAZE_HEAD_V = 3.5;     // max head rotation (deg), vertical
+const GAZE_BODY = 2.5;       // max body lean (deg)
+const GAZE_TAU = 0.12;       // smoothing time constant (s, wall clock)
+const GAZE_H_SIGN = 1;       // flip to -1 if left/right feels mirrored
 
 // Register a PIXI LoadParser that intercepts liri.json BEFORE pixi-spine parses
 // it, applies the runtime mouth-slot patch (see liriAssetPatch.ts), and returns
@@ -59,6 +75,10 @@ export interface SpineCanvasProps {
   speedModifier: number;
   // FSM BehaviorState → drives the expression track (blink/wink on change).
   behavior: BehaviorState;
+  // Cursor position in window (client) coords, kept fresh by App's
+  // global-cursor listener. Drives head-gaze + body lean. A ref (not state)
+  // so gaze reads it per frame without React re-renders.
+  pointerRef: MutableRefObject<{ x: number; y: number }>;
   onHeadClick: () => void;
   onBodyClick: () => void;
   // Loose bounding rect for gaze/click-through.
@@ -67,7 +87,7 @@ export interface SpineCanvasProps {
   onModelHitBounds?: (b: Rect) => void;
 }
 
-export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds }: SpineCanvasProps) {
+export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds }: SpineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const spineRef = useRef<any>(null);
@@ -219,6 +239,15 @@ export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick,
         let spineT = nextSpineDelay(); // 5-8s → ear/tail each ~every 10-16s
         let spinePending = false; // spineT elapsed; wait for a breath boundary to fire
 
+        // Gaze state: smoothed head/body rotation applied additively after
+        // spine.update() each frame (never accumulates — update() resets the
+        // bones to the animation's value first).
+        const headBone = spine.skeleton.findBone("head");
+        const bodyBone = spine.skeleton.findBone("spine");
+        let gazeHead = 0; // current smoothed head rotation (deg)
+        let gazeBody = 0; // current smoothed body lean (deg)
+        let lastWallElapsed = app.ticker.elapsedMS;
+
         const fireSpineAction = () => {
           const k: ActionKind = Math.random() < 0.5 ? "ear" : "tail";
           playAction(spine, k, face);
@@ -243,6 +272,42 @@ export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick,
           const dt = app.ticker.deltaMS / 1000;
           const wall = app.ticker.elapsedMS / 1000;
           spine.update(dt);
+
+          // --- Gaze: head follows cursor within range (AIRI-style) ---
+          // Wall-clock dt (elapsedMS is real time, unaffected by ticker.speed)
+          // so gaze responsiveness never slows with circadian speed.
+          {
+            const wallDt = (app.ticker.elapsedMS - lastWallElapsed) / 1000;
+            lastWallElapsed = app.ticker.elapsedMS;
+            const canvas = canvasRef.current;
+            if (canvas && headBone && bodyBone) {
+              const rect = canvas.getBoundingClientRect();
+              const cx = pointerRef.current.x - rect.left;
+              const cy = pointerRef.current.y - rect.top;
+              // Head bone world pos → canvas coords (spine.x/y + local*fit).
+              const hx = spine.x + headBone.worldX * spine.scale.x;
+              const hy = spine.y + headBone.worldY * spine.scale.y;
+              const dx = cx - hx;
+              const dy = cy - hy;
+              const dist = Math.hypot(dx, dy);
+              // Sleeping → she doesn't follow; out of range → smooth return.
+              const active =
+                behaviorRef.current !== BehaviorState.Sleeping && dist < GAZE_RANGE;
+              const f = active ? 1 - dist / GAZE_RANGE : 0; // radial falloff
+              const nx = dx / GAZE_RANGE;
+              const ny = dy / GAZE_RANGE;
+              const targetHead = f * (nx * GAZE_HEAD_H * GAZE_H_SIGN + ny * GAZE_HEAD_V);
+              const targetBody = f * (nx * GAZE_BODY * GAZE_H_SIGN);
+              const k = wallDt > 0 ? Math.min(1, wallDt / GAZE_TAU) : 0;
+              gazeHead += (targetHead - gazeHead) * k;
+              gazeBody += (targetBody - gazeBody) * k;
+              // Additive: keeps the animations' own head/spine motion
+              // (body_breath keys them every frame) with gaze on top.
+              headBone.rotation += gazeHead;
+              bodyBone.rotation += gazeBody;
+            }
+          }
+
           if (busy) {
             busyRem -= wall;
             if (!faded && busyRem <= IDLE_FADE) {

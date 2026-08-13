@@ -1334,6 +1334,7 @@ const handleBodyClick = useCallback(() => {
     <SpineCanvas
       speedModifier={circadianRef.current.speedModifier}
       behavior={behavior}
+      pointerRef={pointerRef}
       onHeadClick={handleHeadClick}
       onBodyClick={handleBodyClick}
       onModelBounds={handleModelBounds}
