@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-13（续²²·Live2D 全移除——Spine 为唯一渲染 ✅ 代码+实跑确认。删 Live2DCanvas/emotionDriver/behaviorDriver/attention/PetCharacter + public/live2d 3.4MB + npm 依赖；App.tsx 渲染分支塌缩为裸 SpineCanvas。⏳ release rebuild 待做。详见 §最近一轮 (续²²)。上轮 续²¹·记忆浮现多样性 ✅）。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
+> 最后更新：**2026-08-13（续²³·AIRI 风格视线驱动✅——头绕鼠标转动+身体微侧，用户确认没问题。五连坑：elapsedMS 差值冻结/烘焙在 update 内部/局部轴横指/位移无 key 累加/平面旋转只能表达左右。含 CDP 诊断句柄 __gazeDiag/__spine/__ctDiag。详见 §最近一轮 (续²³)。上轮 续²²b·音效治理✅。⚠️ 对方会话仍在并行提交[64d4e44 感知提示/4efbd2f 抽取器文风]。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,8 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-13（续²³）更新 · AIRI 风格视线驱动 ✅ 用户确认没问题（含五连坑排查记录）**。用户"头部绕鼠标转动，只在一定范围内生效且必须是头部转动加身体微侧，鼠标的围绕中心也是头部，幅度都不用太大。可以参考 AIRI"。**纯代码实现**（骨骼旋转，零新素材）：`SpineCanvas.tsx` 加 `pointerRef` prop（App 全局光标轮询已有）+ 每帧 head 骨世界坐标→画布坐标，光标距头顶 `GAZE_RANGE=320px` 内生效、径向衰减、范围外平滑回正（AIRI ignored-return）；头 ±10° 绕颈旋转 + 身体(spine)±3° 微侧；指数平滑 τ=0.12s（挂钟时间不受昼夜变速影响）；睡眠时不跟随。**用户三轮反馈的五个坑全记录在 §最近一轮 (续²³)**——最终形态：**只保留水平旋转通道**（下巴必须固定，上下俯仰留给美术 look_up/look_down 动画）。调参入口：`SpineCanvas.tsx` 顶部 `GAZE_*` 常量。CDP 诊断句柄：`window.__gazeDiag`（凝视数值）/`window.__spine`（spine 实例）/`window.__ctDiag`（origin/scale）。详见 §最近一轮 (续²³)。
 
 > **2026-08-13（续²²）更新 · Live2D 全移除——Spine 为唯一渲染 ✅ 代码+静态全绿+实跑确认（release rebuild 已完成 ✅ + 音效治理同轮入库）**。用户"Live2D 相关代码全部删掉"。璃最终走 Spine+PixiJS，Live2DCanvas 仅作加载失败回退（永不触发）；续¹⁹ 架构转向后 emotionVector 链路在 Spine 路径无消费方——纯死代码移除。Explore agent 全量扫描确认 emotionVector/EmotionVector/toEmotionVector/DEFAULT_EMOTION **只被 App.tsx(计算)+Live2DCanvas.tsx(唯一消费)引用**，删除零副作用。
 >
@@ -212,6 +214,39 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-13 续²³)：AIRI 风格视线驱动 —— 头绕鼠标 + 身体微侧
+
+**任务**：用户"头部绕鼠标转动，只在一定范围内生效且必须是头部转动加身体微侧，鼠标的围绕中心也是头部，幅度都不用太大。可以参考 AIRI"。纯代码可做（骨骼旋转运行时数据，零新素材）。
+
+### 设计（最终形态）
+
+- `SpineCanvas.tsx` 加 `pointerRef` prop（App 的全局光标轮询/click-through listener 已有，client 坐标，60Hz 后端采样）。
+- 每帧：head 骨世界坐标 → 画布坐标 = 围绕中心；光标距头顶 `GAZE_RANGE=320px` 内生效，径向衰减 `f=1-dist/RANGE`，范围外平滑回正（AIRI ignored-return）。
+- **只保留水平旋转通道**：头 ±`GAZE_HEAD_H=10°` + 身体(spine)±`GAZE_BODY=3°` 微侧；`GAZE_H_SIGN=-1`（用户报方向反后翻）。指数平滑 τ=`GAZE_TAU=0.12s`（挂钟 elapsedMS，昼夜变速不影响响应）；`BehaviorState.Sleeping` 时不跟随。
+- **上下通道已移除**（用户：头飞起来了，下巴必须固定不能动）：2D 平面骨骼旋转只能表达左右，上下俯仰=位移=下巴脱离脖子。留给美术 `look_up/look_down` 动画，按"状态→动画叠加轨道"接（续¹⁹ 架构）。
+
+### 五个坑（全部 CDP 实机坐实，踩坑级）
+
+1. **`app.ticker.elapsedMS` 是每帧增量**（≈16.6ms 常数）——拿相邻帧相减≈0，平滑系数 k 冻结 → 视线纹丝不动（"没效果"第一报）。直接用 `elapsedMS/1000` 作帧时长。
+2. **pixi-spine 烘焙在 `update()` 内部**：`apply(动画) → skeleton.updateWorldTransform() → 立即烘焙每个 slot 的 sprite transform/mesh 顶点`。在 update() **之后**改 bone.rotation 永远进不了渲染（顶点已旧）——数值对但视觉为零（"没效果"第二报）。修法：**包装 `skeleton.updateWorldTransform`**——动画写 locals 后、烘焙前把凝视角 ADDITIVE 加进 head/spine 的 rotation，再重算一次世界矩阵；apply() 每帧重置 locals → 无累积。
+3. **head 骨局部 y 轴在世界空间里横指**（骨骼链带 ~92° 旋转）——沿局部轴位移 96% 横向走、竖直只剩 4%（CDP faceY 实测）。曾用 2×2 矩阵求逆把 canvas 空间 (0,dy) 解回局部轴——可行，但随后因坑 5 整通道废弃。
+4. **头部位移无动画 key**：idle 动画只 key 头部旋转不 key 位移 → `apply()` 每帧不重置 → `+=` 每帧累加，头漂移 -1200 局部单位（hx 184→-164 实测）。位移必须绝对写入 `data.x/data.y` 基线（旋转则相反：必须 ADDITIVE，呼吸动画每帧 key rotation 天然重置）。
+5. **平面旋转只能表达左右**：上下俯仰在 2D 里唯一手段是位移，位移必然让头部图层脱离脖子（"头飞起来了"）。用户钦定下巴固定 → 删点头通道。
+
+### 验证（CDP 铁证）
+
+- `headRot = 9.45°` = 呼吸 7.27° + 视线 2.10°，分毫不差 → 烘焙管线吃进凝视。
+- 方向验证：光标在下 → faceY 屏幕下移 ✓（旧点头通道方向曾反，已翻）。
+- 像素差分：视线激活 vs 回正，差异 bbox 恰为头部+上身（不含腿脚）。
+- **CDP 诊断句柄已入代码**：`window.__gazeDiag`（凝视数值逐帧）/`window.__spine`（spine 实例，读骨/slot）/`window.__ctDiag`（origin+scale）。**GDI 截屏拍不到 WebGL 内容，验证前端渲染一律 CDP `Page.captureScreenshot`/`Runtime.evaluate`**（temp 脚本 `%TEMP%\opencode\eval_cdp.mjs`）。
+- **多实例教训**：CDP 9222 端口可能连着残留实例（读数 -124 之谜），排查前先 `Get-Process desktop-pet` 确认单实例 + 各 PowerShell 会话 DPI 感知不一致致 GDI/物理坐标漂移，探针前用 `__ctDiag` 校准。
+
+### 状态
+
+`tsc/vitest 34 绿 / release rebuild / 用户目视确认没问题`。commit `beecbc0`(初版) → `8d273a1`(k 冻结) → `16797e0`(烘焙注入) → `786643e`(上下通道+方向) → `533b5ec`(下巴固定，最终)。调参：`SpineCanvas.tsx` 顶部 GAZE_* 常量。⚠️ 对方会话并行提交仍在进行（64d4e44 感知提示、4efbd2f 抽取器文风——与凝视零重叠，未干预）。
 
 ---
 
