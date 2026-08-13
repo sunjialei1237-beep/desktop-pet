@@ -1162,8 +1162,14 @@ const transientTimerRef = useRef<number | null>(null);
       sound.play(closenessRef.current >= INTIMATE_THRESHOLD ? "pet-intimate" : "pet-stranger");
       invoke("pet_head").catch(() => {});
       fsmRef.current?.transition(BehaviorState.Embarrassed);
-      const reactions = ["嘿嘿…", "谢谢你～", "抹抹~"];
-      showBubble(reactions[Math.floor(Math.random() * reactions.length)], 3000, "bubble-happy", "bubble-pet");
+      // 摸头反应按亲密度分档（与音效一致）：熟络=撒娇开心，陌生=拘谨害羞
+      // （害羞用 bubble-shy 慢浮现，与 续³ 低亲密度→害羞 的情绪设计对齐）
+      const intimate = closenessRef.current >= INTIMATE_THRESHOLD;
+      const pool = intimate
+        ? ["嘿嘿…", "谢谢你～", "抹抹～", "最喜欢你摸头啦～"]
+        : ["呜…", "啊…", "怎、怎么了…？"];
+      const variant = intimate ? "bubble-happy" : "bubble-shy";
+      showBubble(pool[Math.floor(Math.random() * pool.length)], 3000, variant, "bubble-pet");
       setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 1500);
     }, 280);
  }, [showBubble]);
@@ -1184,11 +1190,11 @@ const handleBodyClick = useCallback(() => {
     const n = pokeCountRef.current;
     sound.play(n >= 3 ? "poke3" : n === 2 ? "poke2" : "poke1");
     if (n === 1) {
-      showBubble("？", 2500, "bubble-worried");
+      showBubble("怎么啦？", 2500, "bubble-calm");
     } else if (n === 2) {
-      showBubble("嗯…", 2500, "bubble-worried");
+      showBubble("别戳啦～痒痒的…", 2500, "bubble-playful");
     } else {
-      showBubble("别戳了啦！", 3000, "bubble-worried");
+      showBubble("再戳我要生气啦！", 3000, "bubble-worried");
     }
     invoke<boolean>("poke", { count: pokeCountRef.current }).catch(() => {});
   }, 280);
