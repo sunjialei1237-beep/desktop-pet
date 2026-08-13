@@ -599,6 +599,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       } catch { /* leave nulls; safe default keeps window interactive */ }
     };
     refreshOrigin();
+    // Click-through geometry diagnostics for CDP debugging (dev aid).
+    (window as any).__ctDiag = () => ({
+      origin: windowOriginRef.current,
+      scale: scaleFactorRef.current,
+    });
     // Pin the window's ignore state to a known value on mount. Tauri's default
     // is false, but applyIgnore's dedup (`if (ignoreRef.current === desired)
     // return`) means the first desired=false would skip the IPC entirely —

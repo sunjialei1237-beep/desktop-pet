@@ -145,6 +145,8 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         const spine = new Spine((res as any).spineData);
         spineRef.current = spine;
         app.stage.addChild(spine);
+        // Dev aid: expose the spine instance for CDP debugging.
+        (window as any).__spine = spine;
 
         // Turn off pixi-spine's self-update. It drives update() via Date.now()
         // inside updateTransform, which BYPASSES PIXI's ticker — so circadian
@@ -239,13 +241,29 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         let spineT = nextSpineDelay(); // 5-8s → ear/tail each ~every 10-16s
         let spinePending = false; // spineT elapsed; wait for a breath boundary to fire
 
-        // Gaze state: smoothed head/body rotation applied additively after
-        // spine.update() each frame (never accumulates — update() resets the
-        // bones to the animation's value first).
+        // Gaze state: smoothed head/body rotation (deg). Applied INSIDE the
+        // update() bake pipeline via the updateWorldTransform wrapper below —
+        // pixi-spine bakes slot transforms / mesh vertices right after
+        // skeleton.updateWorldTransform(), so a rotation written after update()
+        // returns never reaches the renderer (stale bake, the "no visual
+        // effect" bug — same family as the 续¹² stale-bounds / 续¹⁸ sprite
+        // cache traps). The wrapper adds the gaze offset to the head/spine
+        // LOCALS between two world passes, so the bake that follows uses
+        // gaze-inclusive matrices. apply() resets locals every frame → no
+        // accumulation.
         const headBone = spine.skeleton.findBone("head");
         const bodyBone = spine.skeleton.findBone("spine");
-        let gazeHead = 0; // current smoothed head rotation (deg)
-        let gazeBody = 0; // current smoothed body lean (deg)
+        let gazeHead = 0;
+        let gazeBody = 0;
+        const origUWT = spine.skeleton.updateWorldTransform.bind(spine.skeleton);
+        spine.skeleton.updateWorldTransform = () => {
+          origUWT();
+          if (headBone && bodyBone) {
+            headBone.rotation += gazeHead;
+            bodyBone.rotation += gazeBody;
+          }
+          origUWT();
+        };
         // Live diagnostics for CDP debugging (mirrors __updateFn pattern).
         const gazeDiag = { head: 0, body: 0, dist: 0, f: 0, cx: 0, cy: 0, hx: 0, hy: 0 };
         (app as any).__gazeDiag = gazeDiag;
@@ -274,14 +292,16 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         const updateFn = () => {
           const dt = app.ticker.deltaMS / 1000;
           const wall = app.ticker.elapsedMS / 1000;
-          spine.update(dt);
 
-          // --- Gaze: head follows cursor within range (AIRI-style) ---
-          // Wall-clock frame delta: app.ticker.elapsedMS is the PER-FRAME
-          // elapsed ms (like the action timers above), unaffected by
-          // ticker.speed — gaze responsiveness never slows with circadian
-          // speed. (Do NOT subtract consecutive elapsedMS values: it is
-          // already a delta, the difference is ~0 and the smoothing freezes.)
+          // --- Gaze smoothing: compute targets BEFORE spine.update(). The
+          // rotation is injected into the bake pipeline by the
+          // updateWorldTransform wrapper (see above). Head anchor comes from
+          // last frame's worlds — one frame of lag, imperceptible. Wall-clock
+          // frame delta: elapsedMS is the PER-FRAME elapsed ms (like the
+          // action timers), unaffected by ticker.speed — gaze responsiveness
+          // never slows with circadian speed. (Do NOT subtract consecutive
+          // elapsedMS values: it is already a delta, the difference is ~0 and
+          // the smoothing freezes.)
           {
             const wallDt = app.ticker.elapsedMS / 1000;
             const canvas = canvasRef.current;
@@ -314,12 +334,10 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
               gazeDiag.cy = cy;
               gazeDiag.hx = hx;
               gazeDiag.hy = hy;
-              // Additive: keeps the animations' own head/spine motion
-              // (body_breath keys them every frame) with gaze on top.
-              headBone.rotation += gazeHead;
-              bodyBone.rotation += gazeBody;
             }
           }
+
+          spine.update(dt);
 
           if (busy) {
             busyRem -= wall;
