@@ -1017,6 +1017,38 @@ pub struct DebugPending {
     pub remind_date: Option<String>,
 }
 
+/// Exports the full memory backup as JSON to the given path. The frontend
+/// obtains `path` from a native save dialog (Tauri plugin-dialog) — the
+/// webview cannot write arbitrary filesystem paths directly.
+#[tauri::command]
+pub async fn export_memory_json(db: State<'_, DbState>, path: String) -> Result<(), String> {
+    let json = crate::mind::export::build_json(&db)?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write {}: {}", path, e))
+}
+
+/// Exports a human-readable Markdown summary (core memory only) to `path`.
+#[tauri::command]
+pub async fn export_memory_markdown(db: State<'_, DbState>, path: String) -> Result<(), String> {
+    let md = crate::mind::export::build_markdown(&db)?;
+    std::fs::write(&path, md).map_err(|e| format!("Failed to write {}: {}", path, e))
+}
+
+/// Exports both formats in one call: writes JSON to `json_path` and Markdown
+/// to `md_path`. Each write is independent; a failure on the second does not
+/// roll back the first (the user still keeps whatever landed on disk).
+#[tauri::command]
+pub async fn export_memory_both(
+    db: State<'_, DbState>,
+    json_path: String,
+    md_path: String,
+) -> Result<(), String> {
+    let json = crate::mind::export::build_json(&db)?;
+    std::fs::write(&json_path, json)
+        .map_err(|e| format!("Failed to write {}: {}", json_path, e))?;
+    let md = crate::mind::export::build_markdown(&db)?;
+    std::fs::write(&md_path, md).map_err(|e| format!("Failed to write {}: {}", md_path, e))
+}
+
 /// Returns a full debug snapshot for the debug panel.
 #[tauri::command]
 pub async fn get_debug_snapshot(

@@ -82,6 +82,22 @@ pub fn delete(conn: &Connection, episode_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Returns ALL stored vectors as (episode_id, Vec<f32>) pairs (full export).
+pub fn get_all(conn: &Connection) -> Result<Vec<(String, Vec<f32>)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT episode_id, embedding FROM episode_vectors")
+        .map_err(|e| format!("Failed to prepare get_all vectors: {}", e))?;
+    let rows = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
+            Ok((id, blob_to_vec(&blob)))
+        })
+        .map_err(|e| format!("Failed to query all vectors: {}", e))?;
+    let result: Vec<(String, Vec<f32>)> = rows.filter_map(|r| r.ok()).collect();
+    Ok(result)
+}
+
 /// Returns the count of stored vectors.
 pub fn count(conn: &Connection) -> Result<i64, String> {
     conn.query_row("SELECT COUNT(*) FROM episode_vectors", [], |row| row.get(0))

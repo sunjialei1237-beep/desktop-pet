@@ -251,6 +251,9 @@ pub fn run() {
            commands::open_debug_window,
            commands::quit_app,
            commands::hide_to_tray,
+           commands::export_memory_json,
+           commands::export_memory_markdown,
+           commands::export_memory_both,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

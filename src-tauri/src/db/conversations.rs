@@ -47,6 +47,31 @@ pub fn get_recent(conn: &Connection, limit: i64) -> Result<Vec<ConversationRow>,
     Ok(result)
 }
 
+/// Returns ALL conversation messages, oldest first (full export — no LIMIT).
+pub fn get_all(conn: &Connection) -> Result<Vec<ConversationRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, turn, role, content, created_at FROM conversations
+             ORDER BY created_at ASC",
+        )
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ConversationRow {
+                id: row.get(0)?,
+                turn: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query conversations: {}", e))?;
+
+    let result: Vec<ConversationRow> = rows.filter_map(|r| r.ok()).collect();
+    Ok(result)
+}
+
 /// Returns the current max turn number (0 if empty).
 pub fn get_max_turn(conn: &Connection, conversation_id: &str) -> Result<i64, String> {
     let max: Option<i64> = conn

@@ -14,6 +14,7 @@ pub mod planner;
 pub mod converse;
 pub mod pacing;
 pub mod evaluation;
+pub mod export;
 
 pub use correction::{handle_correction, CorrectionResult};
 pub use forget::{

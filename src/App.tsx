@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
@@ -1199,21 +1200,60 @@ const handleBodyClick = useCallback(() => {
     setContextMenu({ x: e.clientX, y: e.clientY });
   }, []);
 
-  const handleExportMemory = useCallback(async () => {
-    showBubble("记忆导出中…", 3000, "bubble-calm");
+  // Memory export: pops a native save dialog, then hands the chosen path to a
+  // Rust command that writes the file (the webview can't write arbitrary
+  // paths directly). Shows the full saved path in the bubble so the user
+  // knows where the file landed — the old version silently downloaded a
+  // truncated debug snapshot, which is why "导出成功" appeared to do nothing.
+  const handleExportJson = useCallback(async () => {
     try {
-      const snap = await invoke("get_debug_snapshot");
-      const json = JSON.stringify(snap, null, 2);
-      const blob = new Blob([json], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "pet-memory-export.json";
-      a.click();
-      URL.revokeObjectURL(url);
-      showBubble("记忆已保存～", 3000, "bubble-happy");
+      const path = await save({
+        defaultPath: "pet-memory-backup.json",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return; // user cancelled
+      showBubble("记忆导出中…", 3000, "bubble-calm");
+      await invoke("export_memory_json", { path });
+      showBubble("已备份到：" + path, 6000, "bubble-happy");
     } catch (e) {
-      console.error("[Export]", e);
+      console.error("[Export JSON]", e);
+      showBubble("导出失败了…", 3000, "bubble-worried");
+    }
+  }, [showBubble]);
+
+  const handleExportMarkdown = useCallback(async () => {
+    try {
+      const path = await save({
+        defaultPath: "pet-memory-export.md",
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!path) return;
+      showBubble("记忆导出中…", 3000, "bubble-calm");
+      await invoke("export_memory_markdown", { path });
+      showBubble("已保存到：" + path, 6000, "bubble-happy");
+    } catch (e) {
+      console.error("[Export MD]", e);
+      showBubble("导出失败了…", 3000, "bubble-worried");
+    }
+  }, [showBubble]);
+
+  const handleExportBoth = useCallback(async () => {
+    try {
+      const jsonPath = await save({
+        defaultPath: "pet-memory-backup.json",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!jsonPath) return;
+      const mdPath = await save({
+        defaultPath: "pet-memory-export.md",
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!mdPath) return;
+      showBubble("记忆导出中…", 3000, "bubble-calm");
+      await invoke("export_memory_both", { jsonPath, mdPath });
+      showBubble("两份都存好了：" + jsonPath, 6000, "bubble-happy");
+    } catch (e) {
+      console.error("[Export both]", e);
       showBubble("导出失败了…", 3000, "bubble-worried");
     }
   }, [showBubble]);
@@ -1379,7 +1419,9 @@ const handleBodyClick = useCallback(() => {
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
-          onExportMemory={handleExportMemory}
+          onExportJson={handleExportJson}
+          onExportMarkdown={handleExportMarkdown}
+          onExportBoth={handleExportBoth}
           onAwayMode={handleAwayMode}
           soundMuted={soundMuted}
           onToggleSound={() => setSoundMuted(sound.toggleMuted())}

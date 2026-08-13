@@ -66,6 +66,27 @@ pub fn latest_created_at(conn: &Connection) -> Result<Option<String>, String> {
     .map_err(|e| format!("Failed to get latest review time: {}", e))
 }
 
+/// Returns ALL relationship reviews, oldest first (full export).
+pub fn get_all(conn: &Connection) -> Result<Vec<RelationshipReview>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, summary, created_at FROM relationship_reviews
+             ORDER BY created_at ASC",
+        )
+        .map_err(|e| format!("Failed to prepare all reviews query: {}", e))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RelationshipReview {
+                id: row.get(0)?,
+                summary: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query all reviews: {}", e))?;
+    let result: Vec<RelationshipReview> = rows.filter_map(|r| r.ok()).collect();
+    Ok(result)
+}
+
 /// Total number of stored reviews (for diagnostics / threshold checks).
 pub fn count(conn: &Connection) -> Result<i64, String> {
     conn.query_row("SELECT COUNT(*) FROM relationship_reviews", [], |row| {

@@ -71,6 +71,53 @@ pub fn get_unsurfaced(conn: &Connection) -> Result<Vec<InternalThought>, String>
     rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
 }
 
+/// Returns ALL reflections, oldest first (full export).
+pub fn get_all_reflections(conn: &Connection) -> Result<Vec<Reflection>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, trigger_type, trigger_reason, thought, persona_updates, created_at
+             FROM reflections ORDER BY created_at ASC",
+        )
+        .map_err(|e| format!("Failed to prepare all reflections query: {}", e))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Reflection {
+                id: row.get(0)?,
+                trigger_type: row.get(1)?,
+                trigger_reason: row.get(2)?,
+                thought: row.get(3)?,
+                persona_updates: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query all reflections: {}", e))?;
+    rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
+}
+
+/// Returns ALL internal thoughts (including surfaced), oldest first.
+pub fn get_all_thoughts(conn: &Connection) -> Result<Vec<InternalThought>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, content, emotion, source_reflection, surfacing_type, created_at, surfaced_at
+             FROM internal_thoughts ORDER BY created_at ASC",
+        )
+        .map_err(|e| format!("Failed to prepare all thoughts query: {}", e))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(InternalThought {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                emotion: row.get(2)?,
+                source_reflection: row.get(3)?,
+                surfacing_type: row.get(4)?,
+                created_at: row.get(5)?,
+                surfaced_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query all thoughts: {}", e))?;
+    rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
+}
+
 /// Marks a thought as surfaced.
 pub fn mark_surfaced(conn: &Connection, id: &str, now: &str) -> Result<(), String> {
     conn.execute(

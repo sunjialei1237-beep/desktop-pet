@@ -122,6 +122,36 @@ pub fn get_all_pending(conn: &Connection) -> Result<Vec<PendingEvent>, String> {
     rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
 }
 
+/// Returns ALL pending events including triggered/resolved ones (full export).
+pub fn get_all(conn: &Connection) -> Result<Vec<PendingEvent>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, event_date, remind_date, source_episode,
+                    status, importance, followup_count, created_at, triggered_at, resolved_at
+             FROM pending_events
+             ORDER BY created_at ASC",
+        )
+        .map_err(|e| format!("Failed to prepare all-events query: {}", e))?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(PendingEvent {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            event_date: row.get(2)?,
+            remind_date: row.get(3)?,
+            source_episode: row.get(4)?,
+            status: row.get(5)?,
+            importance: row.get(6)?,
+            followup_count: row.get(7)?,
+            created_at: row.get(8)?,
+            triggered_at: row.get(9)?,
+            resolved_at: row.get(10)?,
+        })
+    }).map_err(|e| format!("Failed to query all events: {}", e))?;
+
+    rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
+}
+
 trait Pipe: Sized {
     fn pipe<F, R>(self, f: F) -> R where F: FnOnce(Self) -> R { f(self) }
 }

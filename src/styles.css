@@ -636,6 +636,41 @@ html, body, #root {
   margin: 4px 10px;
 }
 
+/* Export-memory submenu (inline expansion under the "导出记忆" item). */
+.context-submenu {
+  padding: 2px 0 2px 14px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.context-submenu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 14px 6px 10px;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+
+.context-submenu-item:hover {
+  background: rgba(157, 126, 224, 0.3);
+  color: #fff;
+}
+
+.context-submenu-main {
+  font-size: 13px;
+}
+
+.context-submenu-desc {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 1px;
+}
+
 /* === P11: Input placeholder === */
 .input-bubble input::placeholder {
   color: rgba(120, 120, 140, 0.6);
