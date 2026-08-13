@@ -30,14 +30,12 @@ export const INTIMATE_THRESHOLD = 40;
 
 /**
  * Min ms between any two AUDIBLE sounds, across ALL triggers (global gap).
- * Fixes "连着出声": body-poke has no click gate (unlike head-pet's 3s) and
- * poke1/2/3 are separate triggers with separate cooldowns, so rapid clicks or
- * a pet-then-poke could sound two clips ~280ms apart. The per-trigger
- * cooldown only throttles the SAME trigger; this gap throttles everything.
- * Silent outcomes do NOT reserve the gap (a silent roll never blocks a later
- * sound). 宁少勿突兀 (#10).
+ * 用户规范（2026-08-13）：播放 1 次，下次播放必须隔 10s。高于所有
+ * per-trigger 冷却（3s/2s/600ms…），因此全局闸是唯一的绑定约束——
+ * 任何可听音效开始后 10s 内的新请求直接拒绝（静默结果不占闸，因为
+ * 没"播放"）。快速连点/摸头+戳/拖拽+落地永远不可能背靠背出声。
  */
-const GLOBAL_MIN_GAP_MS = 800;
+const GLOBAL_MIN_GAP_MS = 10_000;
 
 // --- Asset keys -> public paths. Vite serves public/ at BASE_URL root. ---
 type AssetKey =
