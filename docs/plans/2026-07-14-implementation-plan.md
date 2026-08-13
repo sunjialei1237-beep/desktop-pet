@@ -1390,9 +1390,14 @@ pub struct ProactiveAction {
 
 ---
 
-## P9: Body 窗口 + Live2D 渲染
+## P9: Body 窗口 + 渲染
 
-**目标**: 透明无边框窗口 + PixiJS Canvas + Live2D 模型加载渲染。桌宠形象出现在屏幕上, 有呼吸/眨眼。
+> **⚠️ 渲染层已转向 Spine (续¹¹~续²⁴)**：本节原设计为 Live2D（Cubism4 + pixi-live2d-display），
+> 最终角色璃(Liri)改用 Spine 3.8 + PixiJS 渲染（`SpineCanvas.tsx`）。Live2D 全部代码/资产/依赖
+> 已于续²⁴ 移除。下方 Live2D 代码块保留为**历史设计记录**（窗口透明/点击穿透/呼吸眨眼等需求仍适用，
+> 只是由 Spine 实现），不再反映当前架构。Spine 驱动见 `src/SpineCanvas.tsx` + `src/animation/spineIntent.ts`。
+
+**目标**: 透明无边框窗口 + PixiJS Canvas + 角色模型渲染。桌宠形象出现在屏幕上, 有呼吸/眨眼。
 
 **前置依赖**: P0
 
@@ -1647,7 +1652,7 @@ idle_weights.json 示例:
 
 ## P11: 交互系统 + Chat Bubble + 输入 UX
 
-**目标**: 鼠标交互 (摸头/戳脸/拖拽) + 注意力三态 + 有生命的气泡 + 临时输入框 + Foley 音效。
+**目标**: 鼠标交互 (摸头/戳脸/拖拽) + 视线追随 (gaze, 续²³) + 有生命的气泡 + 临时输入框 + Foley 音效。
 
 **前置依赖**: P9, P10
 
@@ -1696,35 +1701,14 @@ onDoubleClick() {
 
 #### 11.2 注意力三态 (设计文档 6.6)
 
+> **⚠️ 已砍除 (2026-08-13)**：三态中的 **Focused（对视/害羞）与 Ignored（偷看）不做**。
+> 原方案绑死 Live2D Cubism 参数（ParamAngleX/Y），Live2D 已移除（续²⁴），且这两态属体验增强、非陪伴北极星核心。
+> **Peripheral（看向鼠标）已由续²³ Spine gaze 视线驱动替代**（头绕颈旋转追随光标，水平通道）。
+> gaze 实现在 `SpineCanvas.tsx`（`GAZE_*` 常量 + `pointerRef` 每帧解算）。若将来要补 Focused/Ignored，应在 gaze 基础上加距离/进入判定，而非恢复本节的参数映射。
+
 ```typescript
-// Attention States: NPC → 存在体的分水岭
-
-enum AttentionState {
-    Focused,    // 鼠标停留在她身上 → 对视, 变害羞或卖萌
-    Peripheral, // 鼠标靠近她的区域 → 看向鼠标方向
-    Ignored,    // 鼠标远离 → 恢复自己的生活, 可能偷看你
-}
-
-// Live2D 参数: ParamAngleX/Y (头部朝向)
-// Focused: 眼睛直接朝向用户 (angle = 0), 眨眼频率增加
-// Peripheral: 头部朝向鼠标位置 (angle 随鼠标 x/y 变化)
-// Ignored: 偶尔 (10% 概率) 快速瞄一眼用户位置, 然后恢复
-
-function updateAttention(model: Live2DModel, mouseX: number, mouseY: number, petBounds: Rect) {
-    if (isInside(mouseX, mouseY, petBounds)) {
-        attention = Focused;
-        model.coreModel.setParameterValueById('ParamAngleX', 0);
-        model.coreModel.setParameterValueById('ParamAngleY', 0);
-    } else if (distance(mouseX, mouseY, petBounds.center) < 200) {
-        attention = Peripheral;
-        const angle = calculateAngle(mouseX, mouseY, petBounds.center);
-        model.coreModel.setParameterValueById('ParamAngleX', angle.x * 30);  // 最大偏转 30 度
-        model.coreModel.setParameterValueById('ParamAngleY', angle.y * 30);
-    } else {
-        attention = Ignored;
-        // FSM 接管, 微行为继续
-    }
-}
+// (已砍除) 原 AttentionState 三态绑 Live2D 参数，随 Live2D 移除。
+// Peripheral 态由 Spine gaze（续²³）替代；Focused/Ignored 不做。
 ```
 
 #### 11.3 Chat Bubble — 有生命的气泡 (设计文档 6.3)
@@ -1809,7 +1793,7 @@ const audioMap = {
 
 1. 摸头: 眨眼笑动画 + 音效 + 亲密度增加 (3 秒冷却)
 2. 戳脸 3 次: 生气鼓脸动画 + mood 下降
-3. 注意力三态: 鼠标靠近 → 她看向鼠标; 鼠标在她身上 → 对视; 离开 → 恢复自己活动
+3. ~~注意力三态~~ → 视线追随 (gaze, 续²³): 鼠标靠近璃头顶范围 → 头绕颈水平旋转追随光标 (Peripheral 态替代)。Focused(对视)/Ignored(偷看) 已砍除 (2026-08-13)。
 4. 气泡: 开心时圆润快速弹出; 害羞时慢慢浮现半透明
 5. 气泡尾巴连接到角色身体
 6. 输入: 点击桌宠出现临时输入气泡; Alt+Space 全局唤醒
@@ -1820,7 +1804,7 @@ const audioMap = {
 
 ## P12: 物理交互 + 空间记忆 + 昼夜节律
 
-**目标**: 物理行为 (自由落体/窗口边缘/任务栏) + 空间记忆 (有窝/自动回巢) + 昼夜节律驱动 Body 状态。
+**目标**: 物理行为 (自由落体/任务栏弹跳) + 昼夜节律驱动 Body 状态。(空间记忆/走回窝 2026-08-08 砍；窗口边缘坐姿 2026-08-13 砍)
 
 **前置依赖**: P9, P10
 
@@ -1832,7 +1816,7 @@ const audioMap = {
 
 ```typescript
 // 拖拽到半空松手 → 自由落体 → 落到任务栏弹一下
-// 检测窗口边界, 可坐在标题栏上双腿晃荡
+// (窗口边缘坐姿/双腿晃荡已砍除 2026-08-13，非陪伴核心)
 // 窗口移动她跟着, 窗口消失她掉下来
 
 class Physics {
@@ -1919,9 +1903,9 @@ function getCircadianState(): CircadianState {
 ### 验证标准
 
 1. 拖到半空松手 → 自由落体 → 弹一下落地 + 音效
-2. 窝: 首次出现在一个角落; 聊天结束 30 秒后走回窝
+2. ~~窝: 首次出现在一个角落; 聊天结束 30 秒后走回窝~~ (走回窝随走路砍除 2026-08-08)
 3. 昼夜: 凌晨 3 点测试 → idle 偏向 Sleep, 动作速度变慢, 冒泡"还不睡呀..."
-4. 窗口边缘: 可坐在标题栏上 (动画: 双腿晃荡)
+4. ~~窗口边缘: 可坐在标题栏上 (动画: 双腿晃荡)~~ (砍除 2026-08-13)
 5. Body 独立运行: 关闭 LLM 调用后, 物理/空间/昼夜全部照常
 6. 性能: CPU < 3%, 内存 < 80MB (设计文档 6.11)
 6. 性能: CPU < 3%, 内存 < 80MB (设计文档 6.11)
