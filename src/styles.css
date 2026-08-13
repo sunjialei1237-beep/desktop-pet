@@ -3,7 +3,7 @@
   --bubble-bg: rgba(255, 255, 255, 0.82);
   --bubble-border: rgba(200, 200, 220, 0.4);
   --text-primary: #333;
-  --bubble-bottom: 560px;
+  --bubble-bottom: 530px;
 }
 
 * {
@@ -60,60 +60,83 @@ html, body, #root {
   75% { transform: rotate(2deg) scale(1.02); }
 }
 
+/* === Chat bubble (shadcn-style skin: warm white, glass-tinted, Liri-first) ===
+   Design intent (per design review): the bubble recedes; Liri is the visual
+   subject. So: warm-white translucent fill, a hairline gray-blue border, a very
+   faint ambient shadow, and only a light backdrop blur (4px — strong blur reads
+   as an iOS widget, which we don't want over a desktop/wallpaper).
+   The bubble is NOT an interactive control — pointer-events:none so it never
+   steals clicks from the transparent-window click-through layer or from Liri.
+   Animation is fully owned by Motion (bubbleVariants.ts); no CSS keyframes here. */
 .chat-bubble {
   position: absolute;
   bottom: var(--bubble-bottom);
-  left: 50%;
+  left: calc(50% + 40px);
   translate: -50% 0;
-  max-width: 360px;
-  min-width: 60px;
-  background: var(--bubble-bg);
-  border: 1px solid var(--bubble-border);
-  border-radius: 16px;
-  padding: 10px 16px;
+  background: rgba(252, 250, 248, 0.82);          /* warm white, translucent */
+  backdrop-filter: blur(4px) saturate(1.15);       /* light frost, not iOS-heavy */
+  -webkit-backdrop-filter: blur(4px) saturate(1.15);
+  border: 1px solid rgba(160, 170, 190, 0.35);    /* hairline gray-blue */
+  border-radius: 14px;
+  border-bottom-left-radius: 0;                    /* daisyUI chat-start: square corner for the tail */
+  padding: 8px 14px;
   font-size: 14px;
   line-height: 1.6;
-  color: var(--text-primary);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  color: #3a3f4a;                                  /* soft dark gray text */
+  box-shadow: 0 2px 8px rgba(60, 70, 90, 0.06);   /* faint ambient shadow, no "web component" feel */
+  /* Liri > bubble: cap width so long replies wrap instead of eating Liri's
+     space. 200px is the starting point (compare 160/180/200/220 at runtime). */
+  max-width: 200px;
+  width: max-content;
+  min-width: 0;
+  overflow-wrap: anywhere;
   word-break: break-word;
-  transition: opacity 0.3s ease, transform 0.3s ease;
+  pointer-events: none;                            /* non-interactive — never steal clicks */
   z-index: 10;
 }
 
-.chat-bubble::after {
+/* daisyUI tail: ::before masked into the daisyUI chat-hook SVG. The mask cuts
+   the ::before into the hook silhouette; its bg is the bubble's EXACT fill
+   color so the tail is visually continuous with the body (zero seam). We use
+   the explicit rgba here (not `inherit`) because the bubble bg is translucent —
+   `inherit` would copy the translucency and reveal the desktop behind the tail,
+   making it look disconnected. Hardcoding the same rgba keeps them identical. */
+.chat-bubble::before {
   content: "";
   position: absolute;
-  bottom: -7px;
-  left: 50%;
-  transform: translateX(-50%) rotate(45deg);
-  width: 12px;
-  height: 12px;
-  background: var(--bubble-bg);
-  border-right: 1px solid var(--bubble-border);
-  border-bottom: 1px solid var(--bubble-border);
+  bottom: 0;
+  left: -0.65rem;
+  width: 0.75rem;
+  height: 0.75rem;
+  background-color: rgba(252, 250, 248, 0.82);
+  --mask-chat: url("data:image/svg+xml,%3csvg width='13' height='13' xmlns='http://www.w3.org/2000/svg'%3e%3cpath fill='black' d='M0 11.5004C0 13.0004 2 13.0004 2 13.0004H12H13V0.00036329L12.5 0C12.5 0 11.977 2.09572 11.8581 2.50033C11.6075 3.35237 10.9149 4.22374 9 5.50036C6 7.50036 0 10.0004 0 11.5004Z'/%3e%3c/svg%3e");
+  -webkit-mask-image: var(--mask-chat);
+  mask-image: var(--mask-chat);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: 0px -1px;
+  mask-position: 0px -1px;
+  -webkit-mask-size: 0.8125rem;
+  mask-size: 0.8125rem;
+  pointer-events: none;
 }
 
-.chat-bubble.bubble-pet {
-  bottom: var(--bubble-bottom);
-  left: 40%;
-  translate: -50% 0;
-}
+/* No position variants: the bubble tail is anchored at Liri's head top-right
+   for every situation (user requirement — 任何情况都不会发生改变). The old
+   .bubble-pet repositioning rule was removed for this reason. */
 
-.chat-bubble.bubble-pet::after {
-  left: 65%;
-}
-
+/* .hidden is now a fallback only — AnimatePresence owns exit animation. Kept so
+   that if Motion ever fails to load, the bubble still hides on visible=false. */
 .chat-bubble.hidden {
   opacity: 0;
   pointer-events: none;
-  transform: translateY(8px);
 }
 
 .input-bubble {
   position: absolute;
-  /* 输入框钉在窗口底部常驻，与头顶回复气泡在空间上彻底分开（见 .chat-bubble top） */
-  /* 输入框钉在窗口底部常驻，与头顶回复气泡在空间上彻底分开（见 .chat-bubble bottom） */
-  bottom: 24px;
+  /* 璃 scale 0.7 后只占窗口中下部一坨,脚下留出空白。输入框上移到璃脚下方,
+     填补空白、和璃形成紧凑组合,而非钉在窗口最底部和璃脱节。 */
+  bottom: 110px;
   left: 50%;
   transform: translateX(-50%);
   width: 160px;
@@ -524,97 +547,31 @@ html, body, #root {
   50% { transform: scale(0.98) rotate(-5deg); }
 }
 
-/* === P11: Emotion-driven bubble styles === */
-.chat-bubble.bubble-happy {
-  animation: bubble-pop-happy 0.3s ease-out;
-  border-radius: 20px;
-  font-weight: 500;
-}
+/* === Bubble emotion variants — animation now owned by Motion ===
+   These CSS rules used to carry @keyframes per emotion (bubble-pop-happy /
+   bubble-fade-in / bubble-deflate / bubble-tremble / bubble-shy-reveal /
+   bubble-glyph-soft). All removed: Motion drives enter/exit via variants
+   (bubbleVariants.ts createBubbleVariants), which also fixes the CSS "animation
+   doesn't replay on repeat calls" bug. Emotion is now ONLY a parameter to the
+   builder, not a separate CSS animation. No per-emotion CSS needed here. */
 
-.chat-bubble.bubble-playful {
-  animation: bubble-wobble 0.4s ease-out;
-  border-radius: 18px;
-}
-
-.chat-bubble.bubble-calm {
-  animation: bubble-fade-in 0.4s ease-out;
-  border-radius: 16px;
-}
-
-.chat-bubble.bubble-sad {
-  animation: bubble-deflate 0.6s ease-out;
-  border-radius: 16px;
-  opacity: 0.85;
-}
-
-.chat-bubble.bubble-worried {
-  animation: bubble-tremble 0.3s ease-in-out;
-  border-radius: 16px;
-}
-
-/* 害羞 (shy) — design §6.3: "慢慢浮现, 先半透明". A slow, tentative reveal
-   (vs the snappy 0.3s pop of happy/playful): she hovers semi-transparent for a
-   beat before settling fully visible — reserved with someone she barely knows
-   (§6.2 "陌生时拘谨"). Fires at low closeness (see derive_mood_label_with_closeness). */
-.chat-bubble.bubble-shy {
-  animation: bubble-shy-reveal 1.2s ease-out;
-  border-radius: 16px;
-}
-
-@keyframes bubble-shy-reveal {
-  0% { transform: translateY(6px) scale(0.96); opacity: 0; }
-  30% { transform: translateY(4px) scale(0.97); opacity: 0.35; } /* 先半透明 */
-  100% { transform: translateY(0) scale(1); opacity: 1; }
-}
-
-@keyframes bubble-pop-happy {
-  0% { transform: scale(0.7) translateY(10px); opacity: 0; }
-  60% { transform: scale(1.05) translateY(0); opacity: 1; }
-  100% { transform: scale(1); }
-}
-
-@keyframes bubble-wobble {
-  0% { transform: scale(0.8) rotate(-2deg); opacity: 0; }
-  50% { transform: scale(1.03) rotate(1deg); }
-  100% { transform: scale(1) rotate(0deg); }
-}
-
-@keyframes bubble-fade-in {
-  0% { transform: translateY(8px); opacity: 0; }
-  100% { transform: translateY(0); opacity: 1; }
-}
-
-@keyframes bubble-deflate {
-  0% { transform: scale(1.1); opacity: 0; }
-  100% { transform: scale(0.97); opacity: 0.85; }
-}
-
-@keyframes bubble-tremble {
-  0%, 100% { transform: translateX(0); opacity: 0; }
-  20% { transform: translateX(-2px); opacity: 0.7; }
-  40% { transform: translateX(2px); }
-  60% { transform: translateX(-1px); opacity: 1; }
-  80% { transform: translateX(1px); }
-}
-
-/* === P11.3: Wordless bubble (architecture #12 -- silence is expression) === */
-/* For moments with no reply text: an ellipsis, a sigh. Smaller, no tail, soft. */
-.chat-bubble.bubble-glyph {
-  font-size: 30px;
+/* === Glyph (wordless signal) — shell-less visual language ===
+   Distinct from speech: no background, no border, no tail, no shadow. Just text
+   (and a leading dot for sigh). It's a non-verbal life-signal (呼… / 嗯？ / ···),
+   so it floats bare, reading as breath rather than a chat chip. Color is a soft
+   gray-blue that recedes further than the speech bubble's warm white. */
+.chat-glyph {
+  position: absolute;
+  bottom: var(--bubble-bottom);
+  left: calc(50% + 40px);
+  translate: -50% 0;
+  font-size: 22px;
   letter-spacing: 2px;
-  font-weight: 600;
-  padding: 6px 16px;
-  opacity: 0.8;
-  animation: bubble-glyph-soft 0.5s ease-out;
-}
-
-.chat-bubble.bubble-glyph::after {
-  display: none; /* no speech tail for a wordless glyph */
-}
-
-@keyframes bubble-glyph-soft {
-  0% { transform: scale(0.8); opacity: 0; }
-  100% { transform: scale(1); opacity: 0.8; }
+  color: rgba(160, 172, 192, 0.78);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18); /* a hair of legibility over any wallpaper */
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 10;
 }
 
 /* === P11: Attention focus glow === */
@@ -705,4 +662,170 @@ html, body, #root {
 @keyframes struggle {
   0%, 100% { transform: rotate(-3deg) scale(0.97); }
   50% { transform: rotate(3deg) scale(0.97); }
+}
+
+/* === Click-through boundary visualization (AIRI-style) === */
+/* An overlay div inside .pet-char-wrapper, positioned imperatively (canvas-
+   local CSS px matching modelBoundsRef) from the global-cursor listener.
+   Hidden by default (opacity 0); gains .bounds-visible when the cursor nears
+   the model rect's outline (±BAND px). pointer-events:none so it never blocks
+   click-through or interaction. 250ms ease fade mirrors AIRI's feel.
+   When visible, a 3s breathing-flash animation (opacity pulse) runs
+   continuously — same feel as AIRI's animate-flash animate-duration-3s. */
+.bounds-overlay {
+  /* position:fixed (not absolute) so the frame is positioned in viewport
+     coords and is NOT clipped by any ancestor's overflow:hidden. The model
+     bounds rect can extend past the canvas/wrapper bottom (PAD expansion),
+     and body{overflow:hidden} was clipping that bottom edge (下边缺一条边).
+     Fixed positioning escapes all ancestor clipping. */
+  position: fixed;
+  pointer-events: none;
+  outline: 3px solid rgba(123, 95, 199, 0.5); /* 璃紫, softened */
+  outline-offset: 1px;
+  border-radius: 16px;
+  box-shadow: 0 0 10px rgba(123, 95, 199, 0.22);
+  box-sizing: border-box;
+  opacity: 0;
+  transition: opacity 250ms ease-in-out;
+  z-index: 999;
+}
+
+.bounds-overlay.bounds-visible {
+  opacity: 1;
+  animation: bounds-flash 3s ease-in-out infinite;
+}
+
+/* Breathing flash: opacity gently pulses between 0.45 and 1.0 — a "the edge
+   is alive" reminder that mirrors AIRI's animate-flash. 3s period, ease-in-out
+   so it breathes rather than blinks. */
+@keyframes bounds-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* =========================================================
+   PetBubble (replaces the old .chat-bubble)
+   Designed for a desktop companion, NOT a chat application.
+   Adapted from a design that rejects "UI component" tropes:
+   no border, irregular corner radii, organically-shaped clip-path
+   tail, shell-less glyph mode, pointer-events:none. Animation is Motion.
+   ========================================================= */
+
+.pet-bubble-anchor {
+  position: absolute;
+  /* OUTER layer: owns positioning only. Position (left/bottom) is set inline
+     by PetBubble.tsx — the tail tip is the anchor, fixed at Liri's head
+     top-right for every bubble. No translate here: a -50% shift would move
+     the tail tip by half the bubble's (text-width-dependent) size. */
+  z-index: 20;
+  /* The bubble must never steal mouse events — critical for transparent
+     desktop pets (click-through + not blocking Liri). */
+  pointer-events: none;
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  max-width: var(--pet-bubble-max-width, 200px);
+}
+
+/* INNER layer: the motion.div. Owns the animation transform. */
+.pet-bubble-motion {
+  transform-origin: 50% 100%;
+  will-change: transform, opacity;
+}
+
+/* --- Main bubble --- */
+.pet-bubble {
+  position: relative;
+  /* Hard width cap so long streaming replies wrap instead of stretching the
+     bubble wide. max-width alone on an inline-flex parent can let content
+     overflow; width:max-content + max-width forces the cap. */
+  width: max-content;
+  max-width: var(--pet-bubble-max-width, 180px);
+  padding: 10px 14px 11px;
+  color: rgba(52, 56, 65, 0.94);
+  /* Warm ivory, not generic white. Opacity lets the desktop atmosphere show. */
+  background: rgba(250, 248, 243, 0.90);
+  /* Deliberately NOT a pill — slightly uneven radii avoid the "UI component" look. */
+  border-radius: 17px 20px 19px 14px / 16px 18px 15px 13px;
+  /* No visible border — edge definition comes from contrast + shadow. */
+  border: none;
+  /* Very restrained shadow; the bubble recedes behind the character. */
+  box-shadow:
+    0 5px 15px rgba(40, 44, 54, 0.07),
+    0 1px 2px rgba(40, 44, 54, 0.04);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  font-size: 14px;
+  line-height: 1.55;
+  font-weight: 450;
+  letter-spacing: 0.01em;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* Dedicated tail layer — its own element so it can later become head-aware
+   without changing the bubble structure. An organic clip-path sliver (not a
+   comic-triangle) to lower the "chat component" feel. Background matches the
+   bubble's fill so it reads as one continuous shape. */
+.pet-bubble-tail {
+  position: absolute;
+  left: 15px;
+  bottom: -7px;
+  width: 17px;
+  height: 12px;
+  background: rgba(250, 248, 243, 0.90);
+  clip-path: polygon(
+    0 0,
+    100% 0,
+    66% 42%,
+    45% 100%,
+    26% 53%
+  );
+  transform: scaleX(calc(var(--pet-bubble-tail-direction, 1))) rotate(-5deg);
+  transform-origin: center top;
+}
+
+/* Streaming-friendly content block — no fixed height, grows with text. */
+.pet-bubble-text {
+  display: block;
+  min-width: 0;
+  white-space: pre-wrap;
+}
+
+/* --- Glyph (wordless signal, shell-less) --- */
+.pet-bubble-anchor--glyph {
+  pointer-events: none;
+}
+.pet-bubble-glyph {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: rgba(86, 94, 107, 0.70);
+  font-size: 18px;
+  line-height: 1.3;
+  font-weight: 420;
+  letter-spacing: 0.045em;
+  text-shadow: 0 1px 2px rgba(20, 24, 30, 0.10);
+}
+.pet-bubble-glyph-mark {
+  display: inline-block;
+  opacity: 0.38;
+  transform: translateY(-1px);
+  font-size: 14px;
+}
+.pet-bubble-glyph-text {
+  white-space: pre-wrap;
+}
+
+/* --- Optional subtle per-variant bg tint --- */
+.pet-bubble-anchor.pet-bubble--happy .pet-bubble { background: rgba(252, 249, 241, 0.92); }
+.pet-bubble-anchor.pet-bubble--sad .pet-bubble { background: rgba(248, 247, 244, 0.88); }
+.pet-bubble-anchor.pet-bubble--shy .pet-bubble { background: rgba(250, 248, 247, 0.78); }
+
+/* --- Reduced motion --- */
+@media (prefers-reduced-motion: reduce) {
+  .pet-bubble-anchor {
+    transition: none !important;
+    animation: none !important;
+  }
 }

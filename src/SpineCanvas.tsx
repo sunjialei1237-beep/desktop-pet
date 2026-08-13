@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { BehaviorState } from "./animation/fsm";
 import { setupMix, setupIdleTracks, triggerBehavior, initFace, playAction, actionDuration, beginFadeOut, endAction, nextBlinkDelay, nextSmileDelay, nextSpineDelay, IDLE_FADE } from "./animation/spineIntent";
 import type { ActionKind } from "./animation/spineIntent";
+import { patchLiriJson, isLiriSkeleton, LIRI_JSON_URL } from "./animation/liriAssetPatch";
 
 // Spine (3.8) + PixiJS rendering layer for Liri. Replaces the Live2DCanvas
 // placeholder once verified.
@@ -23,6 +24,36 @@ interface Rect {
   y: number;
   width: number;
   height: number;
+}
+
+// Register a PIXI LoadParser that intercepts liri.json BEFORE pixi-spine parses
+// it, applies the runtime mouth-slot patch (see liriAssetPatch.ts), and returns
+// the patched object. Priority High so it beats the generic json loader (Low).
+// Idempotent + guarded by isLiriSkeleton, so it's a no-op for any other JSON.
+// MUST be called before PIXI.Assets.load(LIRI_JSON_URL). Kept module-scoped so
+// the loader is registered exactly once per page lifetime.
+let liriPatchRegistered = false;
+function registerLiriPatch(PIXI: any) {
+  if (liriPatchRegistered) return;
+  liriPatchRegistered = true;
+  PIXI.extensions.add({
+    extension: { type: PIXI.ExtensionType.LoadParser, priority: PIXI.LoaderParserPriority.High },
+    name: "liriMouthPatch",
+    test(url: string) {
+      return url === LIRI_JSON_URL || url.endsWith("/liri/liri.json");
+    },
+    async load(url: string) {
+      const res = await PIXI.settings.ADAPTER.fetch(url);
+      const json = await res.json();
+      if (patchLiriJson(json)) {
+        // One-time confirmation; useful until the artist fixes the asset.
+        console.info("[Spine] liri.json mouth-slot patch applied");
+      } else if (isLiriSkeleton(json)) {
+        console.info("[Spine] liri.json already patched (no-op)");
+      }
+      return json;
+    },
+  });
 }
 
 export interface SpineCanvasProps {
@@ -67,6 +98,10 @@ export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick,
       // umbrella `pixi-spine` default is the 4.x runtime, which rejects 3.8 data
       // ("3.8.75 is deprecated, export with a newer version of Spine").
       await import("@pixi-spine/loader-uni");
+      // Intercept liri.json on load and apply the runtime mouth-slot patch
+      // BEFORE pixi-spine parses it (see liriAssetPatch.ts). Must run before
+      // PIXI.Assets.load below.
+      registerLiriPatch(PIXI);
       const { Spine } = await import("@pixi-spine/runtime-3.8");
 
       if (destroyed || !canvasRef.current) return;
@@ -116,7 +151,11 @@ export function SpineCanvas({ speedModifier, behavior, onHeadClick, onBodyClick,
         // pushes Liri down until only her upper body is on screen. Measure at
         // scale 1, then do the scaled centering math ourselves.
         const b1 = spine.getBounds(true);
-        const fit = Math.min(app.screen.width / b1.width, app.screen.height / b1.height) * 0.9;
+        // Scale factor:璃缩到刚好填满 canvas(取宽高较小者)再 ×系数。
+        // 0.7 = 缩到约原来的 78%(0.7/0.9),璃精致居中、留更多空白。
+        // 改这一个值即可——居中(spine.x/y)、穿透判定(onModelBounds)、
+        // 边界框全部基于 fit 自动联动。
+        const fit = Math.min(app.screen.width / b1.width, app.screen.height / b1.height) * 0.7;
         spine.scale.set(fit);
         spine.x = app.screen.width / 2 - (b1.x + b1.width / 2) * fit;
         spine.y = app.screen.height / 2 - (b1.y + b1.height / 2) * fit;

@@ -20,6 +20,8 @@ import { DEFAULT_EMOTION, type EmotionVector } from "./animation/emotionDriver";
 import { typewriterPacing, inferPacingMood } from "./animation/bubblePacing";
 import { shouldAutoSleep } from "./animation/sleepLogic";
 import { sound, INTIMATE_THRESHOLD } from "./audio/soundManager";
+import { PetBubble } from "./components/PetBubble";
+import type { BubbleEmotion, GlyphKind } from "./animation/bubbleVariants";
 
 interface EmotionData {
   mood: number;
@@ -46,7 +48,7 @@ const ONBOARD_QUESTIONS = [
 ] as const;
 
 // Map mood label to bubble CSS class for emotion-driven styling (Design doc 6.3)
-function bubbleClassForMood(label: string): string {
+function bubbleClassForMood(label: string): BubbleEmotion {
   if (label === "开心") return "bubble-happy";
   if (label === "调皮") return "bubble-playful";
   if (label === "难过") return "bubble-sad";
@@ -80,9 +82,18 @@ const SLEEP_AFTER_IDLE_MS = 10 * 60 * 1000;
 
   const [bubbleText, setBubbleText] = useState("");
   const [bubbleVisible, setBubbleVisible] = useState(false);
+  // bubbleId = identity for ONE speech act (design review v3 #2). A new bubbleId
+  // passed as <Bubble key={bubbleId}> makes AnimatePresence exit the old bubble
+  // and enter the new one. Streaming token growth does NOT change bubbleId, so
+  // the enter animation never replays mid-stream. Driven by beginBubble() below
+  // (single identity generator), not ad-hoc setBubbleId(k=>k+1) at call sites.
+  const [bubbleId, setBubbleId] = useState(0);
+  // Glyph sub-kind (only meaningful when bubbleStyle === "bubble-glyph"). The dot
+  // is one variant, not a universal prefix — see glyphText() in bubbleVariants.
+  const [glyphKind, setGlyphKind] = useState<GlyphKind | undefined>(undefined);
   // Spine (Liri) is default; flips to true on asset load error → render Haru.
   const [spineFailed, setSpineFailed] = useState(false);
-  const [bubbleStyle, setBubbleStyle] = useState("");
+  const [bubbleStyle, setBubbleStyle] = useState<BubbleEmotion>("bubble-calm");
   const [bubblePos, setBubblePos] = useState("");
   const [inputVisible, setInputVisible] = useState(false);
   const [inputText, setInputText] = useState("");
@@ -103,6 +114,16 @@ const [awayMode, setAwayMode] = useState(false);
   // and suppress welcome bubbles during the interview.
   const onboardingActiveRef = useRef(false);
 const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Identity generator for bubble "speech acts" (design review v3 #2). Each new
+  // bubble (whether from showBubble or streaming firstChunk) calls beginBubble()
+  // → new id → AnimatePresence exits old + enters new. Streaming tokens do NOT
+  // call this, so they don't replay enter. Centralizing here prevents a new
+  // entry point from forgetting to mint a new id.
+  const bubbleIdRef = useRef(0);
+  const beginBubble = useCallback(() => {
+    bubbleIdRef.current += 1;
+    return bubbleIdRef.current;
+  }, []);
 const transientTimerRef = useRef<number | null>(null);
   const welcomeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [behavior, setBehavior] = useState<BehaviorState>(BehaviorState.Idle);
@@ -187,20 +208,36 @@ const transientTimerRef = useRef<number | null>(null);
     origin_x: number; origin_y: number; scale: number;
   } | null>(null);
   const lastDiagPushRef = useRef(0); // performance.now() of last backend push (throttle)
+  // Click-through boundary visualization (AIRI-style). A colored border drawn
+  // around the model's hit rect that appears only when the cursor is near the
+  // border line (±BAND px, inside or outside), and fades out 250ms after the
+  // cursor leaves that band. Purely visual — pointer-events:none so it never
+  // interferes with click-through or interaction. The overlay div is positioned
+  // in canvas-local coords (same as modelBoundsRef), so it lives inside
+  // pet-char-wrapper alongside the canvas.
+  const boundsOverlayRef = useRef<HTMLDivElement | null>(null);
+  const boundsShownRef = useRef(false); // current shown state (for edge-trigger)
+  const boundsHideTimerRef = useRef<number | null>(null); // 250ms debounce hide
 
   if (!fsmRef.current) {
     fsmRef.current = new AnimationFSM();
     fsmRef.current.onStateChange((s) => setBehavior(s));
   }
 
- const showBubble = useCallback((text: string, duration = 8000, style = "", pos = "") => {
+ const showBubble = useCallback((text: string, duration = 8000, style: BubbleEmotion = "bubble-calm", pos = "", glyph?: GlyphKind) => {
+   // Duty sequence (design review v3 #3): cancel any prior timer FIRST so a
+   // stale timer from bubble A can't fire and hide bubble B while B is still
+   // showing. Then mint a new identity, set state, start the new timer.
+   if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current);
+   const id = beginBubble();
    setBubbleText(text);
    setBubbleStyle(style);
    setBubblePos(pos);
+   setGlyphKind(glyph);
+   setBubbleId(id);
    setBubbleVisible(true);
-   if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current);
   bubbleTimerRef.current = setTimeout(() => setBubbleVisible(false), duration);
-}, []);
+}, [beginBubble]);
 
   // 启动首次见面访谈：问第一题 + 显示输入框。访谈期间屏蔽其它气泡，避免 welcome 覆盖第一题。
   const startOnboarding = useCallback(() => {
@@ -217,11 +254,23 @@ const transientTimerRef = useRef<number | null>(null);
   // Receive model bounds (canvas-local CSS px) from Live2DCanvas for click-through.
   const handleModelBounds = useCallback((b: { x: number; y: number; width: number; height: number }) => {
     modelBoundsRef.current = b;
-    // Capture the canvas wrapper rect (viewport-relative CSS px); the canvas fills it.
+    // Capture the CANVAS rect (viewport-relative CSS px) — not the wrapper's.
+    // The wrapper is display:flex; align-items:flex-end, so its rect differs
+    // from the canvas inside it (canvas sits at the wrapper's bottom-center).
+    // Using the wrapper rect here would offset both the click-through rect and
+    // the boundary overlay (the "bottom not framed" bug). Query the actual
+    // <canvas> element; there's exactly one inside the wrapper.
     const el = petRef.current;
     if (el) {
-      const r = el.getBoundingClientRect();
-      canvasRectRef.current = { left: r.left, top: r.top };
+      const canvas = el.querySelector("canvas");
+      if (canvas) {
+        const r = canvas.getBoundingClientRect();
+        canvasRectRef.current = { left: r.left, top: r.top };
+      } else {
+        // Fallback: wrapper rect (safe default keeps window interactive).
+        const r = el.getBoundingClientRect();
+        canvasRectRef.current = { left: r.left, top: r.top };
+      }
     }
     // Diagnostic: confirms the canvas reported bounds (if this never logs,
     // modelBoundsRef stays null → the listener's safe default keeps the window
@@ -409,7 +458,7 @@ const transientTimerRef = useRef<number | null>(null);
           !awayMode &&
           Math.random() < 0.08
         ) {
-          showBubble("呼…", 2500, "bubble-glyph");
+          showBubble("呼…", 2500, "bubble-glyph", "", "sigh");
         }
       } catch { /* ignore */ }
     }, 5000);
@@ -656,6 +705,72 @@ const transientTimerRef = useRef<number | null>(null);
         right = left + mb.width * scale;
         bottom = top + mb.height * scale;
         inside = sx >= left && sx <= right && sy >= top && sy <= bottom;
+      }
+      // Boundary visualization (AIRI-style). Show the colored border only when
+      // the cursor is near the rect's outline — in the outer band (just outside
+      // the rect) OR the inner band (just inside), within BAND px of the edge.
+      // Cursor deep inside the rect, or far outside, keeps it hidden. 250ms
+      // debounce on hide so edge jitter doesn't flicker. Geometry in canvas-
+      // local CSS px (modelBoundsRef is already in that space) for the overlay
+      // div, which is a sibling of the canvas inside pet-char-wrapper.
+      if (mb && boundsOverlayRef.current) {
+        const BAND = 12; // px (screen) band around the outline that triggers show
+        const nearBorder =
+          sx >= left - BAND && sx <= right + BAND &&
+          sy >= top - BAND && sy <= bottom + BAND &&
+          !(sx >= left + BAND && sx <= right - BAND &&
+            sy >= top + BAND && sy <= bottom - BAND);
+        if (nearBorder) {
+          // (Re)position the overlay each show. position:fixed (viewport coords)
+          // so the frame escapes body{overflow:hidden}. The model bounds rect
+          // is canvas-local; translate to viewport via the canvas's own rect.
+          //
+          // The PAD-expanded rect can extend past the canvas (e.g. mb.y=-51,
+          // mb.y+mb.h=624 > canvas 600). Since the Tauri window is only 760px
+          // tall and the canvas sits in its lower portion, a rect bottom beyond
+          // the canvas falls outside the window entirely and is invisible —
+          // which is why the bottom edge was missing ("下边缺一条边"). Clamp the
+          // frame to the canvas's viewport rect so all four edges stay on-
+          // screen. The frame still visually encloses the model (the model
+          // lives inside the canvas).
+          const o = boundsOverlayRef.current;
+          const wrapperEl = petRef.current;
+          const canvasEl = wrapperEl?.querySelector("canvas") as HTMLCanvasElement | null;
+          let cx = 0, cy = 0, cw = 0, ch = 0;
+          if (canvasEl) {
+            const cr = canvasEl.getBoundingClientRect();
+            cx = cr.left; cy = cr.top; cw = cr.width; ch = cr.height;
+          }
+          // Canvas-local rect -> viewport, then clamp to canvas bounds.
+          const rawLeft = cx + mb.x;
+          const rawTop = cy + mb.y;
+          const rawRight = rawLeft + mb.width;
+          const rawBottom = rawTop + mb.height;
+          const clampedLeft = Math.max(rawLeft, cx);
+          const clampedTop = Math.max(rawTop, cy);
+          const clampedRight = Math.min(rawRight, cx + cw);
+          const clampedBottom = Math.min(rawBottom, cy + ch);
+          o.style.left = `${clampedLeft}px`;
+          o.style.top = `${clampedTop}px`;
+          o.style.width = `${Math.max(0, clampedRight - clampedLeft)}px`;
+          o.style.height = `${Math.max(0, clampedBottom - clampedTop)}px`;
+          if (!boundsShownRef.current) {
+            boundsShownRef.current = true;
+            o.classList.add("bounds-visible");
+          }
+          if (boundsHideTimerRef.current) {
+            clearTimeout(boundsHideTimerRef.current);
+            boundsHideTimerRef.current = null;
+          }
+        } else if (boundsShownRef.current && !boundsHideTimerRef.current) {
+          boundsHideTimerRef.current = window.setTimeout(() => {
+            boundsShownRef.current = false;
+            if (boundsOverlayRef.current) {
+              boundsOverlayRef.current.classList.remove("bounds-visible");
+            }
+            boundsHideTimerRef.current = null;
+          }, 250);
+        }
       }
       // Push diagnostics to the backend (throttled ~200ms) so the Debug Panel's
       // separate OS window can render them. Best-effort — a failed invoke must
@@ -947,9 +1062,15 @@ const transientTimerRef = useRef<number | null>(null);
          const pacing = typewriterPacing(inferPacingMood(text, moodLabel));
          setIsThinking(false);
          fsmRef.current?.forceState(BehaviorState.Talking);
+         // Mint a new bubble identity for this speech act — AnimatePresence will
+         // exit the prior bubble and enter this one. Streaming tokens below do
+         // NOT call beginBubble, so they grow the text without replaying enter.
+         const id = beginBubble();
          setBubbleStyle(bubbleClassForMood(moodLabel));
          setBubblePos("");
+         setGlyphKind(undefined);
          setBubbleText("");
+         setBubbleId(id);
          setBubbleVisible(true);
          if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current); // no auto-hide mid-stream
          typewriterRef.current = window.setInterval(() => {
@@ -988,7 +1109,7 @@ const transientTimerRef = useRef<number | null>(null);
        setIsThinking(false);
        fsmRef.current?.forceState(BehaviorState.Talking);
        if (res.reply) showBubble(res.reply, 10000, bubbleClassForMood(moodLabel));
-       else showBubble("…", 2500, "bubble-glyph");
+       else showBubble("…", 2500, "bubble-glyph", "", "surprise");
        setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 2000);
      }
      if (res.transient_expression) {
@@ -1181,9 +1302,19 @@ const handleBodyClick = useCallback(() => {
           />
       </div>
 
-      <div className={`chat-bubble ${bubbleVisible ? "" : "hidden"} ${bubbleStyle} ${bubblePos}`}>
-        {bubbleText}
-      </div>
+      {/* PetBubble: the pet's speech surface (Motion-animated). bubbleId = one
+          speech act identity; a new id exits the old bubble and enters the new
+          one. PetBubble wraps its own AnimatePresence internally, so we render
+          it unconditionally and let `visible` drive enter/exit. mode="glyph"
+          for wordless signals (呼… / 嗯？) renders shell-less. */}
+      <PetBubble
+        visible={bubbleVisible}
+        text={bubbleText}
+        bubbleId={bubbleId}
+        variant={bubbleStyle}
+        mode={glyphKind !== undefined || bubbleStyle === "bubble-glyph" ? "glyph" : "speech"}
+        className={bubblePos}
+      />
 
      <div
        ref={petRef}
@@ -1224,6 +1355,12 @@ const handleBodyClick = useCallback(() => {
         speedModifier={circadianRef.current.speedModifier}
       />
     )}
+    {/* Click-through boundary visualization (AIRI-style). Hidden by default;
+        gains .bounds-visible when the cursor is near the model rect's outline
+        (±BAND px). pointer-events:none so it never blocks clicks. Position is
+        written imperatively from the global-cursor listener (canvas-local CSS
+        px, matching modelBoundsRef) to avoid per-frame React re-renders. */}
+    <div ref={boundsOverlayRef} className="bounds-overlay" />
    </div>
 
       <button
