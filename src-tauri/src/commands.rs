@@ -1084,9 +1084,12 @@ pub async fn get_debug_snapshot(
             .filter_map(|r| r.ok())
             .collect();
 
-        // Active facts.
+        // Active facts — ALL of them, not a top-N cut: a lower-confidence fact
+        // (e.g. "喜欢篮球" 0.80) used to fall off the top-20 and become invisible
+        // in Debug Panel, so the user couldn't see/manage it. Volumes are small
+        // (tens), the panel scrolls.
         let mut stmt = conn
-            .prepare("SELECT id, category, key, value, confidence FROM facts WHERE valid_to IS NULL ORDER BY confidence DESC LIMIT 20")
+            .prepare("SELECT id, category, key, value, confidence FROM facts WHERE valid_to IS NULL ORDER BY confidence DESC")
             .map_err(|e| format!("Prepare error: {}", e))?;
         let recent_facts: Vec<DebugFact> = stmt
             .query_map([], |row| Ok(DebugFact {
