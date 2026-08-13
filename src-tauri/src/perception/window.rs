@@ -42,6 +42,7 @@ pub fn classify_process(process_name: &str) -> AppCategory {
         "outlook", "onenote", "teams", "slack", "zoom", "terminal",
         "windowsterminal", "powershell", "cmd", "gitkraken", "postman",
         "dbeaver", "ssms", "rstudio", "windsurf", "cursor",
+        "zcode", "opencode",
     ];
     let entertainment_apps = [
         "steam", "epicgames", "battle.net", "origin", "riotclientservices",

@@ -435,8 +435,16 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       .catch(() => {});
 
     // FIX-J: frontend welcome fallback (2s) if backend bubble-show not received.
+    // Vary the line so repeated triggers (restart / restore) don't feel canned.
+    const WELCOME_FALLBACKS = [
+      "嗯…你回来啦。",
+      "嘿，刚好想到你。",
+      "啊，你在了。",
+      "咦，什么时候到的？",
+    ];
     welcomeTimerRef.current = setTimeout(() => {
-      showBubble("你好呀！我是你的桌宠～", 8000, "bubble-calm");
+      const line = WELCOME_FALLBACKS[Math.floor(Math.random() * WELCOME_FALLBACKS.length)];
+      showBubble(line, 8000, "bubble-calm");
       welcomeTimerRef.current = null;
     }, 2000);
 

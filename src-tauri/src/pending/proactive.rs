@@ -523,7 +523,7 @@ pub async fn generate_welcome_back(
     messages.push(ChatMessage {
         role: "user".to_string(),
         content: format!(
-            "（用户离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}{thought_clause}简短自然，1-2 句，像个真的在等 ta 回来的人。按规则回复。）"
+            "（对方离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}{thought_clause}简短自然，1-2 句，像个真的在等 ta 回来的人。称呼对方用「你」，不要用「用户」。按规则回复。）"
         ),
     });
 
