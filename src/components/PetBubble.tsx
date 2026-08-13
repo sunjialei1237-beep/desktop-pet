@@ -151,11 +151,13 @@ export function PetBubble({
               // body's bottom-left corner (tail is at left:15px of the body,
               // its tip at ~45% of its 17px width, and its bottom edge 7px
               // below the body) => tip ≈ (anchorLeft + 22, windowBottom - 7).
-              // To land the tip at window (210, 255): left = 210-22 = 188,
-              // bottom = 760-255+7 = 512. Long text grows upward/rightward,
-              // the tail stays put — that's the "tail as anchor" contract.
+              // To land the tip at window (210, 235): left = 210-22 = 188,
+              // bottom = 760-235+7 = 532. (User confirmed X, asked +20px up
+              // from the original (210,255).) Long text grows upward/
+              // rightward, the tail stays put — that's the "tail as anchor"
+              // contract.
               position: "absolute",
-              bottom: "512px",
+              bottom: "532px",
               left: "188px",
               zIndex: 50,
               pointerEvents: "none",
