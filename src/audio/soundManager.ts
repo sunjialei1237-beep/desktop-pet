@@ -11,7 +11,9 @@
 // - #10 "Less is more" — a sound is the EXCEPTION, not the rule. Every
 //        trigger's largest weight is SILENCE, and BOTH sounding and silent
 //        outcomes count against the cooldown, so rapid tapping can never
-//        stack sounds. 宁少勿突兀.
+//        stack sounds. 宁少勿突兀. GLOBAL mutex: a new sound always stops the
+//        previous one — two sounds can never overlap, even across triggers
+//        (menu + pet, drag + land, ...).
 // - #11 Every weight / cooldown / path / threshold is a named constant below;
 //        tune the feel here without touching play().
 
@@ -68,9 +70,9 @@ const TRIGGERS: Record<TriggerId, TriggerConfig> = {
     "pet-intimate": { cooldownMs: 3000, variants: [
         { w: 30 }, { key: "soft-ah", w: 35 }, { key: "laugh", w: 20 }, { key: "cloth", w: 15 },
     ] },
-    // 戳 1st: mild surprise.
+    // 戳 1st: mild surprise. 静默优先——普通点击不应每次都出声（#10）。
     "poke1": { cooldownMs: 2000, variants: [
-        { w: 25 }, { key: "surprise-soft", w: 45 }, { key: "startle-short", w: 30 },
+        { w: 50 }, { key: "surprise-soft", w: 30 }, { key: "startle-short", w: 20 },
     ] },
     // 戳 2nd: occasional short startle.
     "poke2": { cooldownMs: 2000, variants: [
@@ -97,9 +99,9 @@ const TRIGGERS: Record<TriggerId, TriggerConfig> = {
     "dblclick": { cooldownMs: 1000, variants: [
         { w: 50 }, { key: "surprise-soft", w: 50 },
     ] },
-    // 右键菜单打开: UI feedback — always plays (explicit action).
+    // 右键菜单打开: 明确动作但非每次——#10 宁少勿突兀（静默优先）。
     "menu": { cooldownMs: 600, variants: [
-        { key: "send", w: 100 },
+        { w: 60 }, { key: "send", w: 40 },
     ] },
 };
 
@@ -108,6 +110,8 @@ class SoundManager {
     private muted = false;
     private buffers = new Map<AssetKey, Promise<AudioBuffer | null>>();
     private lastAttemptAt = new Map<TriggerId, number>();
+    /** Currently playing source — global one-sound-at-a-time mutex (#10). */
+    private currentSource: AudioBufferSourceNode | null = null;
     private greeted = false;    // startup "hi" has fired
     private greetArmed = false; // deferred-greet listener registered
 
@@ -144,11 +148,22 @@ class SoundManager {
     private playSample(key: AssetKey, ctx: AudioContext): void {
         this.load(key, ctx).then((buf) => {
             if (!buf || this.muted) return;
+            // 全局单音互斥（#10：绝不叠音）——同一时刻只允许一个音效在播。
+            // 新音效开始前先停掉上一个（不同触发器之间同样生效：右键菜单声
+            // + 摸头/戳声、拖拽 + 落地等永远不会重叠）。
+            if (this.currentSource) {
+                try { this.currentSource.stop(); this.currentSource.disconnect(); } catch { /* already stopped */ }
+                this.currentSource = null;
+            }
             const src = ctx.createBufferSource();
             src.buffer = buf;
             src.connect(ctx.destination);
+            src.onended = () => {
+                if (this.currentSource === src) this.currentSource = null;
+                try { src.disconnect(); } catch { /* already gone */ }
+            };
+            this.currentSource = src;
             src.start();
-            src.onended = () => { try { src.disconnect(); } catch { /* already gone */ } };
         });
     }
 
