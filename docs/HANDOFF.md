@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-13（续²⁰·气泡尾巴锚点固定璃头顶右侧 ✅——CDP 实机验证差 1px + release rebuild + 干净重启。详见 §最近一轮 (续²⁰)。上轮 续¹⁹·Spine 表情架构转向——状态→调动画，代码不碰 attachment✅（⏳ 待美术资产补）。续¹⁸·Debug 窗口死锁修复(async)✅ + Emotion 编辑器动画测试链路诊断/修复/回退。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70），lively 多样性"先观察"。**
+> 最后更新：**2026-08-13（续²¹·记忆浮现多样性——novelty+加权抽样+冷却 ✅ 代码+测试入库 `ba87632`，⏳ release rebuild 待另一会话收尾后做。⚠️ 另一会话正在并行改仓库[记忆导出重构：vectors.rs get_all/export.rs/commands 等]，其 vectors.rs 曾半写坏语法阻塞构建，本会话已绕开——只提交自己的 8 个文件。详见 §最近一轮 (续²¹)。上轮 续²⁰·气泡锚点固定璃头顶右侧✅）。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,8 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-13（续²¹）更新 · 记忆浮现多样性 ✅ 代码+测试已入库（⏳ release rebuild 待做 + ⚠️ 与另一会话并行）**。用户"记忆浮现按置信度排序，每次都是星际穿越/糯米，太死板"。**三个根因**：① 强化死循环——每次回忆 strength+=0.03 封顶1.0、日衰减×0.998≈无，主导记忆钉死封顶永远赢；② 锚点选择=置信度 argmax（facts.iter().find(可锚定)=最高置信度第一个）；③ 零多样性机制（无冷却/无探索加分）。**修复**：① reinforce 改边际递减 `+0.03*(1-strength)`；② 评分加 novelty=exp(-recall_count/5)（权重 0.4语义/0.2strength/0.15novelty/0.15recency/0.1情绪）；③ 三条浮现路径（proactive generate/welcome_back/lonely）锚点改加权抽样：episode top-8 softmax(score/0.6)+last_recalled_at 12h 冷却（全冷却放宽）、fact 按 1/(1+mention_count) 抽样；对话路径保持 top-1 相关性优先；到期提醒绝对优先。**零新增 LLM/embedding 调用**。**测试**：lib 301 绿（+8）/ golden 29 绿。**⚠️ 并行会话冲突已绕开**：另一会话在做记忆导出重构（export.rs/vectors.get_all/commands 等 9+ 文件未提交），其 vectors.rs 半写状态曾阻塞 release 构建——本会话只提交自己 8 个文件（`ba87632`，已 push）。**⏳ 待办**：等另一会话完成后 `npx tauri build --no-bundle` + 重启桌宠（含本轮后端改动）；随后实跑观察浮现多样性（Debug Panel 看 anchor 变化）。改参数：NOVELTY_TAU/SURFACE_COOLDOWN_HOURS/SURFACE_TEMPERATURE 在 retrieval.rs 顶部常量。详见 §最近一轮 (续²¹)。
 
 > **2026-08-13（续²⁰）更新 · 气泡尾巴锚点固定璃头顶右侧 ✅ 已收尾（CDP 实机验证 + release rebuild + 干净重启）**。用户"以底部尾巴为锚点固定到头顶右侧，任何情况都不改变；当前在左侧"。**根因**：锚点硬编码在左侧 + CSS `translate:-50%`（半宽位移随文字宽度漂）+ `.bubble-pet` 覆盖规则（摸头气泡跳 40% 左侧）。**修复**：`PetBubble.tsx` 锚点盒 `left 150→188 / bottom 530→512`（尾巴尖=盒左下 22px、底下方 7px → 尖端窗口 (210,255)=璃头顶右侧，后发团右上）；删 translate + 删 bubble-pet 规则。**验证**：CDP 实测摸头气泡尾巴尖渲染 (211,256) 差 1px；tsc/vitest 34 绿；release rebuild。**顺带**：上轮未提交的 PetBubble 表面+liriAssetPatch+spineIntent 清理一并入库 commit `4687e3a`。**用户回访：左右 OK、要求上移 20px → bottom 512→532（尖端 210,255→210,235），CDP 实测 (211,236) ✅ commit `86eb721` + rebuild + 重启**。详见 §最近一轮 (续²⁰)。
 
@@ -196,6 +198,40 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-13 续²¹)：记忆浮现多样性 —— novelty + 加权抽样 + 冷却
+
+**任务**：用户"记忆浮现是根据置信度来排序的，导致每次浮现出来的都是星际穿越相关、宠物糯米相关的。太死板。出个更好的解决方案"。先 codegraph 全链路梳理 + 调研 xinchao-nian（借鉴其"驱力偏置召回/念头池/不自噬"思想，不搬平台层），定位三个根因后实施 Phase 1（用户钦定范围）。
+
+### 三根因
+
+1. **强化死循环**：`reinforce` 每次真实回忆 `strength += 0.03`（MIN 封顶 1.0），日衰减 `×0.998` 约等于无 → 主导记忆钉死 1.0，占评分 30% 权重永远赢 → 再被回忆 → 再强化。
+2. **置信度 argmax 锚点**：`get_active_facts ORDER BY confidence DESC` → 三个浮现路径都用 `facts.iter().find(is_anchorable_fact)` 取**最高置信度第一个** → 星际穿越/糯米 facts 永远被选。
+3. **零多样性机制**：无"最近浮现→冷却"、无"从未想起→探索加分"；MEMORY_QUERIES 轮换池 5 条语义同质，检索回来仍是同一批强记忆。
+
+### 改动（8 文件，commit `ba87632`）
+
+- `db/episodes.rs`：`reinforce` 改边际递减 `memory_strength += RECALL_BOOST*(1-strength)`（1.0 时增益 0，永不超过 1.0）；`test_decay_and_reinforce` 断言同步改。
+- `mind/retrieval.rs`：权重 0.4语义/0.2strength/**0.15novelty**/0.15recency/0.1情绪；`compute_novelty = exp(-recall_count/5)`；`ScoreBreakdown` 加 `novelty` 字段（6 处构造点同步补，踩坑#4）；新增 `sample_surface_anchor`（12h 冷却过滤 `last_recalled_at` + softmax(score/0.6) 加权抽样，全冷却则放宽；空池 None）+ `SURFACE_COOLDOWN_HOURS`/`SURFACE_TEMPERATURE`/`NOVELTY_TAU` 常量（调参入口）。
+- `pending/proactive.rs`：三处浮现路径（generate 记忆分支 / welcome_back / lonely_nudge）锚点改抽样——fact 按 `1/(1+mention_count)` 加权（新 `sample_anchorable_fact`）、episode 走 `sample_surface_anchor`；retrieve top_k 3→8（更大抽样池）；到期提醒仍绝对优先；ThreadRng 收敛内层块（Send 踩坑）。
+- 对话路径不变：planner 仍取 top-1（相关性优先），仅浮现路径抽样——直接提问"最近忙啥"仍精确召回。
+
+### 验证
+
+`cargo test --lib` **301 绿**（+8 新测：novelty 单调/排名、冷却排除 20 seeds、全冷却放宽、fact 抽样 100 seeds 95+% 选中未提及者、强化递减）/ `golden_conversations` **29 绿** / `check --tests` 绿。**零新增 LLM/embedding 调用**（#8）。
+
+### ⚠️ 并行会话冲突（重要）
+
+实施中发现**另一会话正在并行改仓库**（记忆导出重构：`mind/export.rs` 新文件 + vectors.rs `get_all` + commands/facts/pending/lib.rs 等 9+ 文件未提交）。其 `vectors.rs` 在 13:18:59 被改成**半写状态**（`count()` 签名行被删、函数体残留）→ 语法错误 → **release 构建被阻塞**。处理：本会话只 `git add` 自己的 8 个文件单独提交（`ba87632`，已 push），**未碰**对方文件、未 rebuild、未重启桌宠。
+
+### ⏳ 待办（下一会话）
+
+1. 等另一会话的导出重构完成（其文件入库、语法恢复）。
+2. `npx tauri build --no-bundle`（含本轮后端改动）+ 重启桌宠。
+3. 实跑观察浮现多样性：Debug Panel 看 proactive/welcome/lonely 的 anchor 是否不再单一；若仍偏死板调 `SURFACE_TEMPERATURE`（大→更随机）或 `SURFACE_COOLDOWN_HOURS`（小→更活）。
+4. 可选 Phase 2（用户未选）：驱力→query 映射（孤独→关系记忆、疲惫→轻松回忆），把 MEMORY_QUERIES 轮换池改成情绪驱动。
 
 ---
 
