@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-13（续²³·AIRI 风格视线驱动✅——头绕鼠标转动+身体微侧，用户确认没问题。五连坑：elapsedMS 差值冻结/烘焙在 update 内部/局部轴横指/位移无 key 累加/平面旋转只能表达左右。含 CDP 诊断句柄 __gazeDiag/__spine/__ctDiag。详见 §最近一轮 (续²³)。上轮 续²²b·音效治理✅。⚠️ 对方会话仍在并行提交[64d4e44 感知提示/4efbd2f 抽取器文风]。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
+> 最后更新：**2026-08-13（续²⁴·全面测试验收+多轮修复+记忆卫生✅——B/C/D/E 组全验 + Live2D 全移除 + Forget 消歧义/用户字眼/英文fact/瞬时desire/相同summary反问等修复 + 15 条脏 fact 治理。详见 §当前任务 续²⁴）。上轮 续²³·AIRI 风格视线驱动✅。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,22 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-13（续²⁴）更新 · 全面测试验收 + 多轮修复 + 记忆卫生 ✅ 已收尾（release 已 rebuild）**。用户"继续测试"驱动——按 verify-checklist 全量验收 + 实测反馈逐项修复。**六条主线**：
+>
+> **① B/C/D/E 组测试验收（全验）**：B 组（circadian/sleeping/sleep音/睡着抑制 nudge）CDP 实跑 ✅，B5 emotionBridge **N/A**（续¹⁹ Spine 无 emotion→表情映射）；C 组（记忆编辑 forget_fact 双向验/摸头降 loneliness 0.0496→0/Scheduler 11 jobs/D14 害羞气泡链路）✅，C3 疲惫眼 **N/A**（同 B5）；D 组（D2/D3 loneliness 代码层+端到端因 CDP 脆弱留日常/D5/D6/D15 代码层 47 单测绿/D10 grounding_guard 4 生成器全接）；E 组 D11 语义漂移（on 0.8507>off 0.7807 ✅）+ D12 人格 judge（On 9.40>Gross 1.50>Subtle 2.40，rule 对 Subtle 0/10 盲 ✅）。
+>
+> **② Live2D 全移除**（commit `1e3cb0f`，-10,688 行）：删 Live2DCanvas/emotionDriver/behaviorDriver/attention/PetCharacter + public/live2d 3.4MB + npm 依赖（removed 8 pkgs）+ index.html core script。App.tsx 渲染分支塌缩为裸 SpineCanvas（无回退）。连带删 attention 链路（tsc 报未使用暴露的 Live2D 同代孤儿）。
+>
+> **③ Forget 消歧义修复**（`03a55c3`+`3b88c9c`）：① 反问说"用户"→ disambig_prompt 改"你"；② 触发过敏感 → 抽 `pick_winner_or_ambiguous` confidence gap（top1-top2≥0.15 直接删，<0.15 才反问）；③ 相同 summary 荒谬反问（"喜欢篮球还是喜欢篮球"）→ top-2 summary 相同且非 Pending → 合并取高分不反问（fact+pending 相同仍反问，守 #1）。
+>
+> **④ 实测四问修复**（`64d4e44`）：D8 Work 白名单加 zcode/opencode（focus 不再 0min）；D5/D13 禁"用户"（extractor.txt PHRASING + welcome_back prompt 改"对方"）；D13 fallback 4 条随机；D6 反 AI 味（system.txt 加"不预告未来行为"）。
+>
+> **⑤ extractor 文风/规则**（`4efbd2f`+`3b88c9c`）：summary 便签风 2-8 字（禁"表达了…的喜爱"书面腔，正反例示范）；LANGUAGE 强化（中文消息必须中文输出，英文算违规，技术借词除外）；**瞬时 desire 不进 fact**（今天/这周/今晚/最近 开头的临时状态只进 episode）。
+>
+> **⑥ 记忆卫生治理**（数据层，备份 `desktop_pet.db.bak-en2zh`）：13 条活跃英文 fact 翻译中文（thinks cats are cute→觉得猫可爱 等，保留深蹲100kg/mesh 术语）；过期删除瞬时 fact 3 条（今天想吃牛肉/今天打算练腹肌/最近很忙）。**DebugPanel 修"喜欢篮球看不到"**（recent_facts 去 LIMIT 20 显示全部，`07c5721`）+ **fact 加 created_at 显示**（`3b88c9c`）。
+>
+> 📋 **待办（下一会话起点）**：① 无阻塞项——release 已 rebuild 最新（含全部修复），桌面快捷方式已生效；② D2/D3 loneliness 端到端、D8 25min 深度专注、D13 Alt+Space 留日常自然触发（代码层+单测已证）；③ D6 Last Turn 区 F12 发消息后查看（代码层确认全 route 填充，疑似观察时机）。详见 §最近一轮 (续²⁴)。
 
 > **2026-08-13（续²³）更新 · AIRI 风格视线驱动 ✅ 用户确认没问题（含五连坑排查记录）**。用户"头部绕鼠标转动，只在一定范围内生效且必须是头部转动加身体微侧，鼠标的围绕中心也是头部，幅度都不用太大。可以参考 AIRI"。**纯代码实现**（骨骼旋转，零新素材）：`SpineCanvas.tsx` 加 `pointerRef` prop（App 全局光标轮询已有）+ 每帧 head 骨世界坐标→画布坐标，光标距头顶 `GAZE_RANGE=320px` 内生效、径向衰减、范围外平滑回正（AIRI ignored-return）；头 ±10° 绕颈旋转 + 身体(spine)±3° 微侧；指数平滑 τ=0.12s（挂钟时间不受昼夜变速影响）；睡眠时不跟随。**用户三轮反馈的五个坑全记录在 §最近一轮 (续²³)**——最终形态：**只保留水平旋转通道**（下巴必须固定，上下俯仰留给美术 look_up/look_down 动画）。调参入口：`SpineCanvas.tsx` 顶部 `GAZE_*` 常量。CDP 诊断句柄：`window.__gazeDiag`（凝视数值）/`window.__spine`（spine 实例）/`window.__ctDiag`（origin/scale）。详见 §最近一轮 (续²³)。
 
