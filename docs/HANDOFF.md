@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-12（续¹⁹·Spine 表情架构转向——状态→调动画，代码不碰 attachment✅）。续¹⁸·Debug 窗口死锁修复(async)✅ + Emotion 编辑器动画测试链路诊断/修复/回退——pixi-spine sprite 缓存机制是"表情不动"真根因；当前渲染层回退 366ffc8 眼睛正常，DebugPanel 增强保留）**。上一轮 续¹⁴·Spine driver phase3-A 情绪→半睁眼持续映射——疲惫外显；上轮 续¹³·driver phase1 串行通道+呼吸对齐治跳变；再上 续¹²·Liri 全身显示修两个 release-only bug。详见 §当前任务 + §最近一轮 (续¹⁹)。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70），lively 多样性"先观察"。**
+> 最后更新：**2026-08-13（续²⁰·气泡尾巴锚点固定璃头顶右侧 ✅——CDP 实机验证差 1px + release rebuild + 干净重启。详见 §最近一轮 (续²⁰)。上轮 续¹⁹·Spine 表情架构转向——状态→调动画，代码不碰 attachment✅（⏳ 待美术资产补）。续¹⁸·Debug 窗口死锁修复(async)✅ + Emotion 编辑器动画测试链路诊断/修复/回退。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70），lively 多样性"先观察"。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,8 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-13（续²⁰）更新 · 气泡尾巴锚点固定璃头顶右侧 ✅ 已收尾（CDP 实机验证 + release rebuild + 干净重启）**。用户"以底部尾巴为锚点固定到头顶右侧，任何情况都不改变；当前在左侧"。**根因**：锚点硬编码在左侧 + CSS `translate:-50%`（半宽位移随文字宽度漂）+ `.bubble-pet` 覆盖规则（摸头气泡跳 40% 左侧）。**修复**：`PetBubble.tsx` 锚点盒 `left 150→188 / bottom 530→512`（尾巴尖=盒左下 22px、底下方 7px → 尖端窗口 (210,255)=璃头顶右侧，后发团右上）；删 translate + 删 bubble-pet 规则。**验证**：CDP 实测摸头气泡尾巴尖渲染 (211,256) 差 1px；tsc/vitest 34 绿；release rebuild。**顺带**：上轮未提交的 PetBubble 表面+liriAssetPatch+spineIntent 清理一并入库 commit `4687e3a`。⏳ **待用户目视确认**：气泡在璃头顶右侧、尾巴指向头。若偏几像素改 PetBubble.tsx 两个常量即可（注释里有换算公式）。详见 §最近一轮 (续²⁰)。
 
 > **2026-08-12（续¹⁹）更新 · Spine 表情架构转向 —— 状态→调动画，代码绝不碰 attachment ✅ 代码完成（⏳ 待美术资产补 + release rebuild）**。用户反馈"现在的嘴绝对不是呼吸状态的嘴，一直张开"+"smile 动画张大嘴笑幅度比现在大2倍"+"我的动画里做了相关内容，不需要再从骨的状态拆解"。**CDP 深查坐实根因（纯美术资产问题，不是代码 bug）**：
 > - **idle 嘴一直张开** = setup pose 把 `嘴`/`张大笑嘴`/`小笑嘴` 三个 slot 的默认 attachment 全设成显示状态（应是 null）。`张大笑嘴` 被 body_breath 在 t=0 null 救回，但 `嘴` 和 `小笑嘴` 没有任何动画碰它们 → 永远显示 → 叠在 `脸`（含闭合嘴）之上 = 看着张开。
@@ -194,6 +196,44 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-13 续²⁰)：气泡尾巴锚点 —— 固定璃头顶右侧，任何情况不再漂移
+
+**任务**：用户"希望以底部的尾巴为锚点将气泡固定在头顶右侧位置，且之后任何情况都不会发生改变。当前气泡位置在左侧"。
+
+### 根因（两个位置漂移源 + 一个错误锚点值）
+
+1. `PetBubble.tsx` 内联样式硬编码 `left:150px / bottom:530px`（左侧），且 CSS `.pet-bubble-anchor` 还带着 `translate:-50% 0`（半宽位移，随文字宽度变化——长文气泡会进一步左移）。
+2. `.pet-bubble-anchor.bubble-pet` 覆盖规则把摸头气泡挪到 `left:40%`（违反"任何情况不变"）。
+3. 定位常量没有依据真实模型几何。
+
+### 几何推导（与实机一致）
+
+- 窗口 400×760；canvas 400×600，顶在窗口 y=150（`.pet-container` flex-end + padding-bottom 10px）。
+- 璃模型运行时实测（CDP 读 `.bounds-overlay` 命令式定位）：**画布 x[124,276] y[90,510]**（模型永远居中于画布中心 (200,300)，fit=min(400/w,600/h)×0.7）。
+- 头部（后发团+双耳）占模型顶部：头顶=窗口 y240；右耳窗口 x[219,280] y[275,324]（node 解析 liri.json 各 slot attachment 世界包围盒 + 比例映射）。**头顶右侧锚点 = 窗口 (210,255)**。
+
+### 改动
+
+- `PetBubble.tsx`：锚点盒 `left 150→188px / bottom 530→512px`（尾巴尖在盒左下角 22px、盒底下方 7px 处 → 尖端落 (210,255)）；注释写清换算公式，未来改锚点只动这两个值。
+- `styles.css`：删 `.pet-bubble-anchor` 的 `translate:-50%` + TEMP DIAG `left:320px`；**删 `.bubble-pet` 位置覆盖规则**（保留 App 端 plumbing 但已失效=位置恒定）。
+- 长文向上/右生长，尾巴尖不动（"尾巴即锚点"契约，PetBubble 原有设计）。
+
+### 验证（CDP 实机，非仅静态）
+
+- 重启 pet 带 `--remote-debugging-port=9222`（踩坑续：GDI 截屏拍不到 WebView2 GPU 合成内容——角色和气泡 DOM 都不可见，只能 CDP）。
+- CDP 实测：canvas (0,150,400,600) ✓；模型 bounds 与推导一致 ✓；点击璃头触发摸头气泡"抹抹~"，实测尾巴尖渲染于**窗口 (211,256)**，与设计值 (210,255) 差 1px ✓。
+- `tsc exit0 / vitest 34 绿 / release rebuild exit0` + 桌面快捷方式重启（干净实例，无调试端口）。
+- 顺带收尾：上轮未提交的 PetBubble 表面 + liriAssetPatch + spineIntent 清理一并入库（commit `4687e3a`，11 files）。
+
+### 踩坑新增（写入避免重复踩）
+
+- **GDI CopyFromScreen/PrintWindow 拍不到 WebView2 的 GPU 合成内容**（WebGL canvas 和 DOM 都不可见，只能看到穿透窗口的桌面背景）——验证前端渲染一律走 CDP（`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` + `_cdp_run.mjs` eval）。视觉模型在这种截图上会幻觉（把编辑器 UI 当角色）。
+- **release 构建可覆盖运行中的 exe**（本轮实测成功，未触发踩坑#6 的 os error 5——但别依赖，仍先 taskkill 稳妥）。
+- `taskkill //IM` 在 PowerShell 里参数无效，用 `Stop-Process -Name desktop-pet -Force`。
+- `.bounds-overlay` 命令式定位是读模型 bounds 的现成后门：光标靠近模型外框±12px 触发 `.bounds-visible`，CDP 读 `getBoundingClientRect()` 即得实机几何（免改代码）。
 
 ---
 
