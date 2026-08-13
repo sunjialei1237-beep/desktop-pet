@@ -27,23 +27,22 @@ interface Rect {
 // The head follows the cursor ONLY within GAZE_RANGE canvas px of the
 // head bone, with a radial falloff (full effect at the head, zero at the
 // range edge, smooth return to neutral beyond — AIRI's ignored-return).
-// Channel design (2D back-facing character):
-//   - HORIZONTAL → in-plane rotation of the head (±GAZE_HEAD_H) + body lean
-//     (±GAZE_BODY). In-plane rotation can ONLY express left-right.
-//   - VERTICAL → a small nod along the head bone's local axis
-//     (±GAZE_HEAD_DY local units ≈ ~6px on screen) — the 2D stand-in for
-//     looking up/down. Together the two channels give the "环绕" feel.
+// HORIZONTAL ONLY: in-plane rotation of the head (±GAZE_HEAD_H) + body lean
+// (±GAZE_BODY), both pivoting at their bone origins (neck joint stays put —
+// the chin must never translate, user: 下巴必须固定). A vertical channel
+// (head nod) was removed: 2D in-plane bones cannot express pitch without
+// translating the head, which detached it from the neck ("头飞起来了").
+// Real up/down gaze needs a look_up/look_down artist animation later
+// (state→animation per the Spine architecture decision).
 // Injected INSIDE update()'s bake pipeline via the updateWorldTransform
 // wrapper (post-update writes never render — pixi-spine bakes slots right
 // after updateWorldTransform). apply() resets locals every frame → no
 // accumulation.
 const GAZE_RANGE = 320;      // canvas px radius around the head bone
 const GAZE_HEAD_H = 10;      // max head tilt (deg), horizontal
-const GAZE_HEAD_DY = 12;     // max head nod (canvas px), vertical
 const GAZE_BODY = 3;         // max body lean (deg)
 const GAZE_TAU = 0.12;       // smoothing time constant (s, wall clock)
 const GAZE_H_SIGN = -1;      // horizontal mirror (user: 方向是反的 → -1)
-const GAZE_DY_SIGN = 1;      // vertical nod direction (cursor below → head down)
 
 // Register a PIXI LoadParser that intercepts liri.json BEFORE pixi-spine parses
 // it, applies the runtime mouth-slot patch (see liriAssetPatch.ts), and returns
@@ -261,38 +260,23 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         const headBone = spine.skeleton.findBone("head");
         const bodyBone = spine.skeleton.findBone("spine");
         let gazeHead = 0;   // smoothed head tilt (deg)
-        let gazeDy = 0;     // smoothed head nod (canvas px, + = down)
         let gazeBody = 0;   // smoothed body lean (deg)
         const origUWT = spine.skeleton.updateWorldTransform.bind(spine.skeleton);
         spine.skeleton.updateWorldTransform = () => {
           origUWT();
           if (headBone && bodyBone) {
-            // rotation: ADDITIVE is safe — idle animations key head/spine
-            // ROTATION every frame (apply() resets the base each frame).
+            // ADDITIVE rotation only: idle animations key head/spine
+            // ROTATION every frame (apply() resets the base each frame), and
+            // rotation pivots at the bone origin — the neck/chin joint never
+            // translates. No translation channel: it detached the head from
+            // the neck (user: 下巴必须固定).
             headBone.rotation += gazeHead;
             bodyBone.rotation += gazeBody;
-            // nod: the head bone's LOCAL y axis is NOT screen-vertical (the
-            // chain carries big rotations — pelvis ~92°), so a naive local-y
-            // offset shoves the head mostly SIDEWAYS (measured: ~4% vertical).
-            // Solve the canvas-space delta (0, gazeDy) back into the head's
-            // local axes via its world matrix, so the shift is exactly
-            // vertical on screen. ABSOLUTE write (no idle animation keys head
-            // TRANSLATION — apply() never resets it; additive accumulated a
-            // -1200-unit drift in the first implementation).
-            const m = headBone.matrix;
-            const det = m.a * m.d - m.b * m.c;
-            if (Math.abs(det) > 1e-6) {
-              const S = gazeDy / spine.scale.x; // canvas px → spine-local units
-              const lx = (-m.c * S) / det;
-              const ly = (m.a * S) / det;
-              headBone.x = headBone.data.x + lx;
-              headBone.y = headBone.data.y + ly;
-            }
           }
           origUWT();
         };
         // Live diagnostics for CDP debugging (mirrors __updateFn pattern).
-        const gazeDiag = { head: 0, dy: 0, body: 0, dist: 0, f: 0, cx: 0, cy: 0, hx: 0, hy: 0 };
+        const gazeDiag = { head: 0, body: 0, dist: 0, f: 0, cx: 0, cy: 0, hx: 0, hy: 0 };
         (app as any).__gazeDiag = gazeDiag;
         (window as any).__gazeDiag = gazeDiag;
 
@@ -347,15 +331,12 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
                 behaviorRef.current !== BehaviorState.Sleeping && dist < GAZE_RANGE;
               const f = active ? 1 - dist / GAZE_RANGE : 0; // radial falloff
               const nx = dx / GAZE_RANGE;
-              const ny = dy / GAZE_RANGE;
               const targetHead = f * (nx * GAZE_HEAD_H * GAZE_H_SIGN);
-              const targetDy = f * (ny * GAZE_HEAD_DY * GAZE_DY_SIGN);
-              const targetBody = f * (nx * GAZE_BODY * GAZE_H_SIGN);              const k = wallDt > 0 ? Math.min(1, wallDt / GAZE_TAU) : 0;
+              const targetBody = f * (nx * GAZE_BODY * GAZE_H_SIGN);
+              const k = wallDt > 0 ? Math.min(1, wallDt / GAZE_TAU) : 0;
               gazeHead += (targetHead - gazeHead) * k;
-              gazeDy += (targetDy - gazeDy) * k;
               gazeBody += (targetBody - gazeBody) * k;
               gazeDiag.head = gazeHead;
-              gazeDiag.dy = gazeDy;
               gazeDiag.body = gazeBody;
               gazeDiag.dist = dist;
               gazeDiag.f = f;
