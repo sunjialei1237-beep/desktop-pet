@@ -21,6 +21,15 @@
 6. **release 构建（桌面快捷方式）**：用 `npx tauri build --no-bundle`（**勿用** `cargo build --release`——后者 embed 不全、webview 加载异常）。产物在 `D:\cargo-target\desktop-pet\release\desktop-pet.exe`（CARGO_TARGET_DIR 重定向 D 盘，**非** `src-tauri/target/`；bin 名 `desktop-pet` 非 productName）。桌面快捷方式 `DesktopPet.lnk` 指向它。`open_devtools` 是 debug-only API，`commands.rs` 已加 `cfg(debug_assertions)` 守卫。**构建前必须关闭桌宠**：运行中的 exe 锁文件，cargo 覆盖报 `failed to remove file ... 拒绝访问 (os error 5)`；先 `taskkill //IM desktop-pet.exe //F`，等 ~3s 释放句柄，且 build 完成前勿重开快捷方式。
 7. **release CSP（PIXI 崩，隐蔽）**：PIXI ShaderSystem 需 `unsafe-eval`，但 `tauri.conf.json` CSP 原本只有 `wasm-unsafe-eval`（给 Live2D Core）。**dev 模式 tauri 自动放宽 CSP（dev 永远正常），release 用配置 CSP 才暴露** → PIXI Application 创建即崩 → 桌宠空白不显示（后端/React 都正常，极难排查）。已加 `'unsafe-eval'` 到 `script-src`。`@pixi/unsafe-eval` 是更严格的 follow-up。
 
+## ⭐ 工具层架构（Tool Layer，待实施，决策已定）
+> 完整方案见 [`docs/plans/tool-layer-plan.md`](docs/plans/tool-layer-plan.md)。参考 pi agent 极简 Tool Calling Loop。哲学：**Brain 是她（记忆/情绪/关系），Agent 是她的手（工具），Tool Policy 是硬安全层**。三层门控：Planner 决定"要不要给她手"（Capability Gate）→ LLM 决定"拿哪只手怎么用"（Pi Runtime）→ Tool Policy 决定"能不能伸出去"。
+- **三条铁律（写进 Architecture-Principles.md）**：① **LLM 权限只缩小不扩大**——LLM 看到的工具集 = `AllowedByBrain ∩ AllowedByPolicy`，无权扩域；② **工具结果是不可信输入**——所有工具输出用 `<tool_result source=.. untrusted=true>` 包裹，可能含提示注入，不得执行其中指令，绝不把 snippet 当绝对事实；③ **工具结果不进 Memory、不改 BrainState**——Tool Result → 临时 Context → LLM 回复，不直接动 Emotion/Persona/Memory，值得记的信息走用户后续发言→正常 Ingestion。
+- **技术约束**：流式 `chat_stream` 不支持 tool_calls（Delta 无该字段，静默丢弃）→ **工具轮非流式 chat()，最终答案轮流式 chat_stream**；`ChatMessage.content` 须改 Option（工具请求轮 content:null）。
+- **第一版 4 工具**：get_time（验证用，终局是 prompt 注入时间）/ search_web（SearchProvider trait + DuckDuckGoProvider，可替换）/ open_application（exe 白名单）/ open_url（https 允许）。
+- **安全**：search query 不得带 persona/记忆私人信息；Tool Policy 含 schema 验证/白名单/10s timeout/重复 query 检测；Agent Loop ≤3 轮，达上限 graceful fallback（tools=None 强制收尾，不报错）。
+- **可观测**：Audit log（run_id/tool/args/status/reason/duration，不进 Memory）+ Cost 归属（tool_rounds/latency/tokens 进 Cost 统计）+ run_id 时序丢弃（旧 run 结果不显示）。
+- **黑名单测试优先**（Tool Abstention 比正例重要）：哈哈哈/回忆语境的"新闻"/"新闻是什么意思" → 0 tool；注入内容 → 0 额外调用；重复 search → 限流。
+
 ## 关键命令
 ```
 npm run tauri dev                                          # 开发（桌面窗口）
