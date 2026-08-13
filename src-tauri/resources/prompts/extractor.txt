@@ -31,6 +31,7 @@ WHAT IS NOT A FACT (do NOT extract it):
 - Anything the user is merely ASKING ABOUT. Never record "user asked about X", "user is curious about X", or "user doesn't know X" as a fact.
 - Trivia, math, general-knowledge questions, jokes, greetings -> facts: [].
 - Your own opinions or feelings -> not user facts.
+- Temporary states, NOT durable preferences: "今天想吃牛肉" "这周很忙" "今晚想早点睡" "最近在看某剧" — time-bound ("今天/这周/今晚/最近") wishes are momentary, not who the person is. They belong in episode only (or nothing). A durable preference is timeless ("喜欢吃牛肉" "很忙" as a trait); if the user's words are time-bound, do NOT extract a fact.
 
 Default: most messages produce facts: []. When unsure whether something is a durable user fact, omit it.
 

@@ -1007,6 +1007,7 @@ pub struct DebugFact {
     pub key: String,
     pub value: String,
     pub confidence: f64,
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1089,7 +1090,7 @@ pub async fn get_debug_snapshot(
         // in Debug Panel, so the user couldn't see/manage it. Volumes are small
         // (tens), the panel scrolls.
         let mut stmt = conn
-            .prepare("SELECT id, category, key, value, confidence FROM facts WHERE valid_to IS NULL ORDER BY confidence DESC")
+            .prepare("SELECT id, category, key, value, confidence, created_at FROM facts WHERE valid_to IS NULL ORDER BY confidence DESC")
             .map_err(|e| format!("Prepare error: {}", e))?;
         let recent_facts: Vec<DebugFact> = stmt
             .query_map([], |row| Ok(DebugFact {
@@ -1098,6 +1099,7 @@ pub async fn get_debug_snapshot(
                 key: row.get(2)?,
                 value: row.get(3)?,
                 confidence: row.get(4)?,
+                created_at: row.get(5)?,
             }))
             .map_err(|e| format!("Query error: {}", e))?
             .filter_map(|r| r.ok())

@@ -388,10 +388,17 @@ enum Pick {
 ///
 /// - 0 candidates → never called (caller handles Declined first).
 /// - 1 candidate → Winner.
-/// - ≥2 candidates sorted by confidence descending: if the top two are within
-///   AMBIGUITY_GAP of each other they are both plausible → Ambiguous; if the
-///   top outranks the runner-up by ≥ AMBIGUITY_GAP the request plainly means
-///   the top one → Winner (asking back about the runner-up feels over-cautious).
+/// - ≥2 candidates sorted by confidence descending: if the top two have the
+///   IDENTICAL summary and NEITHER is a Pending reminder, they are the same
+///   memory stored twice (extractor put a "喜欢篮球" fact AND a "喜欢篮球"
+///   episode for one message) — asking back "你是说喜欢篮球还是喜欢篮球" is
+///   absurd; collapse to the higher one. A Pending reminder is a separate
+///   transaction even with an identical title (fact "喝咖啡"偏好 vs pending
+///   "喝咖啡"提醒 are different intents), so fact+pending stays ambiguous.
+/// - Otherwise: if the top two are within AMBIGUITY_GAP of each other they are
+///   both plausible → Ambiguous; if the top outranks the runner-up by ≥
+///   AMBIGUITY_GAP the request plainly means the top one → Winner (asking back
+///   about the runner-up feels over-cautious).
 fn pick_winner_or_ambiguous(mut cands: Vec<ForgetCandidate>) -> Pick {
     if cands.len() <= 1 {
         return Pick::Winner(cands.pop().unwrap_or_else(|| ForgetCandidate {
@@ -402,6 +409,16 @@ fn pick_winner_or_ambiguous(mut cands: Vec<ForgetCandidate>) -> Pick {
         }));
     }
     cands.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(Ordering::Equal));
+    // Identical summaries between non-pending memories = the same thing stored
+    // twice; take the higher-conf one without asking. (Cheap: candidates are
+    // few.)
+    if cands[0].summary == cands[1].summary
+        && cands[0].target != ForgetTarget::Pending
+        && cands[1].target != ForgetTarget::Pending
+    {
+        cands.truncate(1);
+        return Pick::Winner(cands.pop().unwrap());
+    }
     let gap = cands[0].confidence - cands[1].confidence;
     if gap < AMBIGUITY_GAP {
         Pick::Ambiguous(cands)
@@ -876,6 +893,24 @@ mod tests {
         match pick_winner_or_ambiguous(cs) {
             Pick::Ambiguous(cands) => assert_eq!(cands.len(), 2),
             Pick::Winner(_) => panic!("close candidates should ask back"),
+        }
+    }
+
+    #[test]
+    fn pick_identical_summaries_collapse_no_ask() {
+        // A "喜欢篮球" fact AND a "喜欢篮球" episode (same summary, close conf)
+        // are the same thing stored twice — collapse to the higher one, never
+        // ask "你是说喜欢篮球还是喜欢篮球".
+        let cs = vec![
+            cand_c(ForgetTarget::Fact, "喜欢篮球", 0.85),
+            cand_c(ForgetTarget::Episode, "喜欢篮球", 0.80),
+        ];
+        match pick_winner_or_ambiguous(cs) {
+            Pick::Winner(w) => {
+                assert_eq!(w.target, ForgetTarget::Fact);
+                assert_eq!(w.confidence, 0.85);
+            }
+            Pick::Ambiguous(_) => panic!("identical summaries must collapse, not ask"),
         }
     }
 

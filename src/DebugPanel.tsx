@@ -19,7 +19,7 @@ interface DebugSnapshot {
   fact_count: number;
   pending_count: number;
   recent_episodes: { id: string; summary: string; strength: number; recall_count: number }[];
-  recent_facts: { id: string; category: string; key: string; value: string; confidence: number }[];
+  recent_facts: { id: string; category: string; key: string; value: string; confidence: number; created_at: string | null }[];
   pending_events: { id: string; title: string; status: string; remind_date: string | null }[];
   change_log: { timestamp: string; module: string; action: string; target: string | null; field: string | null; old_value: string | null; new_value: string | null; reason: string | null }[];
   last_decision: {
@@ -347,7 +347,7 @@ export function DebugPanel({ anim, onClose, onQuit }: {
           <span className="debug-title">Facts</span>
           {snapshot.recent_facts.map((f) => (
             <div key={f.id} className="debug-item">
-              <span>[{f.category}] {f.key}: {f.value} ({f.confidence.toFixed(2)})</span>
+              <span>[{f.category}] {f.key}: {f.value} ({f.confidence.toFixed(2)}){f.created_at ? ` · ${f.created_at.slice(0, 10)}` : ""}</span>
               <button className="debug-x" type="button"
                 title="忘掉这条 fact（软删除，可重新习得）"
                 onClick={() => {
