@@ -480,9 +480,10 @@ mod tests {
                     created_at: "2026-07-10T14:00:00+00:00".to_string(),
                 },
                 score: 0.85,
-                score_breakdown: ScoreBreakdown {
+                score_breakdown:                     ScoreBreakdown {
                     semantic: 0.9,
                     strength: 0.7,
+                    novelty: 0.0,
                     recency: 0.95,
                     emotion: 1.0,
                 },

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Ebbinghaus decay rate per day.
 const DAILY_DECAY: f64 = 0.998;
-/// Reinforcement on each recall.
+/// Reinforcement on each recall (diminishing: scaled by remaining headroom).
 const RECALL_BOOST: f64 = 0.03;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,11 +118,18 @@ pub fn decay_strength(conn: &Connection) -> Result<u64, String> {
     Ok(affected as u64)
 }
 
-/// Reinforces an episode's memory on recall: strength += RECALL_BOOST, recall_count++.
+/// Reinforces an episode's memory on recall: strength approaches 1.0 with
+/// diminishing returns (`boost = RECALL_BOOST * (1 - strength)`), recall_count++.
+///
+/// Diminishing form fixes the rich-get-richer saturation loop (2026-08-13):
+/// a strength-1.0 memory gains nothing from another recall, so dominant topics
+/// (星际穿越/糯米) can no longer stay pinned at the cap forever — the daily
+/// decay finally has room to act, and the novelty score component in retrieval
+/// gets a fair chance.
 pub fn reinforce(conn: &Connection, id: &str, now: &str) -> Result<(), String> {
     conn.execute(
         "UPDATE episodes SET
-            memory_strength = MIN(1.0, memory_strength + ?1),
+            memory_strength = memory_strength + ?1 * (1.0 - memory_strength),
             recall_count = recall_count + 1,
             last_recalled_at = ?2
          WHERE id = ?3",
@@ -152,6 +159,47 @@ pub fn search_by_ids(conn: &Connection, ids: &[String]) -> Result<Vec<Episode>, 
     let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     let rows = stmt
         .query_map(params.as_slice(), |row| {
+            Ok(Episode {
+                id: row.get(0)?,
+                time: row.get(1)?,
+                summary: row.get(2)?,
+                emotion: row.get(3)?,
+                importance: row.get(4)?,
+                is_landmark: row.get::<_, i32>(5)? != 0,
+                subject: row.get(6)?,
+                participants: row.get(7)?,
+                topics: row.get(8)?,
+                source_type: row.get(9)?,
+                source_conversation_id: row.get(10)?,
+                source_turn: row.get(11)?,
+                memory_strength: row.get(12)?,
+                recall_count: row.get(13)?,
+                last_recalled_at: row.get(14)?,
+                consolidated: row.get::<_, i32>(15)? != 0,
+                created_at: row.get(16)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query episodes: {}", e))?;
+
+    rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
+}
+
+/// Returns ALL episodes (full export — no LIMIT, includes consolidated).
+pub fn get_all(conn: &Connection) -> Result<Vec<Episode>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, time, summary, emotion, importance, is_landmark,
+                    subject, participants, topics, source_type,
+                    source_conversation_id, source_turn,
+                    memory_strength, recall_count, last_recalled_at,
+                    consolidated, created_at
+             FROM episodes
+             ORDER BY created_at ASC",
+        )
+        .map_err(|e| format!("Failed to prepare: {}", e))?;
+
+    let rows = stmt
+        .query_map([], |row| {
             Ok(Episode {
                 id: row.get(0)?,
                 time: row.get(1)?,
@@ -236,7 +284,15 @@ mod tests {
 
             reinforce(conn, "ep_1", "2026-07-14T11:00:00")?;
             let ep = get(conn, "ep_1")?.unwrap();
-            assert!((ep.memory_strength - 1.0).abs() < 0.001, "reinforced strength should clamp to 1.0");
+            // Diminishing boost (2026-08-13): 0.998 → 0.998 + 0.03*(1-0.998).
+            let expected = 0.998 + 0.03 * (1.0 - 0.998);
+            assert!(
+                (ep.memory_strength - expected).abs() < 0.001,
+                "diminishing boost should give ~{}, got {}",
+                expected,
+                ep.memory_strength
+            );
+            assert!(ep.memory_strength < 1.0, "diminishing boost never clamps to 1.0");
             assert_eq!(ep.recall_count, 1);
             Ok(())
         })

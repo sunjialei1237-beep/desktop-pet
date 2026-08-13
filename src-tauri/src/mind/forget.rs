@@ -569,9 +569,10 @@ mod tests {
         ScoredEpisode {
             episode: ep,
             score: semantic, // total; unused by execute_forget (it reads breakdown)
-            score_breakdown: ScoreBreakdown {
+            score_breakdown:                 ScoreBreakdown {
                 semantic,
                 strength: 0.0,
+                novelty: 0.0,
                 recency: 0.0,
                 emotion: 0.0,
             },

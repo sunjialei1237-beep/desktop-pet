@@ -223,24 +223,42 @@ pub async fn generate(
 
     // Memory-anchored: the rotated query surfaces different memories across
     // calls instead of always the dominant topic.
-    let retrieval = crate::mind::retrieval::retrieve(query, &emotion, embedding, db, 3)?;
+    let retrieval = crate::mind::retrieval::retrieve(query, &emotion, embedding, db, 8)?;
     // A memory-anchored bubble is genuine recall — strengthen it. ADR 2026-08-09 Part 2.
     crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
 
     let (memory_anchor, goal, tone): (String, &'static str, &'static str) =
         if let Some(ev) = pending_due.first() {
             (ev.title.clone(), "care", "gentle")
-        // Only durable, anchorable facts make good proactive-bubble material;
-        // pseudo-facts (questions phrased as facts) are excluded.
-        } else if let Some(f) = retrieval.facts.iter().find(|f| is_anchorable_fact(f)) {
-            (format!("{}: {}", f.key, f.value), "accompany", "playful")
-        } else if let Some(ep) = retrieval.episodes.first() {
-            (ep.episode.summary.clone(), "accompany", "gentle")
         } else {
-            // No anchor this turn: fall back to lively rather than staying silent
-            // (user feedback: bubbles should stay lively even without a memory).
-            log::info!("proactive_bubble: no usable memory, falling back to lively");
-            return generate_lively(db, llm, wm_context, &emotion).await;
+            // Diversity fix (2026-08-13): weighted sampling replaces the old
+            // confidence-order argmax (first anchorable fact / first episode).
+            // Dominant memories stay more likely, but can no longer win every
+            // bubble. rng is scoped to the inner block (sync-only) and dropped
+            // before any .await (tauri commands require Send futures).
+            let anchor = {
+                let mut rng = rand::thread_rng();
+                if let Some(f) = sample_anchorable_fact(&retrieval.facts, &mut rng) {
+                    Some((format!("{}: {}", f.key, f.value), "accompany", "playful"))
+                } else if let Some(i) = crate::mind::retrieval::sample_surface_anchor(
+                    &retrieval.episodes,
+                    &Utc::now(),
+                    &mut rng,
+                ) {
+                    Some((retrieval.episodes[i].episode.summary.clone(), "accompany", "gentle"))
+                } else {
+                    None
+                }
+            };
+            match anchor {
+                Some((a, g, t)) => (a, g, t),
+                None => {
+                    // No anchor this turn: fall back to lively rather than staying silent
+                    // (user feedback: bubbles should stay lively even without a memory).
+                    log::info!("proactive_bubble: no usable memory, falling back to lively");
+                    return generate_lively(db, llm, wm_context, &emotion).await;
+                }
+            }
         };
 
     let intent = crate::mind::planner::Intent {
@@ -435,20 +453,28 @@ pub async fn generate_welcome_back(
         &emotion,
         embedding,
         db,
-        3,
+        8,
     )?;
     // A proactive message grounded in retrieved memory is genuine recall.
     crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
 
-    // Optional anchor: a durable fact, else a recent episode. Empty if neither.
-    let (memory_anchor, has_anchor): (String, bool) =
-        if let Some(f) = retrieval.facts.iter().find(|f| is_anchorable_fact(f)) {
+    // Optional anchor: a durable fact, else a recent episode. Weighted sampling
+    // (2026-08-13) instead of confidence-order argmax — see generate(). Empty
+    // if neither, a welcome back with no anchor is still a valid greeting.
+    let (memory_anchor, has_anchor): (String, bool) = {
+        let mut rng = rand::thread_rng();
+        if let Some(f) = sample_anchorable_fact(&retrieval.facts, &mut rng) {
             (format!("{}: {}", f.key, f.value), true)
-        } else if let Some(ep) = retrieval.episodes.first() {
-            (ep.episode.summary.clone(), true)
+        } else if let Some(i) = crate::mind::retrieval::sample_surface_anchor(
+            &retrieval.episodes,
+            &Utc::now(),
+            &mut rng,
+        ) {
+            (retrieval.episodes[i].episode.summary.clone(), true)
         } else {
             (String::new(), false)
-        };
+        }
+    };
 
     // Tone tracks mood: a high-mood pet greets playfully, otherwise gentle.
     let tone: &str = if emotion.mood >= 0.65 { "playful" } else { "gentle" };
@@ -567,21 +593,29 @@ pub async fn generate_lonely_bubble(
         &emotion,
         embedding,
         db,
-        3,
+        8,
     )?;
     // A proactive message grounded in retrieved memory is genuine recall.
     crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
 
-    // Optional anchor: a durable fact, else a recent episode. Empty if neither
-    // — a lonely nudge with no anchor is still a valid "just thinking of you".
-    let (memory_anchor, has_anchor): (String, bool) =
-        if let Some(f) = retrieval.facts.iter().find(|f| is_anchorable_fact(f)) {
+    // Optional anchor: a durable fact, else a recent episode. Weighted sampling
+    // (2026-08-13) instead of confidence-order argmax — see generate(). Empty
+    // if neither — a lonely nudge with no anchor is still a valid "just
+    // thinking of you".
+    let (memory_anchor, has_anchor): (String, bool) = {
+        let mut rng = rand::thread_rng();
+        if let Some(f) = sample_anchorable_fact(&retrieval.facts, &mut rng) {
             (format!("{}: {}", f.key, f.value), true)
-        } else if let Some(ep) = retrieval.episodes.first() {
-            (ep.episode.summary.clone(), true)
+        } else if let Some(i) = crate::mind::retrieval::sample_surface_anchor(
+            &retrieval.episodes,
+            &Utc::now(),
+            &mut rng,
+        ) {
+            (retrieval.episodes[i].episode.summary.clone(), true)
         } else {
             (String::new(), false)
-        };
+        }
+    };
 
     // Tone tracks mood: a high-mood pet nudges playfully, otherwise gentle.
     let tone: &str = if emotion.mood >= 0.65 { "playful" } else { "gentle" };
@@ -639,6 +673,33 @@ pub async fn generate_lonely_bubble(
         })),
         None => Ok(None),
     }
+}
+
+/// Weighted-random pick among anchorable facts: weight = 1/(1+mention_count).
+/// A fact the pet has already voiced many times is de-prioritized, so proactive
+/// bubbles explore newer facts instead of always taking the single highest-
+/// confidence one (user feedback 2026-08-13: 浮现按置信度排序太死板).
+fn sample_anchorable_fact<'a>(facts: &'a [Fact], rng: &mut impl rand::Rng) -> Option<&'a Fact> {
+    let candidates: Vec<&Fact> = facts.iter().filter(|f| is_anchorable_fact(f)).collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    let weights: Vec<f64> = candidates
+        .iter()
+        .map(|f| 1.0 / (1.0 + f.mention_count as f64))
+        .collect();
+    let total: f64 = weights.iter().sum();
+    if total <= 0.0 {
+        return Some(candidates[0]);
+    }
+    let mut roll = rng.gen::<f64>() * total;
+    for (i, f) in candidates.iter().enumerate() {
+        roll -= weights[i];
+        if roll <= 0.0 {
+            return Some(f);
+        }
+    }
+    Some(*candidates.last().unwrap())
 }
 
 /// Whether a fact is worth proactively bringing up. Excludes pseudo-facts
@@ -810,6 +871,69 @@ mod tests {
         assert!(lively_prompt(&e, 1).contains("深夜"));
         // Anti-fabrication directive must always be present (Principle 3).
         assert!(lively_prompt(&e, 9).contains("严禁编造"));
+    }
+
+    #[test]
+    fn test_sample_anchorable_fact_explores_unmentioned() {
+        // Weight 1/(1+mention_count): a fact voiced 100 times must almost never
+        // win over a never-voiced one, regardless of confidence order.
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+        let make = |id: &str, key: &str, confidence: f64, mentions: i64| Fact {
+            id: id.to_string(),
+            category: "preference".to_string(),
+            key: key.to_string(),
+            value: "value".to_string(),
+            confidence,
+            valid_from: Some("2026-07-01T00:00:00+00:00".to_string()),
+            valid_to: None,
+            source_episode: None,
+            mention_count: mentions,
+            created_at: "2026-07-01T00:00:00+00:00".to_string(),
+            updated_at: "2026-07-01T00:00:00+00:00".to_string(),
+        };
+        // Old faithful: highest confidence, mentioned 100 times.
+        let stale = make("f1", "movie", 0.98, 100);
+        // Newer memory: slightly lower confidence, never mentioned.
+        let fresh = make("f2", "hobby", 0.8, 0);
+        let facts = vec![stale.clone(), fresh.clone()];
+
+        let mut fresh_wins = 0usize;
+        for seed in 0..100u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            if let Some(f) = sample_anchorable_fact(&facts, &mut rng) {
+                if f.id == "f2" {
+                    fresh_wins += 1;
+                }
+            }
+        }
+        assert!(
+            fresh_wins >= 95,
+            "fresh fact should dominate the draw (got {}/100)",
+            fresh_wins
+        );
+    }
+
+    #[test]
+    fn test_sample_anchorable_fact_filters_non_anchorable() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+        let low_conf = Fact {
+            id: "f1".to_string(),
+            category: "trivia".to_string(),
+            key: "knowledge_sun".to_string(),
+            value: "the sun rises".to_string(),
+            confidence: 0.5,
+            valid_from: Some("2026-07-01T00:00:00+00:00".to_string()),
+            valid_to: None,
+            source_episode: None,
+            mention_count: 0,
+            created_at: "2026-07-01T00:00:00+00:00".to_string(),
+            updated_at: "2026-07-01T00:00:00+00:00".to_string(),
+        };
+        let mut rng = StdRng::seed_from_u64(3);
+        assert!(sample_anchorable_fact(&[low_conf], &mut rng).is_none());
+        assert!(sample_anchorable_fact(&[], &mut rng).is_none());
     }
 
     #[test]

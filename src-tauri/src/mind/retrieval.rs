@@ -14,14 +14,30 @@ use crate::db::onboarding::UserProfile;
 /// An episode paired with its stored embedding vector (if available).
 type EpisodeWithVector = (db_episodes::Episode, Option<Vec<f32>>);
 
-/// Weights for the hybrid retrieval score.
+/// Weights for the hybrid retrieval score. Novelty (2026-08-13) gives
+/// never-recalled memories an exploration bonus so dominant topics can't
+/// monopolize the ranking; strength was trimmed to make room for it.
 const W_SEMANTIC: f64 = 0.4;
-const W_STRENGTH: f64 = 0.3;
-const W_RECENCY: f64 = 0.2;
+const W_STRENGTH: f64 = 0.2;
+const W_NOVELTY: f64 = 0.15;
+const W_RECENCY: f64 = 0.15;
 const W_EMOTION: f64 = 0.1;
 
 /// Recency half-life in days.
 const RECENCY_HALFLIFE_DAYS: f64 = 30.0;
+
+/// Novelty half-life in recall counts: exp(-recall_count / NOVELTY_TAU).
+/// 0 recalls → 1.0 (full exploration bonus), 5 → ~0.37, 20 → ~0.02.
+const NOVELTY_TAU: f64 = 5.0;
+
+/// Surfacing cooldown: an episode recalled within this many hours is dropped
+/// from proactive-anchor sampling (the pet just talked about it).
+pub const SURFACE_COOLDOWN_HOURS: i64 = 12;
+
+/// Softmax temperature for the weighted surfacing draw. Lower = still mostly
+/// the top memories; higher = flatter, more exploratory. 0.6 keeps the best
+/// memories clearly favored while letting others in (diversity fix).
+pub const SURFACE_TEMPERATURE: f64 = 0.6;
 
 /// A scored episode from retrieval.
 #[derive(Debug, Clone, Serialize)]
@@ -36,6 +52,7 @@ pub struct ScoredEpisode {
 pub struct ScoreBreakdown {
     pub semantic: f64,
     pub strength: f64,
+    pub novelty: f64,
     pub recency: f64,
     pub emotion: f64,
 }
@@ -106,9 +123,10 @@ pub fn retrieve(
         .map(|(ep, ep_vec)| {
             let semantic = compute_semantic(&query_vec, &ep_vec, query, &ep.summary);
             let strength = ep.memory_strength * W_STRENGTH;
+            let novelty = compute_novelty(ep.recall_count) * W_NOVELTY;
             let recency = compute_recency(&ep.time, &now) * W_RECENCY;
             let emotion_score = compute_emotion_match(&ep.emotion, emotion) * W_EMOTION;
-            let total = semantic + strength + recency + emotion_score;
+            let total = semantic + strength + novelty + recency + emotion_score;
 
             ScoredEpisode {
                 episode: ep,
@@ -116,6 +134,7 @@ pub fn retrieve(
                 score_breakdown: ScoreBreakdown {
                     semantic: semantic / W_SEMANTIC,
                     strength: strength / W_STRENGTH,
+                    novelty: novelty / W_NOVELTY,
                     recency: recency / W_RECENCY,
                     emotion: emotion_score / W_EMOTION,
                 },
@@ -164,8 +183,8 @@ pub fn retrieve(
     })
 }
 
-/// Reinforces the given episodes as a genuine-recall write: strength +=
-/// RECALL_BOOST (capped at 1.0), recall_count++, last_recalled_at = now.
+/// Reinforces the given episodes as a genuine-recall write: strength grows
+/// with diminishing returns toward 1.0, recall_count++, last_recalled_at = now.
 ///
 /// `retrieve` itself is a pure read; this is the ONLY retrieval-path write, and
 /// only callers that represent a REAL recall — a conversational reply or a
@@ -179,6 +198,68 @@ pub fn reinforce_top(db: &DbState, episodes: &[ScoredEpisode]) {
             log::warn!("Failed to reinforce episode {}: {}", se.episode.id, e);
         }
     }
+}
+
+/// Novelty (exploration) score: exp(-recall_count / NOVELTY_TAU), in 0..=1.
+/// A memory never recalled scores 1.0; one recalled ~20 times is ~0. Prevents
+/// the recall→reinforce→recall loop from letting a few dominant topics
+/// monopolize the ranking (user feedback 2026-08-13).
+pub fn compute_novelty(recall_count: i64) -> f64 {
+    (-(recall_count as f64) / NOVELTY_TAU).exp()
+}
+
+/// Weighted-random surfacing anchor selection (diversity fix 2026-08-13).
+///
+/// Picks ONE episode from the scored pool for a proactive bubble — a weighted
+/// draw, not an argmax:
+///   1. Cooldown: episodes with `last_recalled_at` within
+///      `SURFACE_COOLDOWN_HOURS` are dropped (the pet just talked about them).
+///      If that empties the pool, cooldown is relaxed so she can still speak
+///      rather than fall silent.
+///   2. Softmax over `score / SURFACE_TEMPERATURE` among the survivors —
+///      dominant memories stay *more likely* but can no longer win every
+///      bubble ("浮现永远都是星际穿越/糯米").
+///
+/// Returns the index into `scored` of the drawn episode.
+pub fn sample_surface_anchor(
+    scored: &[ScoredEpisode],
+    now: &DateTime<Utc>,
+    rng: &mut impl rand::Rng,
+) -> Option<usize> {
+    if scored.is_empty() {
+        return None;
+    }
+    let cooldown = chrono::Duration::hours(SURFACE_COOLDOWN_HOURS);
+    let in_cooldown = |i: usize| {
+        scored[i]
+            .episode
+            .last_recalled_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| now.signed_duration_since(dt.with_timezone(&Utc)) < cooldown)
+            .unwrap_or(false)
+    };
+    let mut idxs: Vec<usize> = (0..scored.len()).filter(|&i| !in_cooldown(i)).collect();
+    if idxs.is_empty() {
+        // Everything is on cooldown — relax rather than go silent.
+        idxs = (0..scored.len()).collect();
+    }
+    let weights: Vec<f64> = idxs
+        .iter()
+        .map(|&i| (scored[i].score / SURFACE_TEMPERATURE).exp())
+        .collect();
+    let total: f64 = weights.iter().sum();
+    if total <= 0.0 || !total.is_finite() {
+        return Some(idxs[0]);
+    }
+    let mut roll = rng.gen::<f64>() * total;
+    for (pos, &i) in idxs.iter().enumerate() {
+        roll -= weights[pos];
+        if roll <= 0.0 {
+            return Some(i);
+        }
+    }
+    Some(*idxs.last().unwrap())
 }
 
 /// Gets candidate episodes with their stored vectors (if available).
@@ -439,6 +520,154 @@ mod tests {
         let emotion = EmotionState::default();
         let result = retrieve("event", &emotion, None, &db, 3).unwrap();
         assert_eq!(result.episodes.len(), 3);
+    }
+
+    #[test]
+    fn test_compute_novelty() {
+        assert!((compute_novelty(0) - 1.0).abs() < 1e-9, "never recalled = full bonus");
+        assert!((compute_novelty(5) - (-1.0_f64).exp()).abs() < 1e-9, "tau=5 half-life");
+        assert!(compute_novelty(20) < 0.05, "heavily recalled ~= 0");
+        assert!(compute_novelty(0) > compute_novelty(1) && compute_novelty(1) > compute_novelty(2));
+    }
+
+    #[test]
+    fn test_novelty_affects_ranking() {
+        // Two episodes identical except recall_count: the never-recalled one
+        // must outrank the heavily-recalled one (exploration beats saturation).
+        let db = test_db();
+        let now = "2026-07-13T10:00:00+00:00";
+        let fresh = db.with_conn(|conn| {
+            Ok(make_episode(conn, "shared topic event A", 0.8, now))
+        }).unwrap();
+        let stale = db.with_conn(|conn| {
+            Ok(make_episode(conn, "shared topic event B", 0.8, now))
+        }).unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE episodes SET recall_count = 25 WHERE id = ?1",
+                rusqlite::params![stale],
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        let result = retrieve("shared topic", &EmotionState::default(), None, &db, 2).unwrap();
+        assert_eq!(result.episodes.len(), 2);
+        assert_eq!(result.episodes[0].episode.id, fresh, "fresh memory should outrank saturated one");
+    }
+
+    #[test]
+    fn test_sample_surface_anchor_cooldown() {
+        // An episode recalled 10 minutes ago is on cooldown; the draw must
+        // never pick it while a non-cooldown alternative exists (any seed).
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+        let make = |id: &str, score: f64, recalled: Option<String>| ScoredEpisode {
+            episode: db_episodes::Episode {
+                id: id.to_string(),
+                time: "2026-07-13T10:00:00+00:00".to_string(),
+                summary: format!("ep {}", id),
+                emotion: None,
+                importance: 0.5,
+                is_landmark: false,
+                subject: "user".to_string(),
+                participants: None,
+                topics: None,
+                source_type: "conversation".to_string(),
+                source_conversation_id: None,
+                source_turn: None,
+                memory_strength: 0.5,
+                recall_count: 0,
+                last_recalled_at: recalled,
+                consolidated: false,
+                created_at: "2026-07-13T10:00:00+00:00".to_string(),
+            },
+            score,
+            score_breakdown: ScoreBreakdown { semantic: 0.0, strength: 0.0, novelty: 0.0, recency: 0.0, emotion: 0.0 },
+        };
+        let now = Utc::now();
+        let hot = make("hot", 1.0, Some(now.to_rfc3339()));
+        let cold = make("cold", 0.01, Some((now - chrono::Duration::days(2)).to_rfc3339()));
+        let scored = vec![hot, cold];
+        for seed in 0..20u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let idx = sample_surface_anchor(&scored, &now, &mut rng).unwrap();
+            assert_eq!(idx, 1, "cooldown episode must not be sampled (seed {})", seed);
+        }
+    }
+
+    #[test]
+    fn test_sample_surface_anchor_relaxes_when_all_cooldown() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+        let now = Utc::now();
+        let make = |id: &str| ScoredEpisode {
+            episode: db_episodes::Episode {
+                id: id.to_string(),
+                time: now.to_rfc3339(),
+                summary: format!("ep {}", id),
+                emotion: None,
+                importance: 0.5,
+                is_landmark: false,
+                subject: "user".to_string(),
+                participants: None,
+                topics: None,
+                source_type: "conversation".to_string(),
+                source_conversation_id: None,
+                source_turn: None,
+                memory_strength: 0.5,
+                recall_count: 0,
+                last_recalled_at: Some(now.to_rfc3339()),
+                consolidated: false,
+                created_at: now.to_rfc3339(),
+            },
+            score: 0.5,
+            score_breakdown: ScoreBreakdown { semantic: 0.0, strength: 0.0, novelty: 0.0, recency: 0.0, emotion: 0.0 },
+        };
+        let scored = vec![make("a"), make("b")];
+        let mut rng = StdRng::seed_from_u64(7);
+        // All on cooldown → relax and still pick something (never None).
+        assert!(sample_surface_anchor(&scored, &now, &mut rng).is_some());
+    }
+
+    #[test]
+    fn test_sample_surface_anchor_empty() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+        let mut rng = StdRng::seed_from_u64(1);
+        assert!(sample_surface_anchor(&[], &Utc::now(), &mut rng).is_none());
+    }
+
+    #[test]
+    fn test_reinforce_diminishing() {
+        // Diminishing boost: a strength-1.0 memory gains nothing; a 0.5 memory
+        // gains less than the old flat +0.03 (0.015 here).
+        let db = test_db();
+        let id = db
+            .with_conn(|conn| {
+                Ok(make_episode(conn, "diminishing", 0.5, "2026-07-13T10:00:00+00:00"))
+            })
+            .unwrap();
+        let now = Utc::now().to_rfc3339();
+        db.with_conn(|conn| db_episodes::reinforce(conn, &id, &now)).unwrap();
+        db.with_conn(|conn| {
+            let ep = db_episodes::get(conn, &id)?.unwrap();
+            assert!((ep.memory_strength - 0.515).abs() < 1e-9, "0.5 → 0.5+0.03*0.5 = 0.515, got {}", ep.memory_strength);
+            Ok(())
+        })
+        .unwrap();
+        // Saturate it and confirm no further growth past ~1.0.
+        for _ in 0..100 {
+            db.with_conn(|conn| db_episodes::reinforce(conn, &id, &now)).unwrap();
+        }
+        db.with_conn(|conn| {
+            let ep = db_episodes::get(conn, &id)?.unwrap();
+            assert!(ep.memory_strength < 1.0, "diminishing boost never exceeds 1.0");
+            assert!(ep.memory_strength > 0.9, "but it does keep approaching 1.0");
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

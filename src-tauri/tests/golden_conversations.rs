@@ -623,7 +623,7 @@ fn gc_016_planner_memory_anchor() {
             },
             score: 0.7,
             score_breakdown: retrieval::ScoreBreakdown {
-                semantic: 0.8, strength: 0.7, recency: 0.9, emotion: 0.5,
+                semantic: 0.8, strength: 0.7, novelty: 0.0, recency: 0.9, emotion: 0.5,
             },
         }],
         facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![],
