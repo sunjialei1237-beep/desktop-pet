@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-14（续³²·主动冒泡治理全部落地 ✅ commit b9055a9：全局预算 60min/记忆 15%/轮转 7 天硬排除/时间词中和，lib 384 绿。b6bef1a 中间坏点编译错已解除，并行会话可继续情感锚点）。上轮 2026-08-14（续³¹·承诺追踪落地 ✅，情感锚点+recall_reason ⏸ 等 governance 提交）。上轮 2026-08-14（续³⁰·工具层收尾：头条搜索实跑✅ + release rebuild✅）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
+> 最后更新：**2026-08-14（续³³·搜索源国外优先级联✅（DDG 可达即用→CAPTCHA/超时 10min 冷却→头条兜底，`0f06253`）+ release rebuild✅（worktree@8ad79f6 全量，代续³² 待办③））。上轮 2026-08-14（续³²·主动冒泡治理全部落地 ✅ commit b9055a9：全局预算 60min/记忆 15%/轮转 7 天硬排除/时间词中和，lib 384 绿。b6bef1a 中间坏点编译错已解除，并行会话可继续情感锚点）。上轮 2026-08-14（续³¹·承诺追踪落地 ✅，情感锚点+recall_reason ⏸ 等 governance 提交）。上轮 2026-08-14（续³⁰·工具层收尾：头条搜索实跑✅ + release rebuild✅）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -253,7 +253,19 @@
 >
 > **可观测**：DebugPanel 新"主动气泡预算"分区（上次气泡/下次还需 X 分钟）+ fact 行显示浮现次数/日期；App.tsx idle sigh 0.08→**0.03** + 5min cooldown；`scripts/migrate_deictic.py` 存量治理（dry-run 默认）。**运行时 AppData config 无 [proactive] 段 → 新默认直接生效**（可加 `[proactive] min_interval_secs=…` / `memory_bubble_ratio=…` 调）。
 >
-> **⚠️ 对并行会话**：本 commit 包含 `mind::deictic` / `facts::bump_surfaced` / `surfaced_count` / `generate` 第 5 参数 / `sample_anchorable_fact` 新签名——**b6bef1a 中间坏点的 11 个编译错已全部解除**，可在 `b9055a9` 上实施情感锚点 + recall_reason。**📋 待办**：① dev 实跑（60min 间隔 / 内容多样性 / 同记忆 7 天不重复 / 无"今天/昨天"错词）；② `python scripts/migrate_deictic.py --apply` 清存量；③ release rebuild（`npx tauri build --no-bundle`，先 `taskkill //IM desktop-pet.exe //F`）；④ ⚠️ push 待代理（`beaec69` 起含本 commit 未推）。
+> **⚠️ 对并行会话**：本 commit 包含 `mind::deictic` / `facts::bump_surfaced` / `surfaced_count` / `generate` 第 5 参数 / `sample_anchorable_fact` 新签名——**b6bef1a 中间坏点的 11 个编译错已全部解除**，可在 `b9055a9` 上实施情感锚点 + recall_reason。**📋 待办**：① dev 实跑（60min 间隔 / 内容多样性 / 同记忆 7 天不重复 / 无"今天/昨天"错词）；② `python scripts/migrate_deictic.py --apply` 清存量；③ ~~release rebuild~~（✅ 续³³ 已代做，worktree@8ad79f6）；④ ~~push 待代理~~（✅ 已全量在远端）。
+
+> **2026-08-14（续³³）更新 · 搜索源国外优先级联 ✅（commit `0f06253`）+ 代续³² 待办③ release rebuild ✅（worktree @ 8ad79f6）**。用户："搜索来源不能只依靠国内源，应优先检测用户是否有国外环境，国外无法正常联通则走兜底的国内环境；国外源参考 liustack.dev/blog/free-search，有更好的选项可替换"。**调研**：该文的引擎队列（agy=Google 免费额度/Tavily 月1000次/Exa/Firecrawl）全是浏览器登录 CLI 或 API key 方案，不宜嵌入桌宠；采纳其**"引擎队列+失败自动换备"思想**，国外腿用现成 DDG（免 key、结果带真实 URL、质量高于头条）。
+>
+> **实现**（`tools/search.rs`，铁律 #14 两腿结果同样 untrusted 包裹）：`search_web` 改级联——先试 DDG（`FOREIGN_BUDGET_SECS=5s` 总预算：agent 层工具超时 10s，必须给国内腿留余量）；**成功即用并清冷却；失败/超时记 `FOREIGN_COOLDOWN_SECS=600s` 冷却**（进程级 `AtomicI64`），冷却内直走头条，过期自动重试（用户可能刚开 VPN）。"检测国外环境"= DDG 实际尝试本身即探测，无需单独 ping。`foreign_available` 纯决策函数 + 2 单测；删 DDG 侧 dead_code 标记。
+>
+> **实跑验证（live probe：worktree 干净树上临时 `#[ignore]` 测试直跑生产 `search_web`，真网络，跑完还原不入库）**：当前 TUN VPN 环境下 DDG 对出口 IP 返回 202 CAPTCHA（数分钟前同 UA curl 还 200+10 结果——DDG 挑战随出口 IP 漂移）→ **级联按设计降级头条 → status=Success，1.64s 出 5 条真实结果** ✅。DDG 命中路径 = mock 解析单测覆盖 + curl 证实完整 UA 可得可解析结果页；app 级全链路（gate→agent→气泡中文总结）续³⁰ 已验，本轮仅换 provider 填充、下游不变。
+>
+> **三会话并行协调记录（本轮=搜索级联 / 续³¹=承诺追踪 / 续³²=冒泡治理+思考球）**：① b6bef1a 中间坏点期间主工作区反复编译错（我撞上 9→5 个错）→ 本轮所有验证改在 `git worktree` 干净提交树做，**范式：`git worktree add D:\桌宠-wt <commit>` + 只放/只测自己的改动 + 完事 `git worktree remove --force`**，主区零干扰；② 我的 worktree dev 实例曾被并行会话按其启动清单 taskkill（预期内，多会话共享一台桌面必踩）；③ 主仓 `.cargo/config.toml` 是**本地未提交**的 target 重定向（`D:/cargo-target/desktop-pet`）——worktree 不继承，构建产物落 worktree 自己的 target，**release 需手动拷 exe 过去**；④ `scripts/send_pet_msg.ps1` 修复：**ps1 内中文注释会被 PowerShell 5.1 按 ANSI 误读致 Add-Type 失效**（SendKeys TypeNotFound），已改纯 ASCII 注释。
+>
+> **release rebuild**：worktree @ `8ad79f6`（含三线全部：搜索级联+承诺追踪+冒泡治理+思考球初版）`npx tauri build --no-bundle` exit 0（2m35s）→ exe 已拷 `D:\cargo-target\desktop-pet\release\desktop-pet.exe`（22:46，24.4MB），桌面快捷方式生效。**注**：`4e16779`/`a23f496`（思考球 CSS 左移累计 10px）在构建后落地，纯视觉 tweak 未含，下次 rebuild 自然带上。push：8ad79f6 及之前已全量在远端。
+>
+> 📋 **待办**：① 续³² 的 dev 实跑四项 + `migrate_deictic.py --apply` 仍在；② 头条 url 未配对 follow-up 沿袭（图片与文章 url 交错，只给 title+abstract）；③ 若 DDG 长期被挑战，可加 config 可选 Tavily key（免费月 1000 次）作第三腿——需用户注册 key，blog 方案里最合适的一个。
 
 ## §审计 (2026-08-03 续③)：深度审计 + 代码级核验
 
