@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-14（续²⁸·气泡滚动条常驻修复+尾巴补全✅）。上轮 2026-08-14（续²⁷·工具层 Tool Layer 7 阶段全部落地 ✅）。上轮 2026-08-13（续²⁴·全面测试验收+多轮修复+记忆卫生✅——B/C/D/E 组全验 + Live2D 全移除 + Forget 消歧义/用户字眼/英文fact/瞬时desire/相同summary反问等修复 + 15 条脏 fact 治理。详见 §当前任务 续²⁴）。上轮 续²³·AIRI 风格视线驱动✅。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
+> 最后更新：**2026-08-14（续²⁹·工具层实跑三连修✅ qa_mode bug/白名单→动态扫描/DDG→头条 + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`，C 盘 Documents\桌宠 已废弃待删）。上轮 2026-08-14（续²⁸·气泡滚动条常驻修复+尾巴补全✅）。上轮 2026-08-14（续²⁷·工具层 7 阶段全部落地✅）。上轮 2026-08-13（续²⁴·全面测试验收+多轮修复+记忆卫生✅）。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -58,6 +58,20 @@
 > **验证**：lib 364 passed / check --tests ✅ / tsc ✅ / **tool_conversations 8 passed（含 2 e2e abstention 真实 LLM：哈哈哈+好累→0 tool round）**。📋 **待办**：① ⚠️ **push 待代理**（上会话 5 + 本会话 7 共 12 commit 未推）；② **dev 实跑**：`npm run tauri dev` → "查最近AI新闻"→search→中文总结 / "打开VSCode"→白名单 / "哈哈哈哈"→不调 / "现在几点"→直接答；③ **release rebuild**（`npx tauri build --no-bundle`，先 taskkill）；④ e2e search/open_app 正例留 dev 实跑（LLM 非确定不强断言）；⑤ ToolThinking 前端低头动画留 follow-up（当前复用 thinking 占位）。
 
 > **2026-08-14（续²⁸）更新 · 气泡滚动条常驻修复 ✅ + 尾巴补全 ✅ + 尾巴重叠/接缝微调 ✅（commit `69ff3cb`+`2b0702a`+`e6bed2b`+`d9d8622`，纯前端）**。用户"气泡右边滑动条常驻，不需要——只在消息框高度突破上限之后才出现，之前流式增长、无滑动条、不能上下滑动"。**根因**：某些 WebView2/Windows 环境下 `overflow-y:auto` 在内容未溢出时也渲染滚动条轨道（上一轮 `1a82494` 去掉 ::-webkit-scrollbar 定制后仍复现；headless Edge 实测短文本"你好呀"也显示轨道），依赖原生 auto 的"溢出才显示"行为不可靠。**修法**：`.pet-bubble` 默认改 `overflow-y:hidden`——未超上限时从根上**无滚动条且不可上下滑动**，气泡照常随流式文本增长（max-height 200px 上限不变）；PetBubble 用 `scrollHeight > clientHeight + 1` 检测内容是否真的超出上限，超出才加 `.pet-bubble--scrollable` 切 `overflow-y:auto`（滚动条出现 + 可滚动）；检测在每次文本变化/显隐/换气泡 id 时重跑（新气泡不继承上一气泡的溢出态）。**尾巴补全（用户"需要完整尾巴"）**：尾巴从 `.pet-bubble`（滚动容器，裁到 padding box，下半截一直被裁）移到 `.pet-bubble-anchor` 下作兄弟节点——anchor 无 overflow 且盒与气泡盒完全重合，left:15px/bottom 定位不变、尾巴完整露出，滚动检测/自动滚底逻辑全不动。**尾巴位置两轮微调**：① 用户"尾巴和气泡底部重叠约4px，尽量去掉"→ 尾巴 `bottom:-7→-12px`（顶边与气泡底边齐平），锚点 `532→537` 补偿；② 用户"还有约1px缝隙，调整2像素去掉"→ 根因是 `rotate(-5deg)` 使尾巴顶边左端下沉 ~0.7px 露缝，改 `bottom:-12→-10px`（顶部深入气泡 2px，同色重叠不可见）锚点 `537→535` 补偿——**每轮补偿后尖端都保持在用户调好的窗口 (210,235)**。**验证**：tsc exit0；vitest 34 passed；Playwright 400x760 视口 + 像素分析——尾巴完整向下伸出、重叠/接缝逐列扫描 0 背景行（无缝）、尖端 (211.1,235.7)≈(211,235)、短文本 overflowY=hidden 不可滚动 / 长文本加类后 auto 可滚动且自动滚到底 ✅。**注意**：锚点在 535，长气泡（221px 高）顶部距窗口上缘 ~4px（760-535-221），未裁切。📋 **待办**：`d9d8622` 后 release 已重建并重启实跑确认。
+
+> **2026-08-14（续²⁹）更新 · 工具层实跑三连修 ✅ + 项目迁移 D 盘 ✅（commit `b969ac7`+`7047f52`+`6725506`，lib 369 绿）**。续²⁷ 的 7 阶段实跑后暴露三个问题，全部修复：
+>
+> **① qa_mode 跳过工具分支 bug（`b969ac7`）**：实跑发现"查AI新闻"被 gate 路由到 Question（QA 直答）后工具分支被 `!qa_mode` 条件跳过 → LLM 直接编答案。修复：去掉该条件——capability 非 None 且 tools 非空即走工具分支（纯知识问题 capability=None 仍直答）。加了 tool gate 诊断日志（capability/qa_mode/tools/active）。
+>
+> **② open_application 白名单设计错误 → 动态扫描（`7047f52`，用户钦定方向）**：用户反馈"桌面的所有内容都应该是可以打开的，它需要自己判断桌面上有哪些东西，而不是规范好白名单"。重构：删 ALLOWED_APPS，`scan_apps()` 扫描 Desktop（%USERPROFILE%/OneDrive/%PUBLIC%）+ Start Menu（%APPDATA%/ProgramData）的全部 .lnk，`fuzzy_match_app` 三级匹配（精确→名含查询→查询含名），explorer 打开 .lnk（shell 解析真实目标）。**零配置**：实跑扫到 301 个快捷方式，"打开我桌面的网易云"→精确匹配"网易云音乐.lnk"→成功启动 ✅。安全仍守：拒路径越界，只开用户信任区的 .lnk。
+>
+> **③ DDG 被 CAPTCHA → 搜索引擎换头条（`6725506`）**：实跑 search 间歇失败，诊断坐实 DDG 对本 IP 全面返回 anomaly-modal CAPTCHA 挑战页（Bing/百度/SearXNG 同测全废，纯国内网络无 VPN 场景）。**新增 ToutiaoProvider**（`so.toutiao.com/search?pd=information&dvpf=pc`，国内可用、无需 key、返回真实 title/abstract SSR JSON），`search_web` 默认改用头条；DDG 保留为可替换 provider（`#[allow(dead_code)]`，海外/VPN 可构造）。`extract_field_values` 手动扫描 JSON 字段值（Vec<u8> 累积原始字节——修了 UTF-8 中文逐字节 push 乱码 bug）+ `clean_em_tags` 去高亮 + 去重。
+>
+> **实跑验证结论**：abstention 全过（哈哈哈/好累→0 tool，真 LLM）/ search 链路通（tool branch 触发+LLM 调 search+失败 graceful）/ open_application 完美 / "现在几点"直接答 / 搜索曾真出结果（deepseek V4pro 新闻）。
+>
+> **④ 项目迁移 C→D 盘 ✅**：C 盘爆满，项目完整迁至 `D:\桌宠`（用户手动复制，已核验：199 tracked 文件一致/node_modules 99 包/远端全同步/D 盘 cargo test 369 绿 + tsc 0/Dev 已从 D 盘启动正常）。config+db 在 `%APPDATA%\DesktopPet`（设计如此，不随项目走）；release exe 与快捷方式在 `D:\cargo-target`（不受影响）。
+>
+> 📋 **待办**：① **头条搜索实跑验证**——代码完成（lib 绿）但被 C 盘满/迁移打断，还没在 dev 里实测"查最近AI新闻"看 `[tools/search] status=Success` + 中文总结质量；若头条也间歇失败，备选方向：给 config 加可选搜索 API key（Serper/Brave，海外需 VPN 除外）；② **release rebuild**（qa_mode 修复/动态发现/头条搜索都还没进 release exe，桌面快捷方式跑的是旧版）：`taskkill //IM desktop-pet.exe //F` + 等 3s + `npx tauri build --no-bundle`；③ ⚠️ **C 盘 `Documents\桌宠` 待用户删除**（全部已 push，删无损）；④ follow-up：ToolThinking 前端低头动画（当前复用 thinking 占位）/ DebugPanel Tools 分区 / toutiao 结果 url 未配对（图片与文章 url 交错，只给 title+abstract）。
 
 > **2026-08-13（续²³）更新 · AIRI 风格视线驱动 ✅ 用户确认没问题（含五连坑排查记录）**。用户"头部绕鼠标转动，只在一定范围内生效且必须是头部转动加身体微侧，鼠标的围绕中心也是头部，幅度都不用太大。可以参考 AIRI"。**纯代码实现**（骨骼旋转，零新素材）：`SpineCanvas.tsx` 加 `pointerRef` prop（App 全局光标轮询已有）+ 每帧 head 骨世界坐标→画布坐标，光标距头顶 `GAZE_RANGE=320px` 内生效、径向衰减、范围外平滑回正（AIRI ignored-return）；头 ±10° 绕颈旋转 + 身体(spine)±3° 微侧；指数平滑 τ=0.12s（挂钟时间不受昼夜变速影响）；睡眠时不跟随。**用户三轮反馈的五个坑全记录在 §最近一轮 (续²³)**——最终形态：**只保留水平旋转通道**（下巴必须固定，上下俯仰留给美术 look_up/look_down 动画）。调参入口：`SpineCanvas.tsx` 顶部 `GAZE_*` 常量。CDP 诊断句柄：`window.__gazeDiag`（凝视数值）/`window.__spine`（spine 实例）/`window.__ctDiag`（origin/scale）。详见 §最近一轮 (续²³)。
 
