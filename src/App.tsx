@@ -16,6 +16,7 @@ import { typewriterPacing, inferPacingMood } from "./animation/bubblePacing";
 import { shouldAutoSleep } from "./animation/sleepLogic";
 import { sound, INTIMATE_THRESHOLD } from "./audio/soundManager";
 import { PetBubble } from "./components/PetBubble";
+import { ThinkingOrb } from "thinking-orbs";
 import type { BubbleEmotion, GlyphKind } from "./animation/bubbleVariants";
 
 interface EmotionData {
@@ -41,6 +42,14 @@ const ONBOARD_QUESTIONS = [
   { key: "relationship_style", ask: "我们是什么关系好呢？（伙伴 / 恋人 / 妹妹 / 助手……）" },
   { key: "pet_name", ask: "最后，给我起个名字吧？（想让我自己起，就回“你来想”）" },
 ] as const;
+
+// ── 思考球（thinking-orbs）──
+// 样式 state 九选一：working 粒子轨道 / searching 扫描子午线 / solving 色带还原 /
+//   listening 波形 / connecting 星座连线 / weaving 三股辫 / composing 波纹彩带 /
+//   breathing 呼吸环（Thinking…，LLM 等待默认）/ shaping 圆→三角→方
+// 尺寸 size 两种预设（非缩放，独立调参）：64 头像级 / 20 行内级
+const THINKING_ORB_STATE = "breathing";
+const THINKING_ORB_SIZE = 20;
 
 // Map mood label to bubble CSS class for emotion-driven styling (Design doc 6.3)
 function bubbleClassForMood(label: string): BubbleEmotion {
@@ -1325,10 +1334,8 @@ const handleBodyClick = useCallback(() => {
   return (
     <div className="pet-container" onContextMenu={handleContextMenu}>
       {isThinking && (
-        <div className="thinking-dots">
-          <span />
-          <span />
-          <span />
+        <div className="thinking-orb">
+          <ThinkingOrb state={THINKING_ORB_STATE} size={THINKING_ORB_SIZE} theme="auto" />
         </div>
       )}
 
