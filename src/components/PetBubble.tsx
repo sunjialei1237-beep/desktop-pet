@@ -8,6 +8,7 @@
 // from bubbleClassForMood / showBubble calls). This component accepts BOTH the
 // "bubble-xxx" form and the bare "xxx" form, so call sites need no changes.
 
+import { useEffect, useRef } from "react";
 import { AnimatePresence, motion, type TargetAndTransition, type Transition } from "motion/react";
 
 export type PetBubbleVariant =
@@ -114,6 +115,16 @@ export function PetBubble({
   const v = normalizeVariant(String(variant));
   const isGlyph = mode === "glyph" || v === "glyph";
   const motionConfig = getMotionConfig(v);
+  // Auto-scroll to bottom on text change: streaming appends tokens at the end,
+  // and a capped-height bubble would otherwise keep the newest text clipped
+  // below the fold. The user can still scroll up freely to re-read earlier
+  // parts (bidirectional scroll — "从上往下翻" reads top→down, scroll-up
+  // revisits the start).
+  const bubbleRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = bubbleRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [text]);
 
   return (
     <AnimatePresence initial={false} mode="sync">
@@ -171,7 +182,7 @@ export function PetBubble({
               <span className="pet-bubble-glyph-text">{text}</span>
             </span>
           ) : (
-            <div className="pet-bubble">
+            <div ref={bubbleRef} className="pet-bubble">
               <span className="pet-bubble-text">{text}</span>
               <span className="pet-bubble-tail" />
             </div>
