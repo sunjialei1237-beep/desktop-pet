@@ -44,3 +44,10 @@ enable_consolidation = true       # compress >100 episodes into landmark memorie
 enable_relationship_review = true # periodic "where the relationship stands" summary
 enable_lifecycle_cleanup = true   # purge old low-importance episodes
 enable_rituals = true             # 早安 (first meeting each day) greeting
+
+[tools]
+# Tool Layer. get_time / open_url are harmless (always on, no switch).
+# search_web / open_application can be turned off — disabling degrades
+# gracefully ("关掉 search, 她照常聊天, 只是不能搜"). See tools/mod.rs.
+enable_search_web = true
+enable_open_application = true

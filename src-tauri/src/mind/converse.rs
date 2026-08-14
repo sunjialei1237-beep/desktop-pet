@@ -49,6 +49,9 @@ pub struct ConversationResult {
     pub retrieved_scores: Vec<RetrievedScoreDebug>,
     /// Last turn's prompt token budget (None on silence). Debug observability.
     pub prompt_tokens: Option<PromptTokenDebug>,
+    /// How many tool rounds ran this turn (0 = no tools / answered directly).
+    /// Observability for the Tool Layer (#11) + Golden Conversations tests.
+    pub tool_rounds: usize,
 }
 
 /// Bundled inputs for one conversation turn — Architecture Principle #2
@@ -395,6 +398,7 @@ pub async fn converse(
             grounding_violations: vec![],
             retrieved_scores,
             prompt_tokens: None,
+            tool_rounds: 0,
         });
     }
 
@@ -591,7 +595,7 @@ pub async fn converse(
         && intent.capability != crate::tools::CapabilityMode::None
         && !tool_kinds.is_empty();
 
-    let response = if tool_active {
+    let (response, tool_rounds) = if tool_active {
         log::info!(
             "[converse] tool branch: capability={:?} tools={:?}",
             intent.capability,
@@ -615,7 +619,7 @@ pub async fn converse(
             outcome.tool_rounds,
             outcome.total_tool_tokens
         );
-        outcome.reply
+        (outcome.reply, outcome.tool_rounds)
     } else {
         // Step 9: normal streamed reply. Thinking OFF for first-token latency.
         let no_thinking = ThinkingConfig::disabled();
@@ -634,7 +638,7 @@ pub async fn converse(
                 log::warn!("[converse] main reply still empty after retry");
             }
         }
-        chat_result.content
+        (chat_result.content, 0)
     };
 
     // Step 10: Grounding check. Skipped in QA mode — retrieval has no
@@ -697,5 +701,6 @@ pub async fn converse(
         grounding_violations: violations,
         retrieved_scores,
         prompt_tokens: Some(prompt_debug),
+        tool_rounds,
     })
 }
