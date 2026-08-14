@@ -168,7 +168,7 @@ html, body, #root {
   position: absolute;
   bottom: calc(var(--bubble-bottom) + 4px);
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(calc(-50% - 5px));
   z-index: 10;
 }
 
