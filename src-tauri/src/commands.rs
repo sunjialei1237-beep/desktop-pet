@@ -164,6 +164,7 @@ pub async fn send_message(
         embedding: Some(&state.embedding),
         pacing: &state.question_pacing,
         pending_forget: &state.pending_forget,
+        tools_cfg: &state.config.tools,
     };
     let result = crate::mind::converse::converse(
         &ctx,

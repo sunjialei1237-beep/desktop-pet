@@ -55,6 +55,7 @@ async fn cross_session_recall_works() {
     let pacing = Mutex::new(QuestionPacing::default());
     let pending_forget: Mutex<Option<desktop_pet_lib::mind::forget::PendingForget>> =
         Mutex::new(None);
+    let tools_cfg = desktop_pet_lib::config::ToolsConfig::default();
 
     let facts_before = snapshot_fact_keys(&db);
     println!("facts before seed: {}", facts_before.len());
@@ -69,6 +70,7 @@ async fn cross_session_recall_works() {
             wm_context: &seed_wm_ctx, llm: &llm, db: &db,
             embedding: None, pacing: &pacing,
             pending_forget: &pending_forget,
+            tools_cfg: &tools_cfg,
         },
         |_|{},
     ).await.expect("seed converse");
@@ -96,6 +98,7 @@ async fn cross_session_recall_works() {
             wm_context: &noise_wm_ctx, llm: &llm, db: &db,
             embedding: None, pacing: &pacing,
             pending_forget: &pending_forget,
+            tools_cfg: &tools_cfg,
         },
         |_|{},
     ).await.expect("noise converse");
@@ -118,6 +121,7 @@ async fn cross_session_recall_works() {
             wm_context: &recall_wm_ctx, llm: &llm, db: &db,
             embedding: None, pacing: &pacing,
             pending_forget: &pending_forget,
+            tools_cfg: &tools_cfg,
         },
         |_|{},
     ).await.expect("recall converse");

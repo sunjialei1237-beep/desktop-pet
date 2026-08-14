@@ -21,12 +21,38 @@ const SYSTEM_TEMPLATE: &str = include_str!("../../resources/prompts/system.txt")
 ///   3. Emotion snapshot (how the pet feels right now)
 ///   4. Intent from the Planner
 ///   5. Retrieved memories (facts + episodes), each with confidence/source
+/// [Current time] section (Phase 6): injected so the LLM always knows the time
+/// without a tool round. "几点" is answered directly from the prompt; get_time
+/// stays as a runtime smoke test of the agent loop. Uses local time + the
+/// perception time-of-day bucket so it matches the rest of the system.
+fn current_time_section() -> String {
+    use chrono::Datelike;
+    use crate::perception::time::{current_time_of_day, TimeOfDay};
+    let now = chrono::Local::now();
+    let weekday_cn = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        [now.weekday().num_days_from_monday() as usize];
+    let tod_cn = match current_time_of_day() {
+        TimeOfDay::Morning => "上午",
+        TimeOfDay::Afternoon => "下午",
+        TimeOfDay::Evening => "晚上",
+        TimeOfDay::LateNight => "深夜",
+        TimeOfDay::DeepNight => "凌晨",
+    };
+    format!(
+        "[Current time]\n现在 {} {} {}\n时段：{}",
+        now.format("%H:%M"),
+        weekday_cn,
+        now.format("%Y-%m-%d"),
+        tod_cn,
+    )
+}
+
 pub fn build_system_prompt(
     retrieval: &RetrievalResult,
     emotion: &EmotionState,
     intent: &Intent,
 ) -> String {
-    let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
+    let mut sections = vec![SYSTEM_TEMPLATE.to_string(), current_time_section()];
 
    // 1. Persona + relationship
    sections.push(format_persona(
@@ -76,7 +102,7 @@ pub fn build_qa_system_prompt(
     emotion: &EmotionState,
     intent: &Intent,
 ) -> String {
-    let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
+    let mut sections = vec![SYSTEM_TEMPLATE.to_string(), current_time_section()];
 
     sections.push(format_persona(
         &retrieval.persona_traits,
@@ -578,6 +604,22 @@ mod tests {
         assert!(prompt.contains("goal: comfort"));
         assert!(prompt.contains("exam tomorrow"));
         assert!(prompt.contains("proactive"));
+    }
+
+    #[test]
+    fn test_system_prompt_injects_current_time() {
+        // Phase 6: time is prompt-injected so "几点" is answered without a tool.
+        let prompt =
+            build_system_prompt(&empty_retrieval(), &EmotionState::default(), &Intent::default());
+        assert!(prompt.contains("[Current time]"));
+        assert!(prompt.contains("时段"));
+    }
+
+    #[test]
+    fn test_qa_prompt_injects_current_time() {
+        let prompt =
+            build_qa_system_prompt(&empty_retrieval(), &EmotionState::default(), &Intent::default());
+        assert!(prompt.contains("[Current time]"));
     }
 
     #[test]

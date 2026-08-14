@@ -516,6 +516,7 @@ async fn prompt_quality_100_cases() {
     let pacing = Mutex::new(QuestionPacing::default());
     let pending_forget: Mutex<Option<desktop_pet_lib::mind::forget::PendingForget>> =
         Mutex::new(None);
+    let tools_cfg = desktop_pet_lib::config::ToolsConfig::default();
 
     // Memory DB for groups 6 & 10 (fresh seed), empty for others.
     let memory_db = seed_memory_db();
@@ -564,6 +565,7 @@ async fn prompt_quality_100_cases() {
                 wm_context: &[], llm: &llm, db,
                 embedding: emb_ref, pacing: &pacing,
                 pending_forget: &pending_forget,
+                tools_cfg: &tools_cfg,
             },
             |_| {},
         )
