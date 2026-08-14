@@ -195,6 +195,7 @@ pub async fn generate_goodmorning(
         Some(reply) => Ok(Some(crate::pending::proactive::BubbleOutcome {
             reply,
             anchor: memory_anchor,
+            anchor_reason: None,
         })),
         None => Ok(None),
     }
