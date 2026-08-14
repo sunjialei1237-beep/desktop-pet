@@ -129,7 +129,7 @@ async fn bubble_content_diversity() {
 
     println!("\n=== SUMMARY ===");
     println!(
-        "lively(target ~70%): {}   memory(target ~30%): {}",
+        "lively(target ~85%): {}   memory(target ~15%): {}",
         lively, memory
     );
     println!(

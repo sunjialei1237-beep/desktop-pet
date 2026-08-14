@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-14（续³⁰·工具层收尾完成：头条搜索实跑验证✅（gate active→search Success 911ms→中文总结）+ release rebuild✅，桌面快捷方式已用上新工具层）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ qa_mode bug/白名单→动态扫描/DDG→头条 + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`，C 盘 Documents\桌宠 已废弃待删）。上轮 2026-08-14（续²⁸·气泡滚动条常驻修复+尾巴补全✅）。上轮 2026-08-13（续²⁴·全面测试验收+多轮修复+记忆卫生✅）。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
+> 最后更新：**2026-08-14（续³²·主动冒泡治理全部落地 ✅ commit b9055a9：全局预算 60min/记忆 15%/轮转 7 天硬排除/时间词中和，lib 384 绿。b6bef1a 中间坏点编译错已解除，并行会话可继续情感锚点）。上轮 2026-08-14（续³¹·承诺追踪落地 ✅，情感锚点+recall_reason ⏸ 等 governance 提交）。上轮 2026-08-14（续³⁰·工具层收尾：头条搜索实跑✅ + release rebuild✅）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -238,6 +238,22 @@
 > **② ③ ⏸ 挂起原因（⚠️ 并行会话冲突，用户裁定）**：实施中另一会话在**同一工作区**实时实施"proactive-bubble-governance"（facts 浮现轮换治理：005 迁移 surfaced_count/last_surfaced_at + deictic.rs + pending/budget.rs，半成品），与本轮的 Commit 3（情感锚点注入浮现路径）/Commit 4（recall_reason 注入浮现三路径）**改同一片 proactive.rs 浮现代码**。处置（用户选"先提交承诺追踪，其余等"）：store.rs 撤掉对方混入 2 行 → 我的改动 stash --keep-index 分离提交（`b6bef1a`）→ stash pop 完整恢复对方工作区（零冲突）。**⚠️ b6bef1a 后验发现是"中间坏点"**：git add 时对方已把增量写入 proactive.rs（未列入 stash pathspec，误判为纯我改动），提交混入其对未提交模块的引用（`mind::deictic` / `facts::bump_surfaced` / surfaced_count / generate 第5参数 / sample_anchorable_fact 新签名，11 个编译错，独立 worktree 坐实）。**承诺追踪链路本身零错误**（错误全指向对方引用）；**governance 提交落地后整链自动恢复可编译**——勿在它提交前对 b6bef1a 单独 build/test，勿手工 amend（与实时写入竞争会破坏对方功能）。**下一会话起点**：等 governance 会话提交后，在其上实施情感锚点（extractor EpisodeInput.emotion_anchor + prompt 段 + store 搬运 + 浮现注入"（当时的氛围：{}）"）和 recall_reason（`surface_reason` 纯函数：episode 按 recall_count/last_recalled/is_landmark/emotion_anchor 分支，fact 按 mention_count，注入三浮现路径 + BubbleOutcome.anchor_reason），方案细节见批准过的实施计划。
 >
 > **实跑待办（D-check，等对方提交后一起）**：dev 聊"你明早8点叫我起床" → Debug Panel 确认 pending_events 新行 origin='pet' + 璃回复自然带承诺 → offset 短期承诺到期冒泡为"我说过要…"口吻。
+>
+> **2026-08-14（续³²）更新 · 主动冒泡治理全部落地 ✅（commit `b9055a9`，29 文件 +848/-116；lib 384 passed / check --tests ✅ / tsc ✅）**。按 `docs/plans/2026-08-14-proactive-bubble-governance.md` 实施。用户五连反馈：① 频率太高 ② 带记忆太多 ③ 记忆集中在糯米/实习 ④ 多为问句 ⑤ "你说今天在找实习"时间错乱。**五根因 + 五修复**：
+>
+> **① 频率**（根因：唯一 `check_proactive` 用内存 `last_proactive_bubble`（重启即重置），且 8 条冒泡路径各管各的、互相不感知）：新 `pending/budget.rs` 全局预算——app_config 持久化 `last_proactive_bubble_at`，`try_occupy_budget` 单 `with_conn` 闭包内原子 check-and-occupy（并发双路先占者胜）；loop_runner 三 emit 点（pending/welcome-back/lonely）过 `bubble_budget_ok`，早安豁免但 `occupy_budget_always`；`min_interval_secs` 默认 1800→**3600**。**实现偏差（比计划保守）**：budget 只在 emit 端拦、不在 4 个 bubble 命令入口再拦（命令端二次占位会让 welcome-back 被吞）；启动欢迎不占位（重启后第一泡 5min 出现、之后严格 60min，避免重启后一小时全静默）。
+>
+> **② 记忆太多**（根因：记忆 30% 且欢迎/孤独/早安几乎必挂锚）：`generate` 加第 5 参数 `memory_ratio`（config `[proactive] memory_bubble_ratio` 默认 **15** → 85% lively 碎碎念）；欢迎/孤独/早安挂锚概率 **25%** 且仅 fresh 池。
+>
+> **③ 同记忆重复 + 糯米集中**（根因：facts 无浮现记录，权重 1/(1+mention_count) 静态；`reinforce_top` 强化全部 top-8 使冷却 relax 分支总触发）：迁移 005（`facts.surfaced_count` + `last_surfaced_at`）；`sample_anchorable_fact` 改**确定性轮转**（fewest-surfaced→最老 last_surfaced_at→最少提及，**7 天硬排除**，全窗口内→None 降级 lively 绝不重复）；`sample_surface_anchor` 冷却 12h→**168h** + 全冷却时按 last_recalled_at 最老优先（绝不重复最新）；四路径只 `record_anchor_surfaced` 抽中的锚（converse 的 reinforce_top 保留不动）。
+>
+> **④ 问句多**：due/欢迎/早安/lively 四 prompt 加"可不问"（大多数时候一句带温度的陈述，极偶尔一个问句）。
+>
+> **⑤ 时间错乱**（根因：今天/昨天 等相对时间词原样入库又原样复述）：新 `mind/deictic.rs` `neutralize_deictic`（31 词剥离）+ `format_memory_date` 注入"（这是 ta X月X日 提到的事）"；`extractor.txt` deictic 硬正例（今天在找实习→在找实习）；`grounding.rs` 补 "你说今天/昨天/明天/你说你" 断言模式。
+>
+> **可观测**：DebugPanel 新"主动气泡预算"分区（上次气泡/下次还需 X 分钟）+ fact 行显示浮现次数/日期；App.tsx idle sigh 0.08→**0.03** + 5min cooldown；`scripts/migrate_deictic.py` 存量治理（dry-run 默认）。**运行时 AppData config 无 [proactive] 段 → 新默认直接生效**（可加 `[proactive] min_interval_secs=…` / `memory_bubble_ratio=…` 调）。
+>
+> **⚠️ 对并行会话**：本 commit 包含 `mind::deictic` / `facts::bump_surfaced` / `surfaced_count` / `generate` 第 5 参数 / `sample_anchorable_fact` 新签名——**b6bef1a 中间坏点的 11 个编译错已全部解除**，可在 `b9055a9` 上实施情感锚点 + recall_reason。**📋 待办**：① dev 实跑（60min 间隔 / 内容多样性 / 同记忆 7 天不重复 / 无"今天/昨天"错词）；② `python scripts/migrate_deictic.py --apply` 清存量；③ release rebuild（`npx tauri build --no-bundle`，先 `taskkill //IM desktop-pet.exe //F`）；④ ⚠️ push 待代理（`beaec69` 起含本 commit 未推）。
 
 ## §审计 (2026-08-03 续③)：深度审计 + 代码级核验
 

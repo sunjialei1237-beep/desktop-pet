@@ -81,7 +81,11 @@ async fn proactive_recall_meets_standards() {
     // Drive the real pipeline via the single source of truth — no duplicated
     // emotion/retrieval/anchor/budget/LLM logic. generate returns the reply plus
     // the anchor it grounded on; the anchor is what S1 checks the reply against.
-    let outcome = proactive::generate(&db, &llm, None, &[], proactive::DEFAULT_MEMORY_RATIO)
+    // Force the memory branch (memory_ratio=100): S1-S5 verify the ANCHORED
+    // reply. The production default is 15 (85% lively 碎碎念) — this harness
+    // is about recall standards, not the lively/memory mix (bubble_content_check
+    // reports that; proactive-bubble governance 2026-08-14).
+    let outcome = proactive::generate(&db, &llm, None, &[], 100)
         .await
         .expect("proactive::generate errored")
         .expect("no memory to anchor on — run a conversation first so facts/episodes exist");
