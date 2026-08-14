@@ -50,10 +50,15 @@ pub trait SearchProvider: Send + Sync {
 }
 
 /// DuckDuckGo HTML endpoint provider. No API key required.
+/// Kept as a swappable `SearchProvider`; in mainland China DDG is CAPTCHA-
+/// blocked, so `ToutiaoProvider` is the default (`search_web`). Construct it
+/// explicitly to use DDG (e.g. behind a VPN).
+#[allow(dead_code)]
 pub struct DuckDuckGoProvider {
     client: reqwest::Client,
 }
 
+#[allow(dead_code)]
 impl DuckDuckGoProvider {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
@@ -94,6 +99,7 @@ impl SearchProvider for DuckDuckGoProvider {
 }
 
 impl DuckDuckGoProvider {
+    #[allow(dead_code)]
     /// One fetch attempt (POST or GET). Returns `Ok(None)` when the page loaded
     /// but yielded zero results, so the caller can retry the other method; an
     /// `Err` means a hard failure (network / rate-limit / non-html) worth
@@ -154,6 +160,7 @@ impl DuckDuckGoProvider {
 }
 
 /// Minimal URL-query encoder for the GET fallback (DDG expects %XX-encoded q).
+#[allow(dead_code)]
 fn url_encode_query(q: &str) -> String {
     q.chars()
         .map(|c| {
@@ -273,7 +280,7 @@ pub async fn search_web(args: &serde_json::Value) -> ToolResult {
             content: "搜索词为空。".to_string(),
         };
     }
-    let provider = DuckDuckGoProvider::new();
+    let provider = ToutiaoProvider::new();
     match provider.search(query, 5).await {
         Ok(results) => {
             let content = format_results(&results);
@@ -290,6 +297,151 @@ pub async fn search_web(args: &serde_json::Value) -> ToolResult {
             }
         }
     }
+}
+
+/// 头条搜索 provider（国内可用，无需 API key）。`so.toutiao.com/search?
+/// pd=information` 返回 SSR JSON，含真实 title/abstract。DDG/Bing/百度 在
+/// 国内被反爬/CAPTCHA，头条是目前最稳定的免费国内搜索源。
+pub struct ToutiaoProvider {
+    client: reqwest::Client,
+}
+
+impl ToutiaoProvider {
+    pub fn new() -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .user_agent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+                 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            )
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { client }
+    }
+}
+
+impl Default for ToutiaoProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl SearchProvider for ToutiaoProvider {
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, SearchError> {
+        let resp = self
+            .client
+            .get("https://so.toutiao.com/search")
+            .query(&[("keyword", query), ("pd", "information"), ("dvpf", "pc")])
+            .header("Accept-Language", "zh-CN,zh;q=0.9")
+            .send()
+            .await
+            .map_err(|_| SearchError::Network)?;
+        let status = resp.status();
+        if status.as_u16() == 429 {
+            return Err(SearchError::RateLimited);
+        }
+        if !status.is_success() {
+            return Err(SearchError::ProviderUnavailable);
+        }
+        let html = resp.text().await.map_err(|_| SearchError::Network)?;
+        let results = parse_toutiao(&html, limit);
+        if results.is_empty() {
+            return Err(SearchError::ParseFailed);
+        }
+        Ok(results)
+    }
+}
+
+/// Parse toutiao SSR HTML: skim the embedded JSON for `"title"`/`"abstract"`
+/// string values and pair them by index. Each result object carries both fields;
+/// titles come in an em-highlighted + plain pair, so we clean + dedup.
+fn parse_toutiao(html: &str, limit: usize) -> Vec<SearchResult> {
+    let now = chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    let titles = extract_field_values(html, "title");
+    let abstracts = extract_field_values(html, "abstract");
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (i, title) in titles.iter().enumerate() {
+        let clean = clean_em_tags(title);
+        let ccount = clean.chars().count();
+        if ccount < 4 || seen.contains(&clean) {
+            continue;
+        }
+        seen.insert(clean.clone());
+        let snippet = abstracts.get(i).cloned().unwrap_or_default();
+        out.push(SearchResult {
+            title: clean,
+            url: String::new(), // toutiao group URLs interleave with image URLs; omitted
+            domain: "今日头条".to_string(),
+            snippet,
+            retrieved_at: now.clone(),
+        });
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+/// Strip `<em></em>` highlight tags toutiao injects around query terms.
+fn clean_em_tags(s: &str) -> String {
+    s.replace("<em>", "").replace("</em>", "")
+}
+
+/// Extract all `"field":"value"` string values from an HTML/JSON blob, decoding
+/// JSON escapes (\uXXXX, \", \\, \n, \/). Manual scan — no regex crate needed,
+/// and we don't have to locate toutiao's exact SSR JSON container; we just skim
+/// the whole response for the string fields we care about.
+fn extract_field_values(html: &str, field: &str) -> Vec<String> {
+    let needle = format!("\"{}\":\"", field);
+    let bytes = html.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while let Some(rel) = html[i..].find(&needle) {
+        let start = i + rel + needle.len();
+        let mut j = start;
+        let mut val: Vec<u8> = Vec::new();
+        let mut escaped = false;
+        while j < bytes.len() {
+            let b = bytes[j];
+            if escaped {
+                match b {
+                    b'"' => val.push(b'"'),
+                    b'\\' => val.push(b'\\'),
+                    b'/' => val.push(b'/'),
+                    b'n' => val.push(b'\n'),
+                    b't' => val.push(b'\t'),
+                    b'u' if j + 4 < bytes.len() => {
+                        let hex = std::str::from_utf8(&bytes[j + 1..j + 5]).unwrap_or("0020");
+                        if let Ok(cp) = u32::from_str_radix(hex, 16) {
+                            if let Some(ch) = char::from_u32(cp) {
+                                let mut buf = [0u8; 4];
+                                val.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                            }
+                        }
+                        j += 4;
+                    }
+                    _ => val.push(b),
+                }
+                escaped = false;
+                j += 1;
+            } else if b == b'\\' {
+                escaped = true;
+                j += 1;
+            } else if b == b'"' {
+                break;
+            } else {
+                val.push(b);
+                j += 1;
+            }
+        }
+        out.push(String::from_utf8_lossy(&val).into_owned());
+        i = start;
+    }
+    out
 }
 
 fn format_results(results: &[SearchResult]) -> String {
@@ -418,5 +570,40 @@ mod tests {
         assert!(out.contains("Test Title"));
         assert!(out.contains("example.com"));
         assert!(out.contains("A snippet."));
+    }
+
+    #[test]
+    fn test_extract_field_values_basic() {
+        let html = r#"{"title":"hello","abstract":"world","title":"foo"}"#;
+        assert_eq!(extract_field_values(html, "title"), vec!["hello", "foo"]);
+        assert_eq!(extract_field_values(html, "abstract"), vec!["world"]);
+    }
+
+    #[test]
+    fn test_extract_field_values_unicode_escape() {
+        // \u003cem\u003e = <em>; \u65b0 = 新
+        let html = r#"{"title":"\u003cem\u003eAI\u003c/em\u003e\u65b0\u95fb"}"#;
+        let titles = extract_field_values(html, "title");
+        assert_eq!(titles[0], "<em>AI</em>新闻");
+    }
+
+    #[test]
+    fn test_clean_em_tags() {
+        assert_eq!(clean_em_tags("<em>AI</em>新闻"), "AI新闻");
+    }
+
+    #[test]
+    fn test_parse_toutiao_dedup_and_clean() {
+        // The em-highlighted title and the plain title both appear; after
+        // cleaning they're equal and must dedup.
+        let html = concat!(
+            r#"{"title":"AI新闻","abstract":"摘要一"}"#,
+            r#"{"title":"\u003cem\u003eAI\u003c/em\u003e新闻","abstract":"dup"}"#,
+            r#"{"title":"科技动态","abstract":"摘要二"}"#,
+        );
+        let results = parse_toutiao(html, 5);
+        assert!(results.iter().any(|r| r.title == "AI新闻"));
+        assert!(results.iter().any(|r| r.title == "科技动态"));
+        assert!(results.len() <= 2, "em+plain should dedup, got {}", results.len());
     }
 }
