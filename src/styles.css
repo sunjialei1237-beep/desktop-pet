@@ -796,22 +796,25 @@ html, body, #root {
   letter-spacing: 0.01em;
   overflow-wrap: break-word;
   word-break: break-word;
-  /* Height cap: the bubble sits at bottom:530 with ~200px of headroom to the
+  /* Height cap: the bubble sits at bottom:532 with ~200px of headroom to the
      window top. Without a cap, a long streaming reply grows upward past the
      window edge and its top is clipped (unreadable). Cap + internal scroll
      lets the user scroll through the full text in place. */
   max-height: var(--pet-bubble-max-height, 200px);
   overflow-y: auto;
-  /* Thin, unobtrusive scrollbar matching the warm-ivory shell. */
+  /* Re-enable interaction on the bubble body: the parent anchor is
+     pointer-events:none (click-through — the bubble must not block desktop
+     clicks), but that also blocks scrolling. The bubble body opts back into
+     pointer-events:auto so the user can scroll long replies. Trade-off: while
+     visible, the small bubble rect captures clicks — acceptable, it sits at
+     Liri's head-top-right and is transient. */
+  pointer-events: auto;
+  /* Native scrollbar only: NO ::-webkit-scrollbar override — custom webkit
+     scrollbar styling can reserve a persistent track even when content doesn't
+     overflow. Native overflow-y:auto shows the bar ONLY when content exceeds
+     the cap, hidden otherwise (exactly the requested behavior). */
   scrollbar-width: thin;
-  scrollbar-color: rgba(160, 170, 190, 0.4) transparent;
 }
-.pet-bubble::-webkit-scrollbar { width: 5px; }
-.pet-bubble::-webkit-scrollbar-thumb {
-  background: rgba(160, 170, 190, 0.4);
-  border-radius: 3px;
-}
-.pet-bubble::-webkit-scrollbar-track { background: transparent; }
 
 /* Dedicated tail layer — its own element so it can later become head-aware
    without changing the bubble structure. An organic clip-path sliver (not a
