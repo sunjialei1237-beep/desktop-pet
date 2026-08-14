@@ -260,6 +260,15 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     modelHitBoundsRef.current = b;
   }, []);
 
+  // PetBubble reports its viewport rect here (CSS px) so the global-cursor
+  // listener can treat the bubble region as non-click-through. Under OS-level
+  // ignore_cursor_events, CSS pointer-events can't make the bubble scrollable;
+  // the window must stop ignoring the cursor over the bubble. Null when hidden.
+  const bubbleBoundsRef = useRef<{ left: number; top: number; width: number; height: number } | null>(null);
+  const handleBubbleBounds = useCallback((rect: { left: number; top: number; width: number; height: number } | null) => {
+    bubbleBoundsRef.current = rect;
+  }, []);
+
   // Click-through: toggle whether transparent regions forward clicks to the desktop.
   // Safe default: never flip to ignore unless we have all the geometry we need.
   const applyIgnore = useCallback((desired: boolean) => {
@@ -697,6 +706,19 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
         right = left + mb.width * scale;
         bottom = top + mb.height * scale;
         inside = sx >= left && sx <= right && sy >= top && sy <= bottom;
+      }
+      // Bubble region also counts as inside: the bubble sits above the model
+      // (not in modelBounds), so without this the window stays click-through
+      // over it and scrolling is impossible (CSS pointer-events is useless
+      // under OS-level ignore_cursor_events). bubbleBoundsRef is set by
+      // PetBubble (null when hidden), so no stale-state concern.
+      const bb = bubbleBoundsRef.current;
+      if (origin && scale && bb) {
+        const bl = origin.x + bb.left * scale;
+        const bt = origin.y + bb.top * scale;
+        if (sx >= bl && sx <= bl + bb.width * scale && sy >= bt && sy <= bt + bb.height * scale) {
+          inside = true;
+        }
       }
       // Boundary visualization (AIRI-style). Show the colored border only when
       // the cursor is near the rect's outline — in the outer band (just outside
@@ -1343,6 +1365,7 @@ const handleBodyClick = useCallback(() => {
         variant={bubbleStyle}
         mode={glyphKind !== undefined || bubbleStyle === "bubble-glyph" ? "glyph" : "speech"}
         className={bubblePos}
+        onBubbleBounds={handleBubbleBounds}
       />
 
      <div

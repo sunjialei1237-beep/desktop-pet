@@ -34,6 +34,11 @@ export interface PetBubbleProps {
   /** Max width in px. Desktop pet should stay small — 180~210 recommended. */
   maxWidth?: number;
   className?: string;
+  /** Reports the bubble's viewport rect (CSS px) so App keeps the window
+      non-transparent over it — under OS-level click-through (setIgnoreCursorEvents)
+      CSS pointer-events alone can't make the bubble scrollable; the window must
+      stop ignoring the cursor over the bubble rect. Null when hidden. */
+  onBubbleBounds?: (rect: { left: number; top: number; width: number; height: number } | null) => void;
 }
 
 const ENTER_TRANSITION: Transition = {
@@ -111,6 +116,7 @@ export function PetBubble({
   tail = "left-bottom",
   maxWidth = 200,
   className = "",
+  onBubbleBounds,
 }: PetBubbleProps) {
   const v = normalizeVariant(String(variant));
   const isGlyph = mode === "glyph" || v === "glyph";
@@ -125,6 +131,20 @@ export function PetBubble({
     const el = bubbleRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [text]);
+  // Report the bubble rect so App can treat it as a non-click-through region
+  // (required for scrolling under OS-level ignore_cursor_events). Null when
+  // hidden (or glyph mode, which has no scrollable .pet-bubble) so App stops
+  // keeping the window opaque over it. Re-measures on text change (streaming
+  // appends grow the bubble).
+  useEffect(() => {
+    if (!onBubbleBounds) return;
+    if (visible && bubbleRef.current) {
+      const r = bubbleRef.current.getBoundingClientRect();
+      onBubbleBounds({ left: r.left, top: r.top, width: r.width, height: r.height });
+    } else {
+      onBubbleBounds(null);
+    }
+  }, [visible, text, onBubbleBounds]);
 
   return (
     <AnimatePresence initial={false} mode="sync">
