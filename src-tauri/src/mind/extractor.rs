@@ -99,14 +99,8 @@ pub async fn extract(
 
     let messages = || {
         vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: system_prompt.clone(),
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: text.to_string(),
-            },
+            ChatMessage::system(system_prompt.clone()),
+            ChatMessage::user(text),
         ]
     };
 

@@ -133,15 +133,9 @@ async fn run_50_turn_conversation() {
 
         {
             let mut w = wm.lock().unwrap();
-            w.push(ChatMessage {
-                role: "user".to_string(),
-                content: question.to_string(),
-            });
+            w.push(ChatMessage::user(question.to_string()));
             if !result.response.is_empty() {
-                w.push(ChatMessage {
-                    role: "assistant".to_string(),
-                    content: result.response.clone(),
-                });
+                w.push(ChatMessage::assistant(result.response.clone()));
             }
         }
 

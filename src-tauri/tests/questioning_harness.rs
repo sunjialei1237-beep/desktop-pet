@@ -72,9 +72,9 @@ async fn shared_statements_get_engaged_questions() {
         let intent = planner::plan(&BrainState::new(input, &emotion, None, &[], &retrieval));
         assert_eq!(intent.goal, "engage");
         let mut messages = budget::allocate_and_compress(&retrieval, &[], &emotion, &intent);
-        messages.push(ChatMessage { role: "user".to_string(), content: input.to_string() });
+        messages.push(ChatMessage::user(input.to_string()));
 
-        let chat = llm.chat(&messages, Some(0.8), Some(500)).await.expect("LLM call");
+        let chat = llm.chat(&messages, Some(0.8), Some(500), None).await.expect("LLM call");
         let reply = chat.content.trim().to_string();
         println!("[engage] {:?} -> {:?}", input, reply);
 

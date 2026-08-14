@@ -62,9 +62,10 @@ mod tests {
     use super::*;
 
     fn msg(role: &str, content: &str) -> ChatMessage {
-        ChatMessage {
-            role: role.to_string(),
-            content: content.to_string(),
+        match role {
+            "user" => ChatMessage::user(content),
+            "assistant" => ChatMessage::assistant(content),
+            _ => ChatMessage::system(content),
         }
     }
 
@@ -74,7 +75,7 @@ mod tests {
         wm.push(msg("user", "hello"));
         wm.push(msg("assistant", "hi"));
         assert_eq!(wm.len(), 2);
-        assert_eq!(wm.recall_last().unwrap().content, "hi");
+        assert_eq!(wm.recall_last().unwrap().content_str(), "hi");
     }
 
     #[test]
@@ -86,8 +87,8 @@ mod tests {
         assert_eq!(wm.len(), MAX_MESSAGES);
         // Oldest should be evicted; first message is "msg 10"
         let ctx = wm.get_context();
-        assert_eq!(ctx[0].content, "msg 10");
-        assert_eq!(ctx[ctx.len() - 1].content, "msg 49");
+        assert_eq!(ctx[0].content_str(), "msg 10");
+        assert_eq!(ctx[ctx.len() - 1].content_str(), "msg 49");
     }
 
     #[test]

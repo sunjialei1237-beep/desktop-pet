@@ -63,14 +63,8 @@ const GATE_PROMPT: &str = include_str!("../../resources/prompts/gate.txt");
 pub async fn classify(text: &str, llm: &LlmClient) -> Result<GateRoute, String> {
     let messages = || {
         vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: GATE_PROMPT.to_string(),
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: text.to_string(),
-            },
+            ChatMessage::system(GATE_PROMPT),
+            ChatMessage::user(text),
         ]
     };
 

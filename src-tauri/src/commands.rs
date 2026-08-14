@@ -237,15 +237,9 @@ pub async fn send_message(
             .working_memory
             .lock()
             .map_err(|e| format!("WM lock error: {}", e))?;
-        wm.push(ChatMessage {
-            role: "user".to_string(),
-            content: text,
-        });
+        wm.push(ChatMessage::user(text));
         if !result.response.is_empty() {
-            wm.push(ChatMessage {
-                role: "assistant".to_string(),
-                content: result.response.clone(),
-            });
+            wm.push(ChatMessage::assistant(result.response.clone()));
         }
     }
 

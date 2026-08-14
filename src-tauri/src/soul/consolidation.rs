@@ -104,7 +104,7 @@ pub async fn consolidate(db: &DbState, llm: &LlmClient) -> Result<usize, String>
         summaries
     );
 
-    let messages = vec![ChatMessage { role: "system".to_string(), content: prompt }];
+    let messages = vec![ChatMessage::system(prompt)];
     // 4096: consolidation is a generation task. DeepSeek-v4 is a reasoning model, so
     // reasoning_content eats most of the budget — 2048 leaves `content` empty (pitfall #3).
     let result = llm.chat_reflection(&messages, Some(0.5), Some(4096)).await
@@ -261,10 +261,7 @@ async fn backfill_facts(
          0.7-0.85; always/never/strong 0.9-0.98. If nothing durable, return {{\"facts\": []}}.\n\nSUMMARY:\n{}",
         summary
     );
-    let messages = vec![ChatMessage {
-        role: "system".to_string(),
-        content: prompt,
-    }];
+    let messages = vec![ChatMessage::system(prompt)];
     // 4096: generation task — DeepSeek-v4 reasoning eats most of the budget
     // (pitfall #3). Same size as the consolidation summary call above.
     let result = llm

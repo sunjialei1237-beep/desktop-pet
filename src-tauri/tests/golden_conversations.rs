@@ -460,14 +460,8 @@ fn gc_011_budget_token_limit() {
 
     let mut wm = vec![];
     for i in 0..30 {
-        wm.push(ChatMessage {
-            role: "user".to_string(),
-            content: format!("this is message number {} with extra padding words to fill context", i),
-        });
-        wm.push(ChatMessage {
-            role: "assistant".to_string(),
-            content: format!("reply {} with more padding words to fill the context window up", i),
-        });
+        wm.push(ChatMessage::user(format!("this is message number {} with extra padding words to fill context", i)));
+        wm.push(ChatMessage::assistant(format!("reply {} with more padding words to fill the context window up", i)));
     }
 
     let messages = allocate_and_compress(&retrieval, &wm, &EmotionState::default(), &Intent::default());

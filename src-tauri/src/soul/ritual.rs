@@ -138,12 +138,9 @@ pub async fn generate_goodmorning(
     } else {
         String::new()
     };
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: format!(
-            "（{time_clause}{anchor_clause}简短自然，1-2 句早安招呼。称呼对方用「你」，不要用「用户」。按规则回复。）"
-        ),
-    });
+    messages.push(ChatMessage::user(format!(
+        "（{time_clause}{anchor_clause}简短自然，1-2 句早安招呼。称呼对方用「你」，不要用「用户」。按规则回复。）"
+    )));
 
     log::info!(
         "[goodmorning] tod_hour={} has_anchor={} tone={} facts={} episodes={} msgs={}",
@@ -156,7 +153,7 @@ pub async fn generate_goodmorning(
     );
 
     let chat_result = llm
-        .chat(&messages, Some(0.8), Some(4096))
+        .chat(&messages, Some(0.8), Some(4096), None)
         .await
         .map_err(|e| format!("LLM error: {:?}", e))?;
 

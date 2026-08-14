@@ -79,7 +79,7 @@ pub fn estimate_tokens(text: &str) -> usize {
 pub fn estimate_messages_tokens(messages: &[ChatMessage]) -> usize {
     messages
         .iter()
-        .map(|m| estimate_tokens(&m.content) + 4) // +4 for role overhead per message
+        .map(|m| estimate_tokens(m.content_str()) + 4) // +4 for role overhead per message
         .sum()
 }
 
@@ -104,10 +104,7 @@ pub fn allocate_and_compress(
     // Compress memories if they exceed budget.
     let system_prompt = compress_system_prompt(system_prompt, retrieval, emotion, intent);
 
-    messages.push(ChatMessage {
-        role: "system".to_string(),
-        content: system_prompt,
-    });
+    messages.push(ChatMessage::system(system_prompt));
 
     // 2. Working memory: recent conversation, truncated from the front.
     let conv_messages = compress_conversation(working_memory, budget::CONVERSATION);
@@ -131,10 +128,7 @@ pub fn allocate_qa(
     let system_prompt =
         crate::mind::grounding::build_qa_system_prompt(retrieval, emotion, intent);
 
-    messages.push(ChatMessage {
-        role: "system".to_string(),
-        content: system_prompt,
-    });
+    messages.push(ChatMessage::system(system_prompt));
 
     let conv_messages = compress_conversation(working_memory, budget::CONVERSATION);
     messages.extend(conv_messages);
@@ -241,7 +235,7 @@ fn compress_conversation(messages: &[ChatMessage], budget_tokens: usize) -> Vec<
     let mut kept: Vec<ChatMessage> = Vec::new();
     let mut used = 0usize;
     for m in messages.iter().rev() {
-        let t = estimate_tokens(&m.content) + 4;
+        let t = estimate_tokens(m.content_str()) + 4;
         if m.role == "user" {
             kept.push(m.clone());
             used += t;
@@ -249,7 +243,7 @@ fn compress_conversation(messages: &[ChatMessage], budget_tokens: usize) -> Vec<
             while used > budget_tokens {
                 match kept.iter().rposition(|k| k.role != "user") {
                     Some(pos) => {
-                        used -= estimate_tokens(&kept[pos].content) + 4;
+                        used -= estimate_tokens(kept[pos].content_str()) + 4;
                         kept.remove(pos);
                     }
                     None => break, // all user messages; keep newest by dropping from front
@@ -267,7 +261,7 @@ fn compress_conversation(messages: &[ChatMessage], budget_tokens: usize) -> Vec<
     let mut kept = kept;
     kept.reverse();
     while used > budget_tokens && !kept.is_empty() {
-        used -= estimate_tokens(&kept[0].content) + 4;
+        used -= estimate_tokens(kept[0].content_str()) + 4;
         kept.remove(0);
     }
     kept
@@ -337,9 +331,10 @@ mod tests {
    }
 
    fn msg(role: &str, content: &str) -> ChatMessage {
-        ChatMessage {
-            role: role.to_string(),
-            content: content.to_string(),
+        match role {
+            "user" => ChatMessage::user(content),
+            "assistant" => ChatMessage::assistant(content),
+            _ => ChatMessage::system(content),
         }
     }
 
@@ -369,7 +364,7 @@ mod tests {
         // Should have system + 2 conversation messages
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role, "system");
-        assert!(messages[0].content.contains("[Grounding Constraint]"));
+        assert!(messages[0].content_str().contains("[Grounding Constraint]"));
     }
 
     #[test]
@@ -424,7 +419,7 @@ mod tests {
         let user_msgs: Vec<&str> = compressed
             .iter()
             .filter(|m| m.role == "user")
-            .map(|m| m.content.as_str())
+            .map(|m| m.content_str())
             .collect();
         assert_eq!(
             user_msgs.len(),
@@ -495,7 +490,7 @@ mod tests {
             &Intent::default(),
         );
 
-        let system = &messages[0].content;
+        let system = messages[0].content_str();
         assert!(system.contains("milk tea"));
         assert!(system.contains("cheerful"));
         assert!(system.contains("closeness 20"));
@@ -516,9 +511,9 @@ mod tests {
             &EmotionState::default(),
             &intent,
         );
-        assert!(messages[0].content.contains("encourage"));
-        assert!(messages[0].content.contains("interview"));
-        assert!(messages[0].content.contains("proactive"));
+        assert!(messages[0].content_str().contains("encourage"));
+        assert!(messages[0].content_str().contains("interview"));
+        assert!(messages[0].content_str().contains("proactive"));
     }
 
     #[test]
@@ -561,7 +556,7 @@ mod tests {
             action: "normal".to_string(),
         };
         let messages = allocate_qa(&r, &[], &EmotionState::default(), &intent);
-        let sys = &messages[0].content;
+        let sys = messages[0].content_str();
         assert!(sys.contains("温柔"), "QA prompt should keep core persona trait");
         assert!(sys.contains("小明"), "QA prompt should keep user nickname");
     }

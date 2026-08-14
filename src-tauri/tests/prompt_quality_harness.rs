@@ -479,10 +479,7 @@ async fn judge_reply(llm: &LlmClient, input: &str, reply: &str) -> Option<JudgeS
     let prompt = JUDGE_PROMPT
         .replace("{input}", input)
         .replace("{reply}", reply);
-    let messages = vec![ChatMessage {
-        role: "system".to_string(),
-        content: prompt,
-    }];
+    let messages = vec![ChatMessage::system(prompt)];
     let res = llm.chat_reflection(&messages, Some(0.1), Some(2048)).await.ok()?;
     let raw = res.content.trim();
     // extract first { ... } block (same tolerance as gate)

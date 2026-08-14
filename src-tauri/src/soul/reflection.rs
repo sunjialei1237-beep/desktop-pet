@@ -115,7 +115,7 @@ pub async fn run_reflection(
         .replace("{emotion}", &emotion_text);
 
     // 3. Call LLM with reflection model.
-    let messages = vec![ChatMessage { role: "system".to_string(), content: system_prompt }];
+    let messages = vec![ChatMessage::system(system_prompt)];
     let result = llm.chat_reflection(&messages, Some(0.7), Some(4096)).await
         .map_err(|e| format!("Reflection LLM call failed: {}", e))?;
 

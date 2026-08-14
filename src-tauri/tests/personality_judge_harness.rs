@@ -208,10 +208,7 @@ struct PersonaJudge {
 
 async fn judge_persona(llm: &LlmClient, reply: &str) -> Result<PersonaJudge, String> {
     let prompt = PERSONA_JUDGE_PROMPT.replace("{reply}", reply);
-    let messages = vec![ChatMessage {
-        role: "system".to_string(),
-        content: prompt,
-    }];
+    let messages = vec![ChatMessage::system(prompt)];
     // chat_reflection = reflection model, temp 0.1 for determinism, 2048 tokens
     // (DeepSeek v4 reasoning eats budget — 踩坑#3).
     //

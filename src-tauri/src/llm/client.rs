@@ -5,11 +5,108 @@ use std::time::Duration;
 
 use super::error::LlmError;
 
+// ===== Tool calling types (OpenAI-compatible function-calling format) =====
+// Added for the Tool Layer (Phase 1): non-streaming tool rounds carry these in
+// both the request (ToolDef, advertised `tools`) and the response (ToolCall).
+// Streaming (chat_stream) deliberately omits tools — DeepSeek's stream Delta has
+// no tool_calls field (silently dropped), so tool rounds always go through the
+// non-streaming chat(); only the final answer round is streamed.
+
+/// A tool definition advertised to the LLM in a request (`tools` array entry).
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDef {
+    #[serde(rename = "type")]
+    type_: &'static str,
+    pub function: ToolFunction,
+}
+
+impl ToolDef {
+    pub fn new(name: &str, description: &str, parameters: serde_json::Value) -> Self {
+        Self {
+            type_: "function",
+            function: ToolFunction {
+                name: name.to_string(),
+                description: description.to_string(),
+                parameters,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolFunction {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+/// A tool call the LLM wants to make (returned in a response, echoed back in the
+/// assistant message of the next round). `arguments` is a JSON-encoded string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    /// Always "function" for function-calling.
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub function: ToolCallFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    /// JSON-encoded arguments string (OpenAI convention), NOT a parsed object.
+    pub arguments: String,
+}
+
 /// Message in a chat conversation (OpenAI-compatible format).
+///
+/// `content` is `Option<String>` because a tool-request round (assistant asking
+/// to call a tool) carries `content: null` + `tool_calls`. Plain user/system/
+/// assistant messages always have `Some(content)`. Built via the helper
+/// constructors below (`ChatMessage::user`, `::system`, …) so call sites never
+/// hand-write the full struct literal — this also keeps the Phase-1
+/// String→Option migration contained.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Assistant tool-call request round (role:"assistant"). Absent elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// role:"tool" result message: the id of the tool_call this answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// role:"tool" result message: the tool's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl ChatMessage {
+    pub fn user(s: impl Into<String>) -> Self {
+        Self { role: "user".into(), content: Some(s.into()), tool_calls: None, tool_call_id: None, name: None }
+    }
+    pub fn system(s: impl Into<String>) -> Self {
+        Self { role: "system".into(), content: Some(s.into()), tool_calls: None, tool_call_id: None, name: None }
+    }
+    pub fn assistant(s: impl Into<String>) -> Self {
+        Self { role: "assistant".into(), content: Some(s.into()), tool_calls: None, tool_call_id: None, name: None }
+    }
+    /// Assistant round that requests tool calls. `content` is None for a pure
+    /// tool-request round (DeepSeek emits content:null here).
+    pub fn assistant_with_tool_calls(content: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self { role: "assistant".into(), content, tool_calls: Some(tool_calls), tool_call_id: None, name: None }
+    }
+    /// role:"tool" result message answering a specific tool_call_id.
+    pub fn tool_result(tool_call_id: &str, name: &str, content: &str) -> Self {
+        Self { role: "tool".into(), content: Some(content.into()), tool_calls: None, tool_call_id: Some(tool_call_id.into()), name: Some(name.into()) }
+    }
+    /// Content as &str, empty if None (tool-call request rounds have null
+    /// content). Convenience for token estimation / logging that treats a
+    /// missing body as empty.
+    pub fn content_str(&self) -> &str {
+        self.content.as_deref().unwrap_or("")
+    }
 }
 
 /// Request body for /v1/chat/completions.
@@ -39,6 +136,13 @@ struct ChatRequest {
     /// broke the 5s gate with no quality gain; kept as reserved plumbing.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
+    /// Tools advertised to the LLM (function-calling). Only set on non-streaming
+    /// tool rounds (chat_with_model); chat_stream always leaves this None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ToolDef>>,
+    /// "auto" (LLM decides) or "none". Sent only when `tools` is Some.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<String>,
 }
 
 /// DeepSeek v4 `thinking` parameter: `{"type": "enabled" | "disabled"}`.
@@ -105,11 +209,16 @@ struct ChatResponse {
 #[derive(Debug, Deserialize)]
 struct Choice {
     message: ResponseMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ResponseMessage {
-    content: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +235,11 @@ pub struct ChatResult {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Tool calls the LLM requested this round (non-streaming only). `Some` +
+    /// non-empty + `finish_reason == "tool_calls"` means the agent loop must
+    /// execute tools and re-prompt; `None`/empty means this is a final answer.
+    pub tool_calls: Option<Vec<ToolCall>>,
+    pub finish_reason: Option<String>,
 }
 
 /// Daily LLM cost accounting for the debug panel (Architecture #8: cost is a
@@ -241,13 +355,19 @@ impl LlmClient {
     }
 
     /// Sends a chat completion request using the main model.
+    ///
+    /// `tools`: advertised tool definitions for function-calling. `None` = plain
+    /// reply (no tool round); `Some(defs)` enables tool-calling with
+    /// `tool_choice:"auto"` (the LLM decides whether to call). Tool rounds are
+    /// always non-streaming — see `chat_with_model`.
     pub async fn chat(
         &self,
         messages: &[ChatMessage],
         temperature: Option<f64>,
         max_tokens: Option<u32>,
+        tools: Option<&[ToolDef]>,
     ) -> Result<ChatResult, LlmError> {
-        self.chat_with_model(&self.main_model, messages, temperature, max_tokens, None)
+        self.chat_with_model(&self.main_model, messages, temperature, max_tokens, None, tools)
             .await
     }
 
@@ -271,6 +391,7 @@ impl LlmClient {
             temperature,
             max_tokens,
             Some(&no_thinking),
+            None,
         )
         .await
     }
@@ -282,7 +403,8 @@ impl LlmClient {
         temperature: Option<f64>,
         max_tokens: Option<u32>,
         thinking: Option<&ThinkingConfig>,
-   ) -> Result<ChatResult, LlmError> {
+        tools: Option<&[ToolDef]>,
+    ) -> Result<ChatResult, LlmError> {
         let url = self.build_url();
 
         let request = ChatRequest {
@@ -294,6 +416,8 @@ impl LlmClient {
             stream_options: None,
             thinking: thinking.cloned(),
             reasoning_effort: None,
+            tools: tools.map(|t| t.to_vec()),
+            tool_choice: tools.map(|_| "auto".to_string()),
         };
 
         let resp = self
@@ -331,13 +455,18 @@ impl LlmClient {
         let chat_resp: ChatResponse = serde_json::from_str(&body)
             .map_err(|e| LlmError::Parse(format!("{} | body: {}", e, body)))?;
 
-        let content = chat_resp
-            .choices
-            .into_iter()
-            .next()
-            .map(|c| c.message.content)
-            .unwrap_or_default();
-        if content.trim().is_empty() {
+        let choice = chat_resp.choices.into_iter().next();
+        let (content, tool_calls, finish_reason) = match choice {
+            Some(c) => (
+                c.message.content.unwrap_or_default(),
+                c.message.tool_calls,
+                c.finish_reason,
+            ),
+            None => (String::new(), None, None),
+        };
+        // Only warn when BOTH content is empty AND no tool calls — a tool-request
+        // round legitimately has content:null + tool_calls (not an error).
+        if content.trim().is_empty() && tool_calls.is_none() {
             log::warn!(
                 "[llm-empty-content] model={} body_len={} body={}",
                 model,
@@ -357,6 +486,8 @@ impl LlmClient {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
+            tool_calls,
+            finish_reason,
         };
         self.track_usage(&result);
         Ok(result)
@@ -405,6 +536,8 @@ impl LlmClient {
             stream_options: Some(StreamOptions { include_usage: true }),
             thinking: thinking.cloned(),
             reasoning_effort: reasoning_effort.map(|s| s.to_string()),
+            tools: None,
+            tool_choice: None,
         };
 
         let resp = self
@@ -526,6 +659,8 @@ impl LlmClient {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
+            tool_calls: None,
+            finish_reason: None,
         }
     }
 
@@ -538,6 +673,130 @@ impl LlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_chat_request_serializes_tools() {
+        // A tool-calling request must serialize a `tools` array + `tool_choice`.
+        let req_with_tools = ChatRequest {
+            model: "test".to_string(),
+            messages: vec![ChatMessage::user("hi")],
+            temperature: None,
+            max_tokens: None,
+            stream: Some(false),
+            stream_options: None,
+            thinking: None,
+            reasoning_effort: None,
+            tools: Some(vec![ToolDef::new(
+                "get_time",
+                "Get the current local time",
+                serde_json::json!({"type": "object", "properties": {}}),
+            )]),
+            tool_choice: Some("auto".to_string()),
+        };
+        let json = serde_json::to_string(&req_with_tools).unwrap();
+        assert!(json.contains("\"tools\""), "tools field missing: {}", json);
+        assert!(json.contains("\"get_time\""));
+        assert!(json.contains("\"tool_choice\":\"auto\""));
+
+        // A plain request (no tools) must omit tools/tool_choice entirely so the
+        // provider treats it as a normal completion.
+        let plain = ChatRequest {
+            model: "test".to_string(),
+            messages: vec![ChatMessage::user("hi")],
+            temperature: None,
+            max_tokens: None,
+            stream: Some(false),
+            stream_options: None,
+            thinking: None,
+            reasoning_effort: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let plain_json = serde_json::to_string(&plain).unwrap();
+        assert!(!plain_json.contains("tools"), "plain request should omit tools: {}", plain_json);
+        assert!(!plain_json.contains("tool_choice"));
+    }
+
+    #[test]
+    fn test_parse_tool_call_response() {
+        // A tool-request round: content is null, tool_calls present,
+        // finish_reason == "tool_calls" — the agent loop keys off this.
+        let body = r#"{
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {"name": "search_web", "arguments": "{\"query\":\"AI news\"}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        }"#;
+        let resp: ChatResponse = serde_json::from_str(body).unwrap();
+        let choice = resp.choices.into_iter().next().unwrap();
+        assert_eq!(choice.finish_reason.as_deref(), Some("tool_calls"));
+        assert!(
+            choice.message.content.is_none(),
+            "tool-request round content should be null"
+        );
+        let tc = choice.message.tool_calls.expect("tool_calls missing");
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0].id, "call_abc");
+        assert_eq!(tc[0].function.name, "search_web");
+        // arguments is a JSON string, not a parsed object.
+        assert_eq!(tc[0].function.arguments, r#"{"query":"AI news"}"#);
+    }
+
+    #[test]
+    fn test_parse_plain_response_no_tools() {
+        // A normal answer round: content present, no tool_calls, finish stop.
+        let body = r#"{
+            "choices": [{
+                "message": {"role": "assistant", "content": "你好呀"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11}
+        }"#;
+        let resp: ChatResponse = serde_json::from_str(body).unwrap();
+        let choice = resp.choices.into_iter().next().unwrap();
+        assert_eq!(choice.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(choice.message.content.as_deref(), Some("你好呀"));
+        assert!(choice.message.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_chat_message_helpers() {
+        let u = ChatMessage::user("hello");
+        assert_eq!(u.role, "user");
+        assert_eq!(u.content.as_deref(), Some("hello"));
+        assert!(u.tool_calls.is_none());
+
+        let s = ChatMessage::system("sys");
+        assert_eq!(s.content_str(), "sys");
+
+        let tool_msg = ChatMessage::tool_result("call_1", "get_time", "14:00");
+        assert_eq!(tool_msg.role, "tool");
+        assert_eq!(tool_msg.tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(tool_msg.name.as_deref(), Some("get_time"));
+        assert_eq!(tool_msg.content_str(), "14:00");
+
+        // assistant_with_tool_calls: null content round.
+        let tc = ToolCall {
+            id: "x".to_string(),
+            type_: "function".to_string(),
+            function: ToolCallFunction {
+                name: "search_web".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        let asst = ChatMessage::assistant_with_tool_calls(None, vec![tc]);
+        assert_eq!(asst.content_str(), ""); // None → empty
+        assert!(asst.tool_calls.is_some());
+    }
 
     #[test]
     fn test_not_configured() {

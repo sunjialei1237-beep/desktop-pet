@@ -137,15 +137,9 @@ pub async fn grounding_guard(
     }
     log::warn!("[grounding-B] proactive bubble flagged as ungrounded; retrying once");
     let mut retry = messages.to_vec();
-    retry.push(ChatMessage {
-        role: "assistant".to_string(),
-        content: reply.clone(),
-    });
-    retry.push(ChatMessage {
-        role: "system".to_string(),
-        content: "你上一句话把记忆里没有的事说成了关于 ta 的经历或喜好——这是编造。请重新只说一句：不要编造任何关于 ta 的记忆或偏好，不确定就只表达你此刻的感受，绝不替 ta 编过往。".to_string(),
-    });
-    match llm.chat(&retry, Some(0.8), Some(4096)).await {
+    retry.push(ChatMessage::assistant(reply.clone()));
+    retry.push(ChatMessage::system("你上一句话把记忆里没有的事说成了关于 ta 的经历或喜好——这是编造。请重新只说一句：不要编造任何关于 ta 的记忆或偏好，不确定就只表达你此刻的感受，绝不替 ta 编过往。"));
+    match llm.chat(&retry, Some(0.8), Some(4096), None).await {
         Ok(r) => {
             let reply2 = r.content.trim().to_string();
             if !reply2.is_empty()
@@ -271,13 +265,10 @@ pub async fn generate(
 
     let mut messages =
         crate::mind::budget::allocate_and_compress(&retrieval, wm_context, &emotion, &intent);
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: format!(
-            "（你刚刚突然想起了这件事，想主动跟用户说。你想起来的只有这一件：{}。只能围绕它原意来聊，它是什么就说什么，绝不能换成别的项目、事件或名字，更不能编出记忆里没有的具体事；实在没什么好接的，就说句简单的招呼。按规则回复，尤其规则 8。）",
-            memory_anchor
-        ),
-    });
+    messages.push(ChatMessage::user(format!(
+        "（你刚刚突然想起了这件事，想主动跟用户说。你想起来的只有这一件：{}。只能围绕它原意来聊，它是什么就说什么，绝不能换成别的项目、事件或名字，更不能编出记忆里没有的具体事；实在没什么好接的，就说句简单的招呼。按规则回复，尤其规则 8。）",
+        memory_anchor
+    )));
 
     log::info!(
         "[proactive] anchor={:?} goal={} facts={} episodes={} msgs={}",
@@ -289,7 +280,7 @@ pub async fn generate(
     );
 
     let chat_result = llm
-        .chat(&messages, Some(0.8), Some(4096))
+        .chat(&messages, Some(0.8), Some(4096), None)
         .await
         .map_err(|e| format!("LLM error: {:?}", e))?;
 
@@ -340,10 +331,7 @@ async fn generate_lively(
 
     let mut messages =
         crate::mind::budget::allocate_and_compress(&retrieval, wm_context, emotion, &intent);
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: lively_prompt(emotion, hour),
-    });
+    messages.push(ChatMessage::user(lively_prompt(emotion, hour)));
 
     log::info!(
         "[lively] hour={} tone={} mood={:.2} loneliness={:.2} msgs={}",
@@ -355,7 +343,7 @@ async fn generate_lively(
     );
 
     let chat_result = llm
-        .chat(&messages, Some(0.9), Some(4096))
+        .chat(&messages, Some(0.9), Some(4096), None)
         .await
         .map_err(|e| format!("LLM error: {:?}", e))?;
 
@@ -520,12 +508,9 @@ pub async fn generate_welcome_back(
             String::new()
         }
     };
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: format!(
-            "（对方离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}{thought_clause}简短自然，1-2 句，像个真的在等 ta 回来的人。称呼对方用「你」，不要用「用户」。按规则回复。）"
-        ),
-    });
+    messages.push(ChatMessage::user(format!(
+        "（对方离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}{thought_clause}简短自然，1-2 句，像个真的在等 ta 回来的人。称呼对方用「你」，不要用「用户」。按规则回复。）"
+    )));
 
     log::info!(
         "[welcome_back] away_secs={} has_anchor={} has_thought={} tone={} facts={} episodes={} msgs={}",
@@ -539,7 +524,7 @@ pub async fn generate_welcome_back(
     );
 
     let chat_result = llm
-        .chat(&messages, Some(0.8), Some(4096))
+        .chat(&messages, Some(0.8), Some(4096), None)
         .await
         .map_err(|e| format!("LLM error: {:?}", e))?;
 
@@ -637,12 +622,9 @@ pub async fn generate_lonely_bubble(
         String::new()
     };
 
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: format!(
-            "（你一个人待了一会儿，有点想 ta。ta 就在旁边但没说话，你想轻轻戳一下 ta——不是催 ta 回复，也不是有事要说，就是想让 ta 知道你在。{anchor_clause}只说 1 句，简短、自然、别黏人、别问问题逼 ta 答。按规则回复，尤其规则 8 严禁编造。）"
-        ),
-    });
+    messages.push(ChatMessage::user(format!(
+        "（你一个人待了一会儿，有点想 ta。ta 就在旁边但没说话，你想轻轻戳一下 ta——不是催 ta 回复，也不是有事要说，就是想让 ta 知道你在。{anchor_clause}只说 1 句，简短、自然、别黏人、别问问题逼 ta 答。按规则回复，尤其规则 8 严禁编造。）"
+    )));
 
     log::info!(
         "[lonely_nudge] loneliness={:.2} has_anchor={} tone={} facts={} episodes={} msgs={}",
@@ -655,7 +637,7 @@ pub async fn generate_lonely_bubble(
     );
 
     let chat_result = llm
-        .chat(&messages, Some(0.8), Some(4096))
+        .chat(&messages, Some(0.8), Some(4096), None)
         .await
         .map_err(|e| format!("LLM error: {:?}", e))?;
 

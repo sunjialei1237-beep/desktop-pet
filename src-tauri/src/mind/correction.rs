@@ -52,10 +52,7 @@ Respond with JSON only:
 If the correction is unclear or does not match any known fact, respond with: {{\"category\": \"\", \"key\": \"\", \"new_value\": \"\"}}"
     );
 
-    let messages = vec![ChatMessage {
-        role: "system".to_string(),
-        content: system_prompt,
-    }];
+    let messages = vec![ChatMessage::system(system_prompt)];
 
     // 4096: DeepSeek-v4 is a reasoning model, reasoning_content eats most of the
     // budget — 2048 leaves content empty and the JSON parse fails (pitfall #3).

@@ -98,10 +98,7 @@ pub async fn run_review(db: &DbState, llm: &LlmClient) -> Result<ReviewResult, S
     // 3. Call LLM with the reflection model (cheapest). 4096: generation task
     //    — DeepSeek-v4 is a reasoning model, so reasoning_content eats most of
     //    a smaller budget and leaves `content` empty (pitfall #3).
-    let messages = vec![ChatMessage {
-        role: "system".to_string(),
-        content: prompt,
-    }];
+    let messages = vec![ChatMessage::system(prompt)];
     let result = llm
         .chat_reflection(&messages, Some(0.5), Some(4096))
         .await

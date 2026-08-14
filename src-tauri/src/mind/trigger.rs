@@ -54,7 +54,7 @@ pub fn should_retrieve(
     if recent_user_msgs.len() >= 5
         && recent_user_msgs
             .iter()
-            .all(|m| m.content.trim().chars().count() <= 10)
+            .all(|m| m.content_str().trim().chars().count() <= 10)
     {
         return TriggerDecision {
             should_retrieve: false,
@@ -104,8 +104,8 @@ mod tests {
     fn test_consecutive_short_messages() {
         let mut wm = WorkingMemory::new();
         for _ in 0..6 {
-            wm.push(ChatMessage { role: "user".to_string(), content: "ok".to_string() });
-            wm.push(ChatMessage { role: "assistant".to_string(), content: "hmm".to_string() });
+            wm.push(ChatMessage::user("ok"));
+            wm.push(ChatMessage::assistant("hmm"));
         }
         let decision = should_retrieve("what about tomorrow", &emotion(), &wm.get_context());
         assert!(!decision.should_retrieve);

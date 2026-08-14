@@ -446,13 +446,10 @@ pub async fn converse(
         } else {
             "稍后".to_string()
         };
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: format!(
-                "（系统提示：你刚刚帮用户记下了一个提醒——「{}」，{}. 在回复里自然地确认这件事，简短温暖，比如「好的，{}提醒你」.）",
-                pe.title, timing, timing
-            ),
-        });
+        messages.push(ChatMessage::system(format!(
+            "（系统提示：你刚刚帮用户记下了一个提醒——「{}」，{}. 在回复里自然地确认这件事，简短温暖，比如「好的，{}提醒你」.）",
+            pe.title, timing, timing
+        )));
     }
 
     // Forget acknowledgment / disambiguation. Three sources converge here, all
@@ -468,32 +465,20 @@ pub async fn converse(
     match &pending_res {
         PendingResolution::Resolved => {
             log::info!("[converse] forget resolved this turn (cross-turn disambig)");
-            messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: "（系统提示：用户刚才确认了要忘掉哪段记忆，你已经把它彻底忘了。简短温暖地确认你忘了，比如「好，我忘了」或「嗯，已经不记得了」。绝对不要复述那段内容。）".to_string(),
-            });
+            messages.push(ChatMessage::system("（系统提示：用户刚才确认了要忘掉哪段记忆，你已经把它彻底忘了。简短温暖地确认你忘了，比如「好，我忘了」或「嗯，已经不记得了」。绝对不要复述那段内容。）"));
         }
         PendingResolution::Reask(cands) => {
-            messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: disambig_prompt(cands),
-            });
+            messages.push(ChatMessage::system(disambig_prompt(cands)));
         }
         PendingResolution::Proceed => {
             if let Some(fo) = outcome.forget.as_ref() {
                 match fo {
                     crate::mind::forget::ForgetOutcome::Deleted { .. } => {
                         log::info!("[converse] forget this turn: deleted");
-                        messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: "（系统提示：用户刚才让你忘掉一段记忆，你已经把它彻底忘了。简短温暖地确认你忘了，比如「好，我忘了」或「嗯，已经不记得了」。绝对不要复述或暗示那段内容——你真的忘了，就想不起来了。）".to_string(),
-                        });
+                        messages.push(ChatMessage::system("（系统提示：用户刚才让你忘掉一段记忆，你已经把它彻底忘了。简短温暖地确认你忘了，比如「好，我忘了」或「嗯，已经不记得了」。绝对不要复述或暗示那段内容——你真的忘了，就想不起来了。）"));
                     }
                     crate::mind::forget::ForgetOutcome::Declined => {
-                        messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: "（系统提示：用户想让你忘掉某件事，但你的记忆里其实没有这段，可能是记混了。诚实又温和地说你好像不记得这件事。）".to_string(),
-                        });
+                        messages.push(ChatMessage::system("（系统提示：用户想让你忘掉某件事，但你的记忆里其实没有这段，可能是记混了。诚实又温和地说你好像不记得这件事。）"));
                     }
                     crate::mind::forget::ForgetOutcome::Ambiguous { candidates } => {
                         // START a disambiguation: store candidates for the next
@@ -511,10 +496,7 @@ pub async fn converse(
                             "[converse] forget ambiguous ({} candidates) — asking back",
                             candidates.len()
                         );
-                        messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: disambig_prompt(candidates),
-                        });
+                        messages.push(ChatMessage::system(disambig_prompt(candidates)));
                     }
                 }
             }
@@ -552,18 +534,12 @@ pub async fn converse(
         }
     };
     if let Some(clause) = thought_clause {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: clause,
-        });
+        messages.push(ChatMessage::system(clause));
     }
 
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: text.to_string(),
-    });
+    messages.push(ChatMessage::user(text.to_string()));
 
-    let system_tokens = crate::mind::budget::estimate_tokens(&messages[0].content);
+    let system_tokens = crate::mind::budget::estimate_tokens(messages[0].content_str());
     let prompt_debug = PromptTokenDebug {
         system_tokens,
         input_tokens: crate::mind::budget::estimate_messages_tokens(&messages),
