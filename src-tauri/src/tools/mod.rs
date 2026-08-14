@@ -122,11 +122,11 @@ fn tool_def(kind: ToolKind) -> ToolDef {
         ),
         ToolKind::OpenApplication => ToolDef::new(
             "open_application",
-            "打开电脑上的应用程序。仅限白名单内的常用程序。",
+            "打开电脑上的应用程序。会自动扫描桌面和开始菜单的快捷方式并匹配，用程序的常用名即可（如 网易云、VSCode、Chrome）。",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "app": {"type": "string", "description": "程序名（如 code/chrome/notepad）"}
+                    "app": {"type": "string", "description": "程序名（如 网易云音乐 / VSCode / Chrome）"}
                 },
                 "required": ["app"]
             }),
@@ -219,13 +219,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_open_app_rejects_non_whitelist() {
+    async fn execute_open_app_no_match_is_failed() {
+        // Dynamic discovery: a nonsense name finds no shortcut → Failed (not
+        // Rejected — policy allows any bare name; matching is at execute).
         let r = execute(
             ToolKind::OpenApplication,
-            &serde_json::json!({"app": "evil"}),
+            &serde_json::json!({"app": "zzz_definitely_no_such_app_xyz"}),
             &cfg(true, true),
         )
         .await;
-        assert_eq!(r.status, policy::ToolStatus::Rejected);
+        assert_eq!(r.status, policy::ToolStatus::Failed);
     }
 }

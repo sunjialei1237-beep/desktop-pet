@@ -29,19 +29,6 @@ pub enum ToolStatus {
     Cancelled,
 }
 
-/// Whitelisted applications for `open_application`. Bare exe names (no path) —
-/// the OS PATH resolves them. Mirrors the classify_process array style in
-/// `perception/window.rs`. Anything not listed here is denied. Deliberately
-/// excludes shells (cmd/powershell) so the tool cannot indirectly run
-/// arbitrary commands.
-pub const ALLOWED_APPS: &[&str] = &[
-    "code", "chrome", "msedge", "firefox",
-    "explorer", "notepad", "calc", "mspaint", "snippingtool",
-    "spotify", "discord", "slack", "wechat", "qq",
-    "steam", "epicgameslauncher",
-    "terminal", "wt", "devenv",
-];
-
 /// Check whether a tool call is permitted. Stateless — config + args only.
 /// Duplicate-query detection is in the agent loop (needs history).
 pub fn check(kind: super::ToolKind, args: &Value, cfg: &ToolsConfig) -> PolicyDecision {
@@ -68,12 +55,10 @@ pub fn check(kind: super::ToolKind, args: &Value, cfg: &ToolsConfig) -> PolicyDe
             if app.contains('/') || app.contains('\\') || app.contains("..") {
                 return PolicyDecision::Deny("path_traversal_blocked");
             }
-            let lower = app.to_lowercase();
-            if ALLOWED_APPS.iter().any(|&allowed| allowed == lower) {
-                PolicyDecision::Allow
-            } else {
-                PolicyDecision::Deny("app_not_whitelisted")
-            }
+            // No static whitelist: the tool discovers apps by scanning Desktop
+            // + Start Menu shortcuts (system.rs::scan_apps) and fuzzy-matches.
+            // Policy here only gates config + blocks path traversal.
+            PolicyDecision::Allow
         }
         super::ToolKind::OpenUrl => match args.get("url").and_then(|u| u.as_str()) {
             Some(u) if u.starts_with("https://") => PolicyDecision::Allow,
@@ -128,23 +113,17 @@ mod tests {
     }
 
     #[test]
-    fn open_app_whitelisted() {
+    fn open_app_allows_any_bare_name() {
+        // No whitelist now — policy allows any bare name; matching against
+        // discovered Desktop/Start-Menu shortcuts happens at execute time.
+        // "malware" passes policy but will fail at execute (no shortcut matches).
         assert!(matches!(
             check(ToolKind::OpenApplication, &serde_json::json!({"app":"code"}), &cfg(true, true)),
             PolicyDecision::Allow
         ));
-        // case-insensitive
         assert!(matches!(
-            check(ToolKind::OpenApplication, &serde_json::json!({"app":"Chrome"}), &cfg(true, true)),
+            check(ToolKind::OpenApplication, &serde_json::json!({"app":"网易云音乐"}), &cfg(true, true)),
             PolicyDecision::Allow
-        ));
-    }
-
-    #[test]
-    fn open_app_not_whitelisted() {
-        assert!(matches!(
-            check(ToolKind::OpenApplication, &serde_json::json!({"app":"malware"}), &cfg(true, true)),
-            PolicyDecision::Deny("app_not_whitelisted")
         ));
     }
 
