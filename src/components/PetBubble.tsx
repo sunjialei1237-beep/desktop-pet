@@ -8,7 +8,7 @@
 // from bubbleClassForMood / showBubble calls). This component accepts BOTH the
 // "bubble-xxx" form and the bare "xxx" form, so call sites need no changes.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, type TargetAndTransition, type Transition } from "motion/react";
 
 export type PetBubbleVariant =
@@ -121,6 +121,14 @@ export function PetBubble({
   const v = normalizeVariant(String(variant));
   const isGlyph = mode === "glyph" || v === "glyph";
   const motionConfig = getMotionConfig(v);
+  // True once text actually exceeds the height cap. Below the cap the bubble
+  // stays overflow-y:hidden (no scrollbar, not user-scrollable — it just
+  // streams/grows with the text); .pet-bubble--scrollable flips it to
+  // overflow-y:auto so the scrollbar appears and scrolling is allowed. JS
+  // drives this instead of relying on native overflow-y:auto alone, because
+  // on some WebView2/Windows setups auto renders a persistent scrollbar
+  // track even when content fits (verified: "你好呀" showed a track).
+  const [overflowing, setOverflowing] = useState(false);
   // Auto-scroll to bottom on text change: streaming appends tokens at the end,
   // and a capped-height bubble would otherwise keep the newest text clipped
   // below the fold. The user can still scroll up freely to re-read earlier
@@ -131,6 +139,17 @@ export function PetBubble({
     const el = bubbleRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [text]);
+  // Detect overflow: scrollHeight > clientHeight means the content is taller
+  // than the max-height cap (works under overflow-y:hidden too — scrollHeight
+  // includes clipped content). Re-measured on every text change (streaming),
+  // on show/hide, and on bubble identity change so a fresh bubble never
+  // inherits the previous bubble's overflow state. +1 absorbs sub-pixel
+  // rounding right at the boundary.
+  useEffect(() => {
+    const el = bubbleRef.current;
+    if (!el) return;
+    setOverflowing(el.scrollHeight > el.clientHeight + 1);
+  }, [text, visible, bubbleId]);
   // Report the bubble rect so App can treat it as a non-click-through region
   // (required for scrolling under OS-level ignore_cursor_events). Null when
   // hidden (or glyph mode, which has no scrollable .pet-bubble) so App stops
@@ -202,7 +221,10 @@ export function PetBubble({
               <span className="pet-bubble-glyph-text">{text}</span>
             </span>
           ) : (
-            <div ref={bubbleRef} className="pet-bubble">
+            <div
+              ref={bubbleRef}
+              className={`pet-bubble${overflowing ? " pet-bubble--scrollable" : ""}`}
+            >
               <span className="pet-bubble-text">{text}</span>
               <span className="pet-bubble-tail" />
             </div>

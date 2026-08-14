@@ -798,10 +798,17 @@ html, body, #root {
   word-break: break-word;
   /* Height cap: the bubble sits at bottom:532 with ~200px of headroom to the
      window top. Without a cap, a long streaming reply grows upward past the
-     window edge and its top is clipped (unreadable). Cap + internal scroll
-     lets the user scroll through the full text in place. */
+     window edge and its top is clipped (unreadable). */
   max-height: var(--pet-bubble-max-height, 200px);
-  overflow-y: auto;
+  /* Below the cap the bubble streams/grows naturally with the text: NO
+     scrollbar and NOT user-scrollable. overflow-y:hidden can never draw a
+     scrollbar — some WebView2/Windows builds render a persistent track for
+     overflow-y:auto even when content fits (that was the "常驻滑动条"), so
+     hidden below the cap removes the ambiguity entirely. PetBubble.tsx
+     measures scrollHeight vs clientHeight and adds .pet-bubble--scrollable
+     the moment text exceeds the cap, which flips this to overflow-y:auto
+     (scrollbar appears + scrolling allowed). */
+  overflow-y: hidden;
   /* Re-enable interaction on the bubble body: the parent anchor is
      pointer-events:none (click-through — the bubble must not block desktop
      clicks), but that also blocks scrolling. The bubble body opts back into
@@ -809,10 +816,13 @@ html, body, #root {
      visible, the small bubble rect captures clicks — acceptable, it sits at
      Liri's head-top-right and is transient. */
   pointer-events: auto;
-  /* Native scrollbar only: NO ::-webkit-scrollbar override — custom webkit
-     scrollbar styling can reserve a persistent track even when content doesn't
-     overflow. Native overflow-y:auto shows the bar ONLY when content exceeds
-     the cap, hidden otherwise (exactly the requested behavior). */
+}
+
+/* Overflow state — added by PetBubble.tsx only when text exceeds the height
+   cap. The native scrollbar shows (thin so it stays unobtrusive) and the user
+   can scroll the full text in place. */
+.pet-bubble--scrollable {
+  overflow-y: auto;
   scrollbar-width: thin;
 }
 
