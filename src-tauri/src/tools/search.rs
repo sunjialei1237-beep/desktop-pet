@@ -1,11 +1,15 @@
-//! Web search tool: `SearchProvider` trait + DuckDuckGo HTML provider.
-//!
-//! DuckDuckGo's `html.duckduckgo.com/html/` endpoint returns a static HTML
-//! page we scrape with CSS selectors — no API key, rate-limit tolerant, and
-//! swappable behind the trait (a future Bing/Brave provider just implements
-//! `SearchProvider`). 铁律 #2: every snippet returned is UNTRUSTED — the agent
-//! loop wraps results in `<tool_result untrusted>` and the system prompt tells
-//! the LLM to treat them as external unverified content.
+//! Web search tool: `SearchProvider` trait + a foreign-first cascade
+//! (DuckDuckGo HTML → Toutiao). DDG is tried first — free, no API key, real
+//! result URLs — and doubles as the "does this machine have a foreign
+//! environment (VPN)" probe: on failure (network / CAPTCHA / budget timeout)
+//! the verdict is cached for `FOREIGN_COOLDOWN_SECS` and queries go straight
+//! to the domestic source (toutiao, mainland-stable) until the cooldown
+//! expires. 铁律 #2: every snippet returned is UNTRUSTED — the agent loop wraps
+//! results in `<tool_result untrusted>` and the system prompt tells the LLM to
+//! treat them as external unverified content.
+
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use scraper::{Html, Selector};
@@ -49,16 +53,14 @@ pub trait SearchProvider: Send + Sync {
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, SearchError>;
 }
 
-/// DuckDuckGo HTML endpoint provider. No API key required.
-/// Kept as a swappable `SearchProvider`; in mainland China DDG is CAPTCHA-
-/// blocked, so `ToutiaoProvider` is the default (`search_web`). Construct it
-/// explicitly to use DDG (e.g. behind a VPN).
-#[allow(dead_code)]
+/// DuckDuckGo HTML endpoint provider. No API key required. Foreign leg of the
+/// cascade in `search_web`: preferred whenever reachable (real result URLs);
+/// in mainland China without a VPN it fails fast and the cascade drops to
+/// toutiao for `FOREIGN_COOLDOWN_SECS`.
 pub struct DuckDuckGoProvider {
     client: reqwest::Client,
 }
 
-#[allow(dead_code)]
 impl DuckDuckGoProvider {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
@@ -99,7 +101,6 @@ impl SearchProvider for DuckDuckGoProvider {
 }
 
 impl DuckDuckGoProvider {
-    #[allow(dead_code)]
     /// One fetch attempt (POST or GET). Returns `Ok(None)` when the page loaded
     /// but yielded zero results, so the caller can retry the other method; an
     /// `Err` means a hard failure (network / rate-limit / non-html) worth
@@ -272,6 +273,23 @@ fn url_decode(s: &str) -> String {
 /// `search_web` tool entry point (called by `tools::execute`). Returns a
 /// formatted text block of top-5 results — title/url/snippet per hit, capped
 /// so the whole payload stays well under the 1600-token tool-result budget.
+///
+/// Foreign-first cascade (国际源优先，国内兜底): DDG is attempted first with a
+/// `FOREIGN_BUDGET_SECS` ceiling (the agent-level tool timeout is 10s, so the
+/// budget must leave room for the domestic leg); one failure cools the
+/// foreign leg down for `FOREIGN_COOLDOWN_SECS` so domestic users don't
+/// re-pay the unreachable timeout every query. A DDG success clears the
+/// cooldown immediately.
+static FOREIGN_FAIL_UNTIL: AtomicI64 = AtomicI64::new(0);
+const FOREIGN_BUDGET_SECS: u64 = 5;
+const FOREIGN_COOLDOWN_SECS: i64 = 600;
+
+/// Pure decision: is the foreign leg worth trying at `now_secs`, given the
+/// cached failure deadline `fail_until_secs` (0 = never failed / cleared)?
+fn foreign_available(now_secs: i64, fail_until_secs: i64) -> bool {
+    now_secs >= fail_until_secs
+}
+
 pub async fn search_web(args: &serde_json::Value) -> ToolResult {
     let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
     if query.trim().is_empty() {
@@ -279,6 +297,52 @@ pub async fn search_web(args: &serde_json::Value) -> ToolResult {
             status: ToolStatus::Rejected,
             content: "搜索词为空。".to_string(),
         };
+    }
+    let now = chrono::Utc::now().timestamp();
+    let fail_until = FOREIGN_FAIL_UNTIL.load(Ordering::Relaxed);
+    if foreign_available(now, fail_until) {
+        let ddg = DuckDuckGoProvider::new();
+        match tokio::time::timeout(
+            Duration::from_secs(FOREIGN_BUDGET_SECS),
+            ddg.search(query, 5),
+        )
+        .await
+        {
+            Ok(Ok(results)) => {
+                FOREIGN_FAIL_UNTIL.store(0, Ordering::Relaxed);
+                log::info!(
+                    "[tools/search] query={:?} foreign source (DDG) hit: {} results",
+                    query,
+                    results.len()
+                );
+                return ToolResult {
+                    status: ToolStatus::Success,
+                    content: format_results(&results),
+                };
+            }
+            Ok(Err(e)) => {
+                FOREIGN_FAIL_UNTIL.store(now + FOREIGN_COOLDOWN_SECS, Ordering::Relaxed);
+                log::info!(
+                    "[tools/search] query={:?} foreign source (DDG) failed: {} — domestic fallback for {}s",
+                    query,
+                    e,
+                    FOREIGN_COOLDOWN_SECS
+                );
+            }
+            Err(_) => {
+                FOREIGN_FAIL_UNTIL.store(now + FOREIGN_COOLDOWN_SECS, Ordering::Relaxed);
+                log::info!(
+                    "[tools/search] query={:?} foreign source (DDG) timed out ({}s budget) — domestic fallback",
+                    query,
+                    FOREIGN_BUDGET_SECS
+                );
+            }
+        }
+    } else {
+        log::debug!(
+            "[tools/search] foreign source cooling down until {} — going domestic directly",
+            fail_until
+        );
     }
     let provider = ToutiaoProvider::new();
     match provider.search(query, 5).await {
@@ -299,9 +363,10 @@ pub async fn search_web(args: &serde_json::Value) -> ToolResult {
     }
 }
 
-/// 头条搜索 provider（国内可用，无需 API key）。`so.toutiao.com/search?
+/// 头条搜索 provider（国内兜底，无需 API key）。`so.toutiao.com/search?
 /// pd=information` 返回 SSR JSON，含真实 title/abstract。DDG/Bing/百度 在
-/// 国内被反爬/CAPTCHA，头条是目前最稳定的免费国内搜索源。
+/// 国内被反爬/CAPTCHA，头条是最稳定的免费国内搜索源——级联的国内腿：
+/// 国外源（DDG）不可达/失败后由它兜底。
 pub struct ToutiaoProvider {
     client: reqwest::Client,
 }
@@ -605,5 +670,22 @@ mod tests {
         assert!(results.iter().any(|r| r.title == "AI新闻"));
         assert!(results.iter().any(|r| r.title == "科技动态"));
         assert!(results.len() <= 2, "em+plain should dedup, got {}", results.len());
+    }
+
+    #[test]
+    fn test_foreign_available_never_failed() {
+        // fail_until = 0 (never failed / cleared after a success) → always try.
+        assert!(foreign_available(0, 0));
+        assert!(foreign_available(1_700_000_000, 0));
+    }
+
+    #[test]
+    fn test_foreign_available_cooldown_window() {
+        // A failure at t=1000 cools the foreign leg until t=1600.
+        assert!(!foreign_available(1000, 1600));
+        assert!(!foreign_available(1599, 1600));
+        // Cooldown expired → retry (user may have just turned the VPN on).
+        assert!(foreign_available(1600, 1600));
+        assert!(foreign_available(2000, 1600));
     }
 }
