@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="src-tauri/icons/icon.png" width="170" alt="Liri · 璃" />
+
 # Liri · 璃
 
 ### 一个有记忆、有情绪、会主动找你的 Windows 桌面陪伴宠物
@@ -15,9 +17,9 @@
 > 🌟 **成功标准**：你对她说"我最近准备找实习"，一周后她会主动问你"实习找得怎么样啦？"
 > —— 不靠定时器提醒，靠**记忆 + 关系 + 主动性**。
 
-**Liri（璃）** 是一只常驻你桌面的小狐灵。她会记住你们聊过的每一件事，在情绪低落时主动来找你，在你忙时安静等待，在深夜催你早点睡。所有数据都在本地，所有模型由你自己配置——她只属于你。
+**Liri（璃）** 是一只常驻你桌面的小狐灵。她会记住你们聊过的每一件事，在情绪低落时主动来找你，在你忙时安静等待，在深夜催你早点睡。她记得自己答应过你的事，会带着"当时的氛围"想起你，也能在你需要时查资料、帮你打开应用。所有数据都在本地，所有模型由你自己配置——她只属于你。
 
-> ⚠️ **当前状态：早期开发中（v0.1）。** 桌面形象仍是占位 Live2D 模型，最终角色"璃"（Spine + PixiJS 高保真骨骼动画）正在制作中，截图将在角色完成后补上。当前仅支持 **Windows**。
+> ⚠️ **当前状态：早期开发中（v0.1），仅支持 Windows。** 角色璃已由 **Spine + PixiJS** 骨骼动画驱动（呼吸、视线 360° 跟随、情绪表情渐变、微行为），美术资产仍在持续迭代。
 
 ---
 
@@ -25,27 +27,38 @@
 
 ### 🧠 记住你（Memory）
 - **情景记忆**：每一段对话沉淀为 episode（带重要度、情绪、时间衰减）
-- **语义检索**：本地 BGE-M3 向量化 + sqlite-vec 向量库，按「语义 / 强度 / 时近 / 情绪」四维打分召回
-- **事实抽取与巩固**：从对话中提炼长期事实（偏好、计划、人际关系），冲突时自动过期，consolidation 反向回填
-- **可遗忘**：自然语言"忘掉我说过的 X"即可软删除，绝不复述已忘内容
+- **语义检索**：本地 BGE-M3 向量化 + sqlite-vec 向量库，按「语义 / 强度 / 新颖度 / 时近 / 情绪」打分召回
+- **事实抽取与巩固**：从对话中提炼长期事实（偏好、计划、人际关系），冲突时自动过期，consolidation 反向回填；写入前过确定性**卫生闸门**（拒知识问答/越界内容入库）
+- **可遗忘**：自然语言"忘掉我说过的 X"即可软删除，多候选时她会先反问确认，绝不误删
+- **承诺追踪**：她亲口答应你的事（"明早叫你起床"）自动建档必追，到期主动兑现——"我说过要叫你起床的"，遗忘自己说过的话是最伤信任的事
+- **有温度的浮现**：主动想起的记忆带 **recall_reason**（"从没主动提起过的旧事" / "你们常聊的话题"）和**情感锚点**（"在猫咖，眼睛亮亮的"），开口像真的惦记着，不是翻档案
+- **浮现治理**：全局冒泡预算 + 记忆轮转（7 天硬排除 + 最少浮现优先），不会每分钟烦你，也不会翻来覆去只有那一件事
 
 ### 💗 懂你（Soul）
 - **关系成长**：closeness / trust 随真实相处累积——早期不黏人、熟络后更亲
 - **情绪稳态**：mood / energy / social_battery / stress / loneliness 持续漂移；loneliness 高 + 关系够熟时，她会**主动**冒一句"想你"
 - **自我反思**：离线 reflection 生成内心 thought，在恰当时机自然带进对话
 - **关系复盘**：阶段性 relationship review，她会"回想"这段关系的进展
+- **仪式感**：早安仪式、久别欢迎、孤独轻戳、昼夜节律的"该睡了"
 
 ### 🐾 活着（Body）
 - **物理交互**：拖拽自由落体、摸头（降 loneliness）、戳（逗弄）、双击
 - **作息系统**：昼夜节律（circadian）驱动深夜打哈欠、自动入睡、轻声唤醒
 - **微行为**：发呆、四处张望、歪头、伸懒腰、摇摆、偷瞄、害羞……多种自发动作
-- **情绪表情**：表情随情绪**连续渐变**（非离散跳变），嘴角 / 眼形实时跟随心情
+- **情绪表情**：Spine 骨骼动画驱动，表情随情绪**连续渐变**（非离散跳变），视线 360° 跟随鼠标
+- **声音**：真实 Foley 音效（摸头 / 拖拽 / 入睡），全局单音互斥、静默优先
+
+### 🛠️ 会搭手（Agent · 工具层）
+- **联网搜索**："查查最近的 AI 新闻" → 头条搜索源，中文总结给你
+- **打开应用**："打开网易云" → 动态扫描桌面/开始菜单快捷方式，自己判断，零白名单配置
+- **知道时间**："现在几点" 直接答，不浪费一次工具调用
+- **三层门控 + 安全铁律**：Planner 决定要不要给她工具 → LLM 决定怎么用 → Tool Policy 硬校验（白名单 / https / 超时 / 限流）；工具结果视为不可信输入、绝不进记忆；闲聊语境 **0 工具调用**（黑名单测试优先）
 
 ### 🔒 隐私与成本
 - **全本地**：记忆存 SQLite，向量存 sqlite-vec，嵌入跑本地 BGE-M3，不传任何第三方
 - **模型自配**：默认 DeepSeek，也支持 OpenAI、或 **Ollama 完全本地**运行（一个 API key 都不用）
-- **成本可控**：budget 管控 + flash/pro 双模型分流（反思用便宜的）
-- **能力可关**：每个感知层（时间 / 在场 / 窗口）可独立关闭（Architecture Principle #6）
+- **成本可控**：budget 管控 + flash/pro 双模型分流（反思用便宜的）+ 流式回复逐字呈现
+- **能力可关**：每个感知层（时间 / 在场 / 窗口）与调度能力（反思 / 固化 / 工具）可独立关闭（Architecture Principle #6）
 
 ---
 
@@ -104,11 +117,11 @@ npx tauri build --no-bundle    # 产物：desktop-pet.exe（前端已嵌入）
 |---|---|---|
 | 应用框架 | **Tauri v2** | Rust 后端，常驻内存 ~30–50MB（Electron 通常 150–300MB） |
 | 前端 | **React 19 + TypeScript** | 对话 UI、渲染编排 |
-| 渲染 | **PixiJS 7** | 占位用 pixi-live2d-display；最终角色璃走 **Spine + PixiJS** |
+| 渲染 | **Spine + PixiJS** | 角色"璃"骨骼动画：呼吸、视线跟随、情绪表情、微行为 |
 | 存储 | **SQLite + sqlite-vec** | 情景记忆 + 原生向量检索 |
 | 嵌入 | **BGE-M3**（本地 ONNX Runtime） | 中文语义检索，离线 |
-| LLM | **DeepSeek v4**（默认）/ OpenAI / Ollama | OpenAI 兼容，用户自配 |
-| 构建 / 测试 | Vite 6 · Vitest · cargo test | |
+| LLM | **DeepSeek v4**（默认）/ OpenAI / Ollama | OpenAI 兼容，用户自配；工具调用 + 流式 |
+| 构建 / 测试 | Vite 6 · Vitest · cargo test | 388 库单测 + 真 LLM 闭环 harness |
 
 ---
 
@@ -130,15 +143,17 @@ Liri 的内核遵循 **Mind / Body / Soul** 三层架构，并有一组不可违
 desktop-pet/
 ├── src/                    # 前端 (React + TS)
 │   ├── animation/          # FSM、昼夜节律、微行为、物理
-│   ├── Live2DCanvas.tsx    # 渲染层（占位，待迁 Spine）
+│   ├── SpineCanvas.tsx     # 角色"璃"渲染（Spine + PixiJS）
 │   └── App.tsx             # 主交互编排
 ├── src-tauri/              # 后端 (Rust)
-│   ├── src/mind/           # 记忆 / 检索 / 对话 / 反思 / 遗忘
+│   ├── src/mind/           # 记忆抽取 / 检索 / 对话 / 遗忘 / 工具 Agent
 │   ├── src/emotion/        # 情绪状态机 + 稳态
-│   ├── src/soul/           # 关系 / 反思 / 复盘
+│   ├── src/soul/           # 关系 / 反思 / 复盘 / 仪式
+│   ├── src/pending/        # 提醒 / 承诺追踪 / 主动冒泡治理
+│   ├── src/perception/     # 时间 / 在场 / 焦点 / 光标感知
 │   ├── src/db/             # SQLite + sqlite-vec
 │   └── resources/prompts/  # 角色提示词
-└── docs/                   # 设计文档、架构原则、ADR
+└── docs/                   # 设计文档、架构原则、ADR、交接日志
 ```
 
 ---
@@ -156,10 +171,11 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib   # 后端库单测（快�
 
 ## 🗺️ 路线图
 
-- [x] Mind 记忆闭环（情景记忆 + 向量检索 + 巩固 + 遗忘）
-- [x] Soul 关系成长 + loneliness 主动陪伴 + 反思
-- [x] Body 物理交互 + 昼夜作息 + 情绪表情
-- [ ] **角色璃 Spine 高保真迁移**（替换占位 Live2D）
+- [x] Mind 记忆闭环（情景记忆 + 向量检索 + 巩固 + 遗忘 + 承诺追踪）
+- [x] Soul 关系成长 + loneliness 主动陪伴 + 反思 + 仪式
+- [x] Body 物理交互 + 昼夜作息 + 情绪表情（Spine 角色已上线）
+- [x] Agent 工具层（搜索 / 打开应用 / 时间，三层门控）
+- [ ] 角色美术资产持续迭代（表情 / 动作时间线补全）
 - [ ] macOS / Linux 支持
 - [ ] 用户自定义形象
 
@@ -191,8 +207,8 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib   # 后端库单测（快�
 
 ## English abstract
 
-**Liri (璃)** is a Windows desktop companion pet with long-term memory, emotion, and genuine proactivity. Stack: **Tauri v2 (Rust) + React + PixiJS + SQLite/sqlite-vec + a local BGE-M3 embedder + any OpenAI-compatible LLM** (DeepSeek by default; Ollama for a fully-offline setup).
+**Liri (璃)** is a Windows desktop companion pet with long-term memory, emotion, and genuine proactivity. Stack: **Tauri v2 (Rust) + React + Spine/PixiJS + SQLite/sqlite-vec + a local BGE-M3 embedder + any OpenAI-compatible LLM** (DeepSeek by default; Ollama for a fully-offline setup).
 
-She is not "a chatbot with memory" but "a creature with a life": she remembers what you tell her, grows closer as the relationship deepens, proactively reaches out when she misses you, and nudges you to sleep late at night. All data stays local; all models are self-configured — she belongs only to you.
+She is not "a chatbot with memory" but "a creature with a life": she remembers what you tell her, keeps her own promises ("我说过要叫你起床的…"), recalls moments with their original atmosphere, grows closer as the relationship deepens, proactively reaches out when she misses you, and can search the web or launch apps when you ask. All data stays local; all models are self-configured — she belongs only to you.
 
-> Status: **early v0.1.** The on-screen avatar is still a placeholder Live2D model; the final character *Liri* (high-fidelity Spine + PixiJS skeletal animation) is in production — screenshots will follow. **Windows-only** for now.
+> Status: **early v0.1, Windows-only.** The character *Liri* is already animated with Spine skeletal animation (breathing, gaze tracking, emotion-driven expressions); art assets are still being iterated on.
