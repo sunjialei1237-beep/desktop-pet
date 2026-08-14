@@ -12,6 +12,7 @@ pub mod retrieval;
 pub mod trigger;
 pub mod planner;
 pub mod converse;
+pub mod agent;
 pub mod pacing;
 pub mod evaluation;
 pub mod export;
