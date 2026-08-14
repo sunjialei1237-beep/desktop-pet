@@ -48,7 +48,7 @@ const ONBOARD_QUESTIONS = [
 //   listening 波形 / connecting 星座连线 / weaving 三股辫 / composing 波纹彩带 /
 //   breathing 呼吸环（Thinking…，LLM 等待默认）/ shaping 圆→三角→方
 // 尺寸 size 两种预设（非缩放，独立调参）：64 头像级 / 20 行内级
-const THINKING_ORB_STATE = "breathing";
+const THINKING_ORB_STATE = "working";
 const THINKING_ORB_SIZE = 20;
 
 // Map mood label to bubble CSS class for emotion-driven styling (Design doc 6.3)
