@@ -468,6 +468,29 @@ pub async fn converse(
         )));
     }
 
+    // Same bridge for a promise SHE just made (the user asked her to do
+    // something at a future time; Rust already filed it as a pet promise).
+    // Without this she wouldn't know she committed — and a promise that isn't
+    // acknowledged isn't a promise. The LLM only expresses; filing already
+    // happened in store() (Architecture Principle #1).
+    if let Some(promise) = outcome
+        .extraction
+        .as_ref()
+        .and_then(|e| e.pet_promise.as_ref())
+    {
+        let timing = if let Some(mins) = promise.offset_minutes {
+            format!("{}分钟后", mins)
+        } else if let Some(date) = promise.event_date.as_deref() {
+            date.split('T').next().unwrap_or(date).to_string()
+        } else {
+            "稍后".to_string()
+        };
+        messages.push(ChatMessage::system(format!(
+            "（系统提示：你刚刚答应了用户一件事——「{}」，{}. 你是真的记在心里了，回复里自然地应下这份承诺，简短温暖，比如「好呀，{}我一定来找你」. 不要逐字复述，也不要夸张发誓.）",
+            promise.title, timing, timing
+        )));
+    }
+
     // Forget acknowledgment / disambiguation. Three sources converge here, all
     // pushing a system hint before the user message:
     //   - pending_res::Resolved → this turn finished a cross-turn disambiguation

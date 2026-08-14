@@ -396,6 +396,7 @@ fn gc_009_store_pipeline_completeness() {
             event_date: Some("2026-08-01".to_string()),
             offset_minutes: None,
         }),
+        pet_promise: None,
     };
 
     let ep_id = store::store(&extraction, "conv_test", 0, &db, None).unwrap();
@@ -954,6 +955,7 @@ fn gc_030_end_to_end_memory_loop() {
         }],
         emotion_delta: None,
         pending_event: None,
+        pet_promise: None,
     };
     store::store(&extraction, "conv_e2e", 0, &db, None).unwrap();
 

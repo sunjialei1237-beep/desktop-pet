@@ -22,6 +22,22 @@ const MEMORY_QUERIES: &[&str] = &[
     "user's feelings mood and recent experiences",
 ];
 
+/// Default share of proactive bubbles that anchor on a memory (percent 0-100);
+/// the rest are lively, anchorless chatter. 15% memory / 85% lively — most
+/// bubbles are 碎碎念, not recall (user feedback 2026-08-14: 不需要那么多消息带记忆).
+/// Overridable via config `[proactive] memory_bubble_ratio`.
+pub const DEFAULT_MEMORY_RATIO: i64 = 15;
+
+/// Chance (percent) that welcome-back / lonely-nudge / ritual bubbles attach a
+/// memory anchor at all. They used to anchor almost always; now most are pure
+/// emotional greetings, and only occasional ones gently reference a memory
+/// (user feedback 2026-08-14: 不用带那么多记忆).
+pub const ANCHOR_PROB_PERCENT: u32 = 25;
+
+/// Hard repeat-exclusion window for facts: a fact surfaced within this many
+/// days can never be picked again as an anchor (round-robin over the rest).
+pub const FACT_REPEAT_WINDOW_DAYS: i64 = 7;
+
 /// A proactive action the pet wants to take.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProactiveAction {
@@ -172,11 +188,16 @@ pub async fn grounding_guard(
 /// Principle 1 (LLM expresses, Rust maintains state): Rust picks the anchor and
 /// assembles the prompt; the LLM only voices it.
 /// Principle 8 (Cost): at most one LLM call per invocation.
+///
+/// `memory_ratio` (0-100, percent) is the share of *anchorless-pending* bubbles
+/// that take the memory-anchored branch; the rest go lively. Config-driven
+/// (`[proactive] memory_bubble_ratio`, default 15) — Architecture #6.
 pub async fn generate(
     db: &DbState,
     llm: &LlmClient,
     embedding: Option<&EmbeddingService>,
     wm_context: &[ChatMessage],
+    memory_ratio: i64,
 ) -> Result<Option<BubbleOutcome>, String> {
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -193,10 +214,11 @@ pub async fn generate(
     let pending_due: Vec<PendingEvent> =
         db.with_conn(|conn| crate::db::pending::get_due(conn, &now))?;
 
-    // 70% lively (anchorless, moment-driven: self-talk / 撒娇 / a passing
-    // thought) vs 30% memory-anchored (loop-2 recall). Weighted so bubbles don't
-    // default to the single dominant memory topic — lively types voice *this
-    // moment*, not a recalled fact (user feedback 2026-08-09: 要像真人突然找你聊天).
+    // `memory_ratio`% memory-anchored (loop-2 recall) vs the rest lively
+    // (anchorless, moment-driven: self-talk / 撒娇 / a passing thought).
+    // Weighted so bubbles don't default to the single dominant memory topic —
+    // lively types voice *this moment*, not a recalled fact (user feedback
+    // 2026-08-09: 要像真人突然找你聊天; 2026-08-14: 频率太高、带记忆太多).
     // Pick bubble type + retrieval query up front so the non-Send ThreadRng is
     // dropped before any .await (tauri commands require the future to be Send).
     let (is_lively, query): (bool, &'static str) = {
@@ -204,10 +226,10 @@ pub async fn generate(
         // A due pending (user-set reminder) is time-sensitive — it must NOT be
         // skipped by a random lively bubble. Roll the lively dice only when
         // nothing is due; when a reminder is due, force the memory branch so
-        // pending_due.first() anchors the bubble. The 70/30 lively/memory split
-        // is preserved for the no-pending case (diversity untouched). Surfaced
+        // pending_due.first() anchors the bubble. The lively/memory split is
+        // preserved for the no-pending case (diversity untouched). Surfaced
         // by closed-loop-2 harness 2026-08-09.
-        let is_lively = pending_due.is_empty() && rng.gen_range(0..100) >= 30;
+        let is_lively = pending_due.is_empty() && rng.gen_range(0..100) >= memory_ratio;
         let query = MEMORY_QUERIES[rng.gen_range(0..MEMORY_QUERIES.len())];
         (is_lively, query)
     };
@@ -218,31 +240,51 @@ pub async fn generate(
     // Memory-anchored: the rotated query surfaces different memories across
     // calls instead of always the dominant topic.
     let retrieval = crate::mind::retrieval::retrieve(query, &emotion, embedding, db, 8)?;
-    // A memory-anchored bubble is genuine recall — strengthen it. ADR 2026-08-09 Part 2.
-    crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
 
+    let due_is_pet_promise = pending_due.first().map(|ev| ev.origin == "pet").unwrap_or(false);
     let (memory_anchor, goal, tone): (String, &'static str, &'static str) =
         if let Some(ev) = pending_due.first() {
-            (ev.title.clone(), "care", "gentle")
+            // Reminders keep their date reference (event date) so a "明天面试"
+            // reminder still lands on the right day after the title's deictic
+            // words are stripped ("面试（这是 ta 7月26日 提到的事）").
+            (present_anchor(&ev.title, Some(&ev.event_date)), "care", "gentle")
         } else {
-            // Diversity fix (2026-08-13): weighted sampling replaces the old
-            // confidence-order argmax (first anchorable fact / first episode).
-            // Dominant memories stay more likely, but can no longer win every
-            // bubble. rng is scoped to the inner block (sync-only) and dropped
-            // before any .await (tauri commands require Send futures).
+            // Round-robin anchor selection (2026-08-14): fewest-surfaced facts
+            // first with a hard 7-day repeat exclusion, then episodes via
+            // sample_surface_anchor (7-day window + round-robin relax). The
+            // picked anchor is recorded as surfaced BEFORE the LLM call so a
+            // concurrent path can't re-pick it (conservative: 宁少勿突兀).
             let anchor = {
-                let mut rng = rand::thread_rng();
-                if let Some(f) = sample_anchorable_fact(&retrieval.facts, &mut rng) {
-                    Some((format!("{}: {}", f.key, f.value), "accompany", "playful"))
-                } else if let Some(i) = crate::mind::retrieval::sample_surface_anchor(
-                    &retrieval.episodes,
-                    &Utc::now(),
-                    &mut rng,
-                ) {
-                    Some((retrieval.episodes[i].episode.summary.clone(), "accompany", "gentle"))
+                let now_utc = Utc::now();
+                let fact = sample_anchorable_fact(&retrieval.facts, &now_utc);
+                let episode = if fact.is_none() {
+                    let mut rng = rand::thread_rng();
+                    crate::mind::retrieval::sample_surface_anchor(
+                        &retrieval.episodes,
+                        &now_utc,
+                        &mut rng,
+                    )
+                    .map(|i| &retrieval.episodes[i].episode)
                 } else {
                     None
+                };
+                let anchor: Option<(String, &'static str, &'static str)> = match (fact, episode) {
+                    (Some(f), _) => Some((
+                        present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)),
+                        "accompany",
+                        "playful",
+                    )),
+                    (None, Some(ep)) => Some((
+                        present_anchor(&ep.summary, Some(&ep.time)),
+                        "accompany",
+                        "gentle",
+                    )),
+                    (None, None) => None,
+                };
+                if anchor.is_some() {
+                    record_anchor_surfaced(db, fact, episode, &now_utc.to_rfc3339());
                 }
+                anchor
             };
             match anchor {
                 Some((a, g, t)) => (a, g, t),
@@ -266,10 +308,7 @@ pub async fn generate(
 
     let mut messages =
         crate::mind::budget::allocate_and_compress(&retrieval, wm_context, &emotion, &intent);
-    messages.push(ChatMessage::user(format!(
-        "（你刚刚突然想起了这件事，想主动跟用户说。你想起来的只有这一件：{}。只能围绕它原意来聊，它是什么就说什么，绝不能换成别的项目、事件或名字，更不能编出记忆里没有的具体事；实在没什么好接的，就说句简单的招呼。按规则回复，尤其规则 8。）",
-        memory_anchor
-    )));
+    messages.push(ChatMessage::user(due_bubble_prompt(&memory_anchor, due_is_pet_promise)));
 
     log::info!(
         "[proactive] anchor={:?} goal={} facts={} episodes={} msgs={}",
@@ -300,6 +339,30 @@ pub async fn generate(
             anchor: memory_anchor,
         })),
         None => Ok(None),
+    }
+}
+
+/// User prompt for the due-pending / surfaced-memory bubble. Two voices:
+/// - user event (origin="user"): she suddenly remembers something THE USER
+///   told her about and gently brings it up.
+/// - pet promise (origin="pet"): time is up on something SHE said she would
+///   do — she shows up to keep her word. Forgetting her own promise is the
+///   most trust-damaging failure a companion can make, so the voice is
+///   "我说过要…" not an alarm-style reminder.
+fn due_bubble_prompt(anchor: &str, is_pet_promise: bool) -> String {
+    // The shared "可不问" tail: most memory bubbles should be a warm statement,
+    // not a question (user feedback 2026-08-14: 多为问句).
+    let no_question = "这条不一定要问问题——大多数时候就是一句带着温度的陈述；真的好奇最多一个问句，别追问。";
+    if is_pet_promise {
+        format!(
+            "（现在是兑现你自己承诺的时刻：{}。这是你亲口答应 ta 的事，时间到了。以「我说过要…」的口吻自然地兑现或提起，像一个说到做到的人，不是闹钟式提醒，也不要道歉式检讨。只能围绕它原意来聊，绝不能换成别的项目、事件或名字，更不能编出记忆里没有的具体事；实在没什么好接的，就说句简单的招呼。{no_question}按规则回复，尤其规则 8。）",
+            anchor
+        )
+    } else {
+        format!(
+            "（你刚刚突然想起了这件事，想主动跟用户说。你想起来的只有这一件：{}。只能围绕它原意来聊，它是什么就说什么，绝不能换成别的项目、事件或名字，更不能编出记忆里没有的具体事；实在没什么好接的，就说句简单的招呼。{no_question}按规则回复，尤其规则 8。）",
+            anchor
+        )
     }
 }
 
@@ -400,7 +463,7 @@ fn lively_prompt(emotion: &EmotionState, hour: u32) -> String {
         "有点闷，提不起劲"
     };
     format!(
-        "（此刻大概是{time_hint}，你{mood_hint}。你没有特别的事要跟用户说，也不一定要 ta 回答——就是这一刻脑子里忽然飘过一句话，随口讲出来。\n\n从一个具体的小切入点说起：一个小动作（伸懒腰、打哈欠、拨弄手边的东西）、刚才注意到的一个细节（窗外的声音、屏幕的光、空气的温度）、一个身体感觉（犯困、饿、暖洋洋、肩膀酸）、一个荒唐的小念头、一句没头没尾的自言自语、或者此刻真的有点好奇的一个小问题（ta 这会儿在忙什么、累不累，或一个突然冒出来的小疑问）。要像真人脑子里突然飘过的那一句，不是在打招呼，也不是在表达关心。\n\n别用这些当开头或万能句式：{time_avoid}、「忽然/突然」+「想你/想到你」、「阳光正好/太阳正暖」、「在吗/在干嘛/有事吗」——它们太套路，会让每句都差不多。换个新鲜点的说法。如果你想问句什么，只问一个就好，ta 不回也完全没关系，别追问、别像查岗。\n\n只说 1 句，简短自然。规则 8 严禁编造：只谈你自己此刻的感受、身边的环境、身体，绝不要假装记得用户跟你说过的具体事情或喜好。）"
+        "（此刻大概是{time_hint}，你{mood_hint}。你没有特别的事要跟用户说，也不一定要 ta 回答——就是这一刻脑子里忽然飘过一句话，随口讲出来。\n\n从一个具体的小切入点说起：一个小动作（伸懒腰、打哈欠、拨弄手边的东西）、刚才注意到的一个细节（窗外的声音、屏幕的光、空气的温度）、一个身体感觉（犯困、饿、暖洋洋、肩膀酸）、一个荒唐的小念头、一句没头没尾的自言自语、或者极偶尔一个真的好奇的小问题（ta 这会儿在忙什么）。要像真人脑子里突然飘过的那一句，不是在打招呼，也不是在表达关心。\n\n别用这些当开头或万能句式：{time_avoid}、「忽然/突然」+「想你/想到你」、「阳光正好/太阳正暖」、「在吗/在干嘛/有事吗」——它们太套路，会让每句都差不多。换个新鲜点的说法。大部分时候别问，就是一句自言自语；极偶尔真的好奇才问一个，ta 不回也完全没关系，别追问、别像查岗。\n\n只说 1 句，简短自然。规则 8 严禁编造：只谈你自己此刻的感受、身边的环境、身体，绝不要假装记得用户跟你说过的具体事情或喜好。）"
     )
 }
 
@@ -445,24 +508,40 @@ pub async fn generate_welcome_back(
         db,
         8,
     )?;
-    // A proactive message grounded in retrieved memory is genuine recall.
-    crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
-
-    // Optional anchor: a durable fact, else a recent episode. Weighted sampling
-    // (2026-08-13) instead of confidence-order argmax — see generate(). Empty
-    // if neither, a welcome back with no anchor is still a valid greeting.
+    // Optional anchor: only ~25% of welcomes attach a memory (user feedback
+    // 2026-08-14: 不用带那么多记忆) — and only from the fresh pool (never
+    // surfaced / outside the repeat window). No anchor → still a valid pure
+    // emotional greeting. The picked anchor is recorded as surfaced before the
+    // LLM call (round-robin rotation; only THIS anchor is reinforced, not the
+    // whole top-8 — fix for the recall_count/cooldown inflation).
     let (memory_anchor, has_anchor): (String, bool) = {
+        let now_utc = Utc::now();
         let mut rng = rand::thread_rng();
-        if let Some(f) = sample_anchorable_fact(&retrieval.facts, &mut rng) {
-            (format!("{}: {}", f.key, f.value), true)
-        } else if let Some(i) = crate::mind::retrieval::sample_surface_anchor(
-            &retrieval.episodes,
-            &Utc::now(),
-            &mut rng,
-        ) {
-            (retrieval.episodes[i].episode.summary.clone(), true)
-        } else {
+        if rng.gen_range(0..100) >= ANCHOR_PROB_PERCENT {
             (String::new(), false)
+        } else {
+            let fact = sample_anchorable_fact(&retrieval.facts, &now_utc);
+            let episode = if fact.is_none() {
+                crate::mind::retrieval::sample_surface_anchor(
+                    &retrieval.episodes,
+                    &now_utc,
+                    &mut rng,
+                )
+                .map(|i| &retrieval.episodes[i].episode)
+            } else {
+                None
+            };
+            match (fact, episode) {
+                (Some(f), _) => {
+                    record_anchor_surfaced(db, Some(f), None, &now_utc.to_rfc3339());
+                    (present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)), true)
+                }
+                (None, Some(ep)) => {
+                    record_anchor_surfaced(db, None, Some(ep), &now_utc.to_rfc3339());
+                    (present_anchor(&ep.summary, Some(&ep.time)), true)
+                }
+                (None, None) => (String::new(), false),
+            }
         }
     };
 
@@ -512,7 +591,7 @@ pub async fn generate_welcome_back(
         }
     };
     messages.push(ChatMessage::user(format!(
-        "（对方离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}{thought_clause}简短自然，1-2 句，像个真的在等 ta 回来的人。称呼对方用「你」，不要用「用户」。按规则回复。）"
+        "（对方离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}{thought_clause}这条不一定要问问题——大多数时候就是一句带着温度的陈述，真的好奇最多一个问句。简短自然，1-2 句，像个真的在等 ta 回来的人。称呼对方用「你」，不要用「用户」。按规则回复。）"
     )));
 
     log::info!(
@@ -583,25 +662,39 @@ pub async fn generate_lonely_bubble(
         db,
         8,
     )?;
-    // A proactive message grounded in retrieved memory is genuine recall.
-    crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
-
-    // Optional anchor: a durable fact, else a recent episode. Weighted sampling
-    // (2026-08-13) instead of confidence-order argmax — see generate(). Empty
-    // if neither — a lonely nudge with no anchor is still a valid "just
-    // thinking of you".
+    // Optional anchor: only ~25% of lonely nudges attach a memory (user
+    // feedback 2026-08-14: 不用带那么多记忆), and only from the fresh pool.
+    // No anchor → still a valid "just thinking of you". The picked anchor is
+    // recorded as surfaced before the LLM call; only THIS anchor is reinforced
+    // (not the whole top-8 — fix for recall_count/cooldown inflation).
     let (memory_anchor, has_anchor): (String, bool) = {
+        let now_utc = Utc::now();
         let mut rng = rand::thread_rng();
-        if let Some(f) = sample_anchorable_fact(&retrieval.facts, &mut rng) {
-            (format!("{}: {}", f.key, f.value), true)
-        } else if let Some(i) = crate::mind::retrieval::sample_surface_anchor(
-            &retrieval.episodes,
-            &Utc::now(),
-            &mut rng,
-        ) {
-            (retrieval.episodes[i].episode.summary.clone(), true)
-        } else {
+        if rng.gen_range(0..100) >= ANCHOR_PROB_PERCENT {
             (String::new(), false)
+        } else {
+            let fact = sample_anchorable_fact(&retrieval.facts, &now_utc);
+            let episode = if fact.is_none() {
+                crate::mind::retrieval::sample_surface_anchor(
+                    &retrieval.episodes,
+                    &now_utc,
+                    &mut rng,
+                )
+                .map(|i| &retrieval.episodes[i].episode)
+            } else {
+                None
+            };
+            match (fact, episode) {
+                (Some(f), _) => {
+                    record_anchor_surfaced(db, Some(f), None, &now_utc.to_rfc3339());
+                    (present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)), true)
+                }
+                (None, Some(ep)) => {
+                    record_anchor_surfaced(db, None, Some(ep), &now_utc.to_rfc3339());
+                    (present_anchor(&ep.summary, Some(&ep.time)), true)
+                }
+                (None, None) => (String::new(), false),
+            }
         }
     };
 
@@ -627,7 +720,7 @@ pub async fn generate_lonely_bubble(
     };
 
     messages.push(ChatMessage::user(format!(
-        "（你一个人待了一会儿，有点想 ta。ta 就在旁边但没说话，你想轻轻戳一下 ta——不是催 ta 回复，也不是有事要说，就是想让 ta 知道你在。{anchor_clause}只说 1 句，简短、自然、别黏人、别问问题逼 ta 答。按规则回复，尤其规则 8 严禁编造。）"
+        "（你一个人待了一会儿，有点想 ta。ta 就在旁边但没说话，你想轻轻戳一下 ta——不是催 ta 回复，也不是有事要说，就是想让 ta 知道你在。{anchor_clause}只说 1 句，简短、自然、别黏人、这句最好连问句都别带，一句带温度的陈述就好。按规则回复，尤其规则 8 严禁编造。）"
     )));
 
     log::info!(
@@ -661,31 +754,42 @@ pub async fn generate_lonely_bubble(
     }
 }
 
-/// Weighted-random pick among anchorable facts: weight = 1/(1+mention_count).
-/// A fact the pet has already voiced many times is de-prioritized, so proactive
-/// bubbles explore newer facts instead of always taking the single highest-
-/// confidence one (user feedback 2026-08-13: 浮现按置信度排序太死板).
-pub fn sample_anchorable_fact<'a>(facts: &'a [Fact], rng: &mut impl rand::Rng) -> Option<&'a Fact> {
-    let candidates: Vec<&Fact> = facts.iter().filter(|f| is_anchorable_fact(f)).collect();
-    if candidates.is_empty() {
+/// Round-robin pick among anchorable facts (repeat-window hardening 2026-08-14;
+/// replaces the weighted-random draw).
+///
+/// Deterministic rotation, not a probability: among anchorable facts NOT
+/// surfaced within `FACT_REPEAT_WINDOW_DAYS`, pick the one with the fewest
+/// surfacings, then the oldest `last_surfaced_at` (never-surfaced first), then
+/// the least-mentioned. A fact voiced today can NEVER be picked again within
+/// the window — the "同一条记忆绝对不能多次浮现" guarantee for facts. When the
+/// whole pool is inside the window, returns None (caller falls back to
+/// episodes → lively rather than repeat a memory).
+pub fn sample_anchorable_fact<'a>(facts: &'a [Fact], now: &DateTime<Utc>) -> Option<&'a Fact> {
+    let fresh: Vec<&Fact> = facts
+        .iter()
+        .filter(|f| is_anchorable_fact(f))
+        .filter(|f| !surfaced_recently(f, now))
+        .collect();
+    if fresh.is_empty() {
         return None;
     }
-    let weights: Vec<f64> = candidates
-        .iter()
-        .map(|f| 1.0 / (1.0 + f.mention_count as f64))
-        .collect();
-    let total: f64 = weights.iter().sum();
-    if total <= 0.0 {
-        return Some(candidates[0]);
+    fresh.into_iter().min_by(|a, b| {
+        a.surfaced_count
+            .cmp(&b.surfaced_count)
+            .then_with(|| a.last_surfaced_at.cmp(&b.last_surfaced_at))
+            .then_with(|| a.mention_count.cmp(&b.mention_count))
+    })
+}
+
+/// Whether a fact was surfaced within the hard repeat window (7 days).
+fn surfaced_recently(f: &Fact, now: &DateTime<Utc>) -> bool {
+    match &f.last_surfaced_at {
+        Some(s) => match DateTime::parse_from_rfc3339(s) {
+            Ok(d) => (now - d.with_timezone(&Utc)).num_days() < FACT_REPEAT_WINDOW_DAYS,
+            Err(_) => false,
+        },
+        None => false,
     }
-    let mut roll = rng.gen::<f64>() * total;
-    for (i, f) in candidates.iter().enumerate() {
-        roll -= weights[i];
-        if roll <= 0.0 {
-            return Some(f);
-        }
-    }
-    Some(*candidates.last().unwrap())
 }
 
 /// Whether a fact is worth proactively bringing up. Excludes pseudo-facts
@@ -715,10 +819,61 @@ fn is_anchorable_fact(f: &Fact) -> bool {
     true
 }
 
+/// Presents a memory anchor to the LLM: relative time words stripped
+/// ("今天在找实习" → "在找实习") plus the memory's date as a bracketed
+/// reference ("（这是 ta 8月13日 提到的事）") — she gets a correct sense of when
+/// without echoing stale deictic words (fix: "你说今天在找实习").
+fn present_anchor(anchor: &str, date: Option<&str>) -> String {
+    let mut s = crate::mind::deictic::neutralize_deictic(anchor);
+    if let Some(d) = date {
+        if let Some(fmt) = crate::mind::deictic::format_memory_date(d) {
+            s.push_str(&format!("（这是 ta {} 提到的事）", fmt));
+        }
+    }
+    s
+}
+
+/// Records that the picked anchor was actually surfaced — the ONLY episode
+/// reinforcement in the proactive path (fix: `reinforce_top` used to mark all
+/// top-8 episodes, inflating recall_count and breaking the cooldown window).
+/// Facts get `surfaced_count + 1 / last_surfaced_at = now` so the round-robin
+/// rotates past them; episodes reuse `last_recalled_at` via `episodes::reinforce`.
+/// Called the moment the anchor is picked, before generation (conservative:
+/// 宁少勿突兀 — a failed generation still consumes the pick, no instant re-pick).
+fn record_anchor_surfaced(db: &DbState, fact: Option<&Fact>, episode: Option<&crate::db::episodes::Episode>, now: &str) {
+    if let Some(f) = fact {
+        if let Err(e) = db.with_conn(|conn| crate::db::facts::bump_surfaced(conn, &f.id, now)) {
+            log::warn!("Failed to bump fact surfaced {}: {}", f.id, e);
+        }
+    }
+    if let Some(ep) = episode {
+        if let Err(e) = db.with_conn(|conn| crate::db::episodes::reinforce(conn, &ep.id, now)) {
+            log::warn!("Failed to reinforce episode {}: {}", ep.id, e);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::pending::PendingEvent;
+
+    #[test]
+    fn test_due_bubble_prompt_user_event_voice() {
+        let p = due_bubble_prompt("明天有个实习面试", false);
+        assert!(p.contains("突然想起了这件事"), "user events surface as recall");
+        assert!(!p.contains("兑现"), "user events are not promises");
+        assert!(p.contains("明天有个实习面试"));
+    }
+
+    #[test]
+    fn test_due_bubble_prompt_pet_promise_voice() {
+        let p = due_bubble_prompt("明早叫 ta 起床", true);
+        assert!(p.contains("兑现你自己承诺"), "pet promise frames as keeping her word");
+        assert!(p.contains("我说过要"), "promise voice, not alarm reminder");
+        assert!(p.contains("明早叫 ta 起床"));
+        assert!(!p.contains("突然想起了这件事"));
+    }
 
     fn pending_event(id: &str, title: &str) -> PendingEvent {
         PendingEvent {

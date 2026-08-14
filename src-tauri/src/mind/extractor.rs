@@ -11,6 +11,12 @@ pub struct ExtractionResult {
     pub facts: Vec<FactInput>,
     pub emotion_delta: Option<EmotionDelta>,
     pub pending_event: Option<PendingInput>,
+    /// A promise the PET just made: the user asked her to do something at a
+    /// future time ("你明早叫我起床"). Stored as a pending_event with
+    /// origin='pet' so she shows up to fulfill it — forgetting her own words
+    /// is the most trust-damaging failure for a companion (memory-trigger
+    /// v2.9 insight, adapted to our Rust-driven ingest).
+    pub pet_promise: Option<PendingInput>,
 }
 
 /// Episode data extracted by the LLM, before DB insertion.
@@ -78,6 +84,8 @@ struct LlmExtraction {
     facts: Vec<FactInput>,
     emotion_delta: Option<EmotionDelta>,
     pending_event: Option<PendingInput>,
+    #[serde(default)]
+    pet_promise: Option<PendingInput>,
 }
 
 /// Extracts structured memory items from the user's message.
@@ -166,6 +174,7 @@ fn parse_extraction(raw: &str) -> Result<ExtractionResult, String> {
         facts: parsed.facts,
         emotion_delta: parsed.emotion_delta,
         pending_event: parsed.pending_event,
+        pet_promise: parsed.pet_promise,
     })
 }
 
@@ -220,6 +229,25 @@ mod tests {
         let result = parse_extraction(json).unwrap();
         assert!(result.pending_event.is_some());
         assert_eq!(result.pending_event.unwrap().title, "job interview");
+    }
+
+    #[test]
+    fn test_parse_pet_promise() {
+        let json = r#"{
+            "pet_promise": {"title": "明早叫 ta 起床", "event_date": "2026-08-15"}
+        }"#;
+        let result = parse_extraction(json).unwrap();
+        assert!(result.pending_event.is_none(), "pet promise is not a user event");
+        let promise = result.pet_promise.expect("pet_promise should parse");
+        assert_eq!(promise.title, "明早叫 ta 起床");
+        assert_eq!(promise.event_date.as_deref(), Some("2026-08-15"));
+    }
+
+    #[test]
+    fn test_parse_pet_promise_absent_defaults_none() {
+        let json = r#"{"facts": []}"#;
+        let result = parse_extraction(json).unwrap();
+        assert!(result.pet_promise.is_none());
     }
 
     #[test]

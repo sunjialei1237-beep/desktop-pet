@@ -161,48 +161,68 @@ pub fn store(
         db.with_conn(|conn| apply_emotion_delta(conn, delta, &now))?;
     }
 
-    // 4. Pending event
+    // 4. Pending event (the user's own future event / reminder)
     if let Some(pe) = &result.pending_event {
-        let pe_id = format!("pe_{}", Uuid::new_v4().simple());
-        let remind_date = compute_remind_date(pe, &now);
-        // For short-term reminders (offset_minutes) there's no absolute
-        // event_date; fall back to the computed remind_date so the NOT NULL
-        // DB column stays meaningful (the event happens when we remind).
-        let event_date = pe
-            .event_date
-            .clone()
-            .unwrap_or_else(|| remind_date.clone().unwrap_or_else(|| now.clone()));
-        let event = db_pending::PendingEvent {
-            origin: "user".to_string(),
-            id: pe_id,
-            title: pe.title.clone(),
-            event_date,
-            remind_date,
-            source_episode: stored_episode_id.clone(),
-            status: "pending".to_string(),
-            importance: 0.5,
-            followup_count: 0,
-            created_at: now.clone(),
-            triggered_at: None,
-            resolved_at: None,
-        };
-        db.with_conn(|conn| {
-            db_pending::insert(conn, &event)?;
-            let _ = crate::db::changelog::append(
-                conn,
-                "pending",
-                "insert",
-                Some(&event.id),
-                None,
-                None,
-                Some(&event.title),
-                Some("memory extractor"),
-            );
-            Ok(())
-        })?;
+        store_pending(db, pe, "user", stored_episode_id.as_deref(), &now)?;
+    }
+
+    // 5. Pet promise (something SHE agreed to do for the user). Same lifecycle
+    // as a pending event — the only difference is origin, which flips the due
+    // bubble from "reminding you about your thing" to "keeping my word".
+    if let Some(promise) = &result.pet_promise {
+        store_pending(db, promise, "pet", stored_episode_id.as_deref(), &now)?;
     }
 
     Ok(stored_episode_id)
+}
+
+/// Shared insert for pending events and pet promises (same table, same
+/// lifecycle; `origin` distinguishes who owns it). Changelog is appended for
+/// audit so an ingest-time promise is traceable later.
+fn store_pending(
+    db: &DbState,
+    pe: &crate::mind::extractor::PendingInput,
+    origin: &str,
+    episode_id: Option<&str>,
+    now: &str,
+) -> Result<(), String> {
+    let pe_id = format!("pe_{}", Uuid::new_v4().simple());
+    let remind_date = compute_remind_date(pe, now);
+    // For short-term reminders (offset_minutes) there's no absolute
+    // event_date; fall back to the computed remind_date so the NOT NULL
+    // DB column stays meaningful (the event happens when we remind).
+    let event_date = pe
+        .event_date
+        .clone()
+        .unwrap_or_else(|| remind_date.clone().unwrap_or_else(|| now.to_string()));
+    let event = db_pending::PendingEvent {
+        id: pe_id,
+        title: pe.title.clone(),
+        event_date,
+        remind_date,
+        origin: origin.to_string(),
+        source_episode: episode_id.map(|s| s.to_string()),
+        status: "pending".to_string(),
+        importance: 0.5,
+        followup_count: 0,
+        created_at: now.to_string(),
+        triggered_at: None,
+        resolved_at: None,
+    };
+    db.with_conn(|conn| {
+        db_pending::insert(conn, &event)?;
+        let _ = crate::db::changelog::append(
+            conn,
+            "pending",
+            "insert",
+            Some(&event.id),
+            None,
+            None,
+            Some(&event.title),
+            Some("memory extractor"),
+        );
+        Ok(())
+    })
 }
 
 /// Stores a fact with dedup + conflict resolution.
@@ -320,6 +340,7 @@ mod tests {
     fn test_store_episode_only() {
         let db = test_db();
         let result = ExtractionResult {
+            pet_promise: None,
             episode: Some(EpisodeInput {
                 summary: "ate hotpot with friends".to_string(),
                 emotion: Some("happy".to_string()),
@@ -349,6 +370,7 @@ mod tests {
     fn test_store_fact_dedup() {
         let db = test_db();
         let result1 = ExtractionResult {
+            pet_promise: None,
             episode: None,
             facts: vec![FactInput {
                 category: "preference".to_string(),
@@ -382,6 +404,7 @@ mod tests {
         // wins recall and she answers the old preference.
         let db = test_db();
         let milk_tea = ExtractionResult {
+            pet_promise: None,
             episode: None,
             facts: vec![FactInput {
                 category: "preference".to_string(),
@@ -393,6 +416,7 @@ mod tests {
             pending_event: None,
         };
         let coffee = ExtractionResult {
+            pet_promise: None,
             episode: None,
             facts: vec![FactInput {
                 category: "preference".to_string(),
@@ -429,6 +453,7 @@ mod tests {
     fn test_store_emotion_delta() {
         let db = test_db();
         let result = ExtractionResult {
+            pet_promise: None,
             episode: None,
             facts: vec![],
             emotion_delta: Some(EmotionDelta {
@@ -454,6 +479,7 @@ mod tests {
     fn test_store_pending_event() {
         let db = test_db();
         let result = ExtractionResult {
+            pet_promise: None,
             episode: None,
             facts: vec![],
             emotion_delta: None,
@@ -515,6 +541,7 @@ mod tests {
     fn test_store_pending_event_due_check() {
         let db = test_db();
         let result = ExtractionResult {
+            pet_promise: None,
             episode: None,
             facts: vec![],
             emotion_delta: None,
@@ -533,6 +560,33 @@ mod tests {
         }).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].title, "exam");
+    }
+
+    #[test]
+    fn test_store_pet_promise_origin_pet() {
+        let db = test_db();
+        let result = ExtractionResult {
+            episode: None,
+            facts: vec![],
+            emotion_delta: None,
+            pending_event: None,
+            pet_promise: Some(PendingInput {
+                title: "明早叫 ta 起床".to_string(),
+                event_date: Some("2020-01-01".to_string()), // past date, always due
+                offset_minutes: None,
+            }),
+        };
+
+        store(&result, "conv_1", 0, &db, None).unwrap();
+
+        // A pet promise lands in the SAME pending lifecycle but flagged
+        // origin='pet' — the due bubble will voice it as her keeping her word.
+        let due = db.with_conn(|conn| {
+            crate::db::pending::get_due(conn, "2099-01-01T00:00:00+00:00")
+        }).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].title, "明早叫 ta 起床");
+        assert_eq!(due[0].origin, "pet");
     }
 
     #[test]

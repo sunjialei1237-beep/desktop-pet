@@ -22,6 +22,7 @@ use desktop_pet_lib::llm::client::LlmClient;
 use desktop_pet_lib::pending::proactive;
 
 const PENDING_TITLE: &str = "明天有个大公司的实习面试";
+const PROMISE_TITLE: &str = "明早 8 点叫 ta 起床";
 
 fn seed(db: &DbState) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -36,6 +37,21 @@ fn seed(db: &DbState) -> Result<(), String> {
             rusqlite::params!["pe_seed_1", PENDING_TITLE, now, yesterday, now],
         )
         .map_err(|e| format!("seed pending failed: {}", e))?;
+        Ok(())
+    })
+}
+
+fn seed_promise(db: &DbState) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO pending_events (id, title, event_date, remind_date, source_episode,
+                status, importance, followup_count, created_at, triggered_at, resolved_at, origin)
+             VALUES (?1, ?2, ?3, ?4, NULL, 'pending', 0.8, 0, ?5, NULL, NULL, 'pet')",
+            rusqlite::params!["pe_seed_promise", PROMISE_TITLE, now, yesterday, now],
+        )
+        .map_err(|e| format!("seed promise failed: {}", e))?;
         Ok(())
     })
 }
@@ -106,4 +122,59 @@ async fn proactive_bubble_brings_up_due_pending() {
     println!("pending anchored     : {} (mark_triggered fired)", still_pending == 0);
     println!("reply mentions plan  : {} (soft — LLM may rephrase)", references_plan);
     println!("reply                : {:?}", reply);
+}
+
+/// Pet-promise variant: a promise SHE made (origin='pet') comes due — she must
+/// show up to keep her word ("我说过要…"), not deliver an alarm-style reminder.
+/// Same mechanism checks as the user-event case: bubble produced + the promise
+/// was marked triggered (the due-pending branch fired). Voice is a soft check —
+/// the exact wording is prompt-guided, not deterministic.
+#[tokio::test]
+async fn proactive_bubble_fulfills_pet_promise() {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .is_test(true)
+        .try_init();
+
+    let config = config::load_config().unwrap_or_default();
+    let llm = LlmClient::new(
+        &config.llm.base_url,
+        &config.llm.api_key,
+        &config.llm.main_model,
+        &config.llm.reflection_model,
+    )
+    .expect("LLM not configured — set API key in config.toml first");
+
+    let db = test_db();
+    seed_promise(&db).expect("seed due pet promise");
+
+    let outcome = proactive::generate(&db, &llm, None, &[])
+        .await
+        .expect("proactive::generate errored")
+        .expect("no bubble for a due pet promise — she stayed silent on her own word");
+
+    println!("pet-promise bubble: {:?}", outcome.reply);
+    println!("anchored on: {:?}", outcome.anchor);
+
+    let still_pending: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM pending_events WHERE id = 'pe_seed_promise' AND status = 'pending'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())
+        })
+        .unwrap_or(1);
+    assert_eq!(
+        still_pending, 0,
+        "promise was not marked triggered — generate did not take the due-pending branch"
+    );
+
+    // Soft check: promise-keeping voice vs alarm voice (informational only).
+    let keeps_word = outcome.reply.contains("说") || outcome.reply.contains("答应");
+    println!("\n=== PET-PROMISE RESULT ===");
+    println!("bubble produced      : yes");
+    println!("promise triggered    : {}", still_pending == 0);
+    println!("keeps-word phrasing  : {} (soft — LLM may rephrase)", keeps_word);
+    println!("reply                : {:?}", outcome.reply);
 }
