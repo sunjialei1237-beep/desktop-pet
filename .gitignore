@@ -18,6 +18,11 @@ Thumbs.db
 !docs/screenshots/
 !docs/screenshots/**
 
+# App icons ship in-tree (tauri build requires them; the blanket *.png above
+# would 404 them for cloners, breaking the build and the README logo)
+!src-tauri/icons/
+!src-tauri/icons/*.png
+
 # Spine character assets ship in-tree (overrides *.png above)
 !public/spine/
 !public/spine/**
