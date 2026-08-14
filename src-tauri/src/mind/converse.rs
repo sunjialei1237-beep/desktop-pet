@@ -591,9 +591,18 @@ pub async fn converse(
     // QA mode (a direct answer needs no tools) and when config gating empties
     // the set.
     let tool_kinds = crate::tools::capability_to_tools(intent.capability, ctx.tools_cfg);
-    let tool_active = !qa_mode
-        && intent.capability != crate::tools::CapabilityMode::None
+    // QA mode no longer blocks the tool branch: a knowledge question needing
+    // real-time info ("查最近新闻") is exactly when search_web helps. Pure
+    // recall/chat (capability None) still skips tools regardless of route.
+    let tool_active = intent.capability != crate::tools::CapabilityMode::None
         && !tool_kinds.is_empty();
+    log::info!(
+        "[converse] tool gate: capability={:?} qa_mode={} tools={:?} active={}",
+        intent.capability,
+        qa_mode,
+        tool_kinds.iter().map(|k| k.name()).collect::<Vec<_>>(),
+        tool_active
+    );
 
     let (response, tool_rounds) = if tool_active {
         log::info!(

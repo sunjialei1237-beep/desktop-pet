@@ -77,19 +77,57 @@ impl Default for DuckDuckGoProvider {
 #[async_trait]
 impl SearchProvider for DuckDuckGoProvider {
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, SearchError> {
-        let resp = self
-            .client
-            .post("https://html.duckduckgo.com/html/")
-            .form(&[("q", query)])
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    SearchError::Network
-                } else {
-                    SearchError::Network
-                }
-            })?;
+        // DDG rate-limits / challenges automated traffic (datacenter IPs often
+        // get a 202 challenge page with zero results). Try POST first (canonical
+        // html endpoint), then fall back to GET — the two hit slightly different
+        // code paths, so a GET retry recovers some blocks. On a home network
+        // (where the pet actually runs) DDG is generally permissive.
+        if let Some(results) = self.try_fetch(true, query, limit).await? {
+            return Ok(results);
+        }
+        log::debug!("[search] POST returned no results, retrying as GET");
+        if let Some(results) = self.try_fetch(false, query, limit).await? {
+            return Ok(results);
+        }
+        Err(SearchError::ParseFailed)
+    }
+}
+
+impl DuckDuckGoProvider {
+    /// One fetch attempt (POST or GET). Returns `Ok(None)` when the page loaded
+    /// but yielded zero results, so the caller can retry the other method; an
+    /// `Err` means a hard failure (network / rate-limit / non-html) worth
+    /// surfacing.
+    async fn try_fetch(
+        &self,
+        post: bool,
+        query: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<SearchResult>>, SearchError> {
+        let req = if post {
+            self.client
+                .post("https://html.duckduckgo.com/html/")
+                .header("Origin", "https://html.duckduckgo.com")
+                .header("Referer", "https://html.duckduckgo.com/")
+                .header("Sec-Fetch-Site", "same-origin")
+                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                .form(&[("q", query)])
+        } else {
+            self.client
+                .get(format!(
+                    "https://html.duckduckgo.com/html/?q={}",
+                    url_encode_query(query)
+                ))
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+        };
+        let resp = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                SearchError::Network
+            } else {
+                SearchError::Network
+            }
+        })?;
 
         let status = resp.status();
         if status.as_u16() == 429 {
@@ -111,11 +149,22 @@ impl SearchProvider for DuckDuckGoProvider {
 
         let html = resp.text().await.map_err(|_| SearchError::Network)?;
         let results = parse_ddg_html(&html, limit);
-        if results.is_empty() {
-            return Err(SearchError::ParseFailed);
-        }
-        Ok(results)
+        Ok(if results.is_empty() { None } else { Some(results) })
     }
+}
+
+/// Minimal URL-query encoder for the GET fallback (DDG expects %XX-encoded q).
+fn url_encode_query(q: &str) -> String {
+    q.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c.to_string()
+            } else {
+                // Encode each char's UTF-8 bytes (handles CJK correctly).
+                c.to_string().into_bytes().iter().map(|b| format!("%{:02X}", b)).collect()
+            }
+        })
+        .collect()
 }
 
 /// Parse DuckDuckGo's HTML result page. Selectors: `.result__a` (title+link),
