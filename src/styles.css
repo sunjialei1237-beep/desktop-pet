@@ -829,7 +829,13 @@ html, body, #root {
 /* Dedicated tail layer — its own element so it can later become head-aware
    without changing the bubble structure. An organic clip-path sliver (not a
    comic-triangle) to lower the "chat component" feel. Background matches the
-   bubble's fill so it reads as one continuous shape. */
+   bubble's fill so it reads as one continuous shape.
+   Lives OUTSIDE .pet-bubble (a sibling inside .pet-bubble-anchor): the bubble
+   is the scroll container and a scroll container clips to its padding box,
+   which used to cut the tail's lower half (bottom:-7px hangs below the box).
+   The anchor's box exactly coincides with the bubble's (bubble is its only
+   in-flow child), so left/bottom resolve to the same spot while the tail
+   stays fully visible. */
 .pet-bubble-tail {
   position: absolute;
   left: 15px;
@@ -846,6 +852,9 @@ html, body, #root {
   );
   transform: scaleX(calc(var(--pet-bubble-tail-direction, 1))) rotate(-5deg);
   transform-origin: center top;
+  /* Decorative only — never captures clicks (inherits none from the anchor
+     anyway; explicit for robustness). */
+  pointer-events: none;
 }
 
 /* Streaming-friendly content block — no fixed height, grows with text. */

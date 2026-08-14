@@ -221,13 +221,22 @@ export function PetBubble({
               <span className="pet-bubble-glyph-text">{text}</span>
             </span>
           ) : (
-            <div
-              ref={bubbleRef}
-              className={`pet-bubble${overflowing ? " pet-bubble--scrollable" : ""}`}
-            >
-              <span className="pet-bubble-text">{text}</span>
+            <>
+              {/* .pet-bubble is the scroll container (overflow-y hidden/auto
+                  via the overflowing class); the tail must NOT live inside it
+                  — a scroll container clips to its padding box, which cut the
+                  tail's lower half (bottom:-7px hangs outside). The tail is a
+                  sibling so it stays fully visible; the anchor's box exactly
+                  coincides with the bubble's (bubble is its only in-flow
+                  child), so left:15px/bottom:-7px land in the same spot. */}
+              <div
+                ref={bubbleRef}
+                className={`pet-bubble${overflowing ? " pet-bubble--scrollable" : ""}`}
+              >
+                <span className="pet-bubble-text">{text}</span>
+              </div>
               <span className="pet-bubble-tail" />
-            </div>
+            </>
           )}
         </motion.div>
       )}
