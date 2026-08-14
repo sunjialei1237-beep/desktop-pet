@@ -839,7 +839,10 @@ html, body, #root {
 .pet-bubble-tail {
   position: absolute;
   left: 15px;
-  bottom: -7px;
+  /* bottom:-12px + height:12px => the tail's top is FLUSH with the bubble's
+     bottom edge (no overlap into the bubble body). It used to be -7px, which
+     put the tail's top 5px inside the bubble (visible overlap ~4px). */
+  bottom: -12px;
   width: 17px;
   height: 12px;
   background: rgba(250, 248, 243, 0.90);
