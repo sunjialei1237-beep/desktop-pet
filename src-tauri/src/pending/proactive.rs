@@ -261,6 +261,7 @@ pub async fn generate(
         tone: tone.to_string(),
         proactive: true,
         action: "proactive_check".to_string(),
+        capability: crate::tools::CapabilityMode::None,
     };
 
     let mut messages =
@@ -327,6 +328,7 @@ async fn generate_lively(
         tone: tone.to_string(),
         proactive: true,
         action: "lively_bubble".to_string(),
+        capability: crate::tools::CapabilityMode::None,
     };
 
     let mut messages =
@@ -473,6 +475,7 @@ pub async fn generate_welcome_back(
         tone: tone.to_string(),
         proactive: true,
         action: "welcome_back".to_string(),
+        capability: crate::tools::CapabilityMode::None,
     };
 
     let mut messages =
@@ -611,6 +614,7 @@ pub async fn generate_lonely_bubble(
         tone: tone.to_string(),
         proactive: true,
         action: "lonely_nudge".to_string(),
+        capability: crate::tools::CapabilityMode::None,
     };
 
     let mut messages =

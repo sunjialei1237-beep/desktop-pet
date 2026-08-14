@@ -4,6 +4,7 @@
 //! Rules only (no LLM call) per architecture principle #8.
 
 use crate::mind::brain_state::BrainState;
+use crate::tools::CapabilityMode;
 #[cfg(test)]
 use crate::db::onboarding::UserProfile;
 #[cfg(test)]
@@ -26,6 +27,10 @@ pub struct Intent {
     pub proactive: bool,
     /// Action: "normal" | "silence" | "proactive_check" | "celebrate"
     pub action: String,
+    /// Tool capability hint (Phase 4): None = no tools advertised;
+    /// ExternalInfo / ComputerAction = a *candidate* — the LLM still decides
+    /// whether to call with tool_choice="auto". Pure recall/emotion/chat → None.
+    pub capability: CapabilityMode,
 }
 
 impl Default for Intent {
@@ -36,6 +41,7 @@ impl Default for Intent {
             tone: String::new(),
             proactive: false,
             action: "normal".to_string(),
+            capability: CapabilityMode::None,
         }
     }
 }
@@ -59,6 +65,23 @@ const GOOD_NEWS_KEYWORDS: &[&str] = &[
     "厉害", "考过", "终于", "爽", "好消息", "升职", "加薪",
     "第一名", "赢了", "满分", "进步",
 ];
+/// External-information intent keywords (Phase 4 capability prefilter). A hit
+/// sets `CapabilityMode::ExternalInfo` as a *candidate* — the LLM still decides
+/// whether to actually call search (tool_choice="auto"). Recall contexts like
+/// "你还记得那件新闻吗" match "新闻" and set the candidate; the LLM then chooses
+/// NOT to search because it is a memory question (黑名单优先).
+const EXTERNAL_INFO_KEYWORDS: &[&str] = &[
+    "查一下", "查查", "搜一下", "搜索", "搜搜", "帮我查", "查查看",
+    "新闻", "天气", "最近有什么", "最新",
+    "search", "look up", "news", "weather", "latest",
+];
+
+/// Computer-action intent keywords (open app / open url).
+const COMPUTER_ACTION_KEYWORDS: &[&str] = &[
+    "打开", "启动", "运行", "开一下",
+    "open ", "launch", "run ",
+];
+
 /// Shared-statement markers: the user is telling us something about
 /// themselves, their day, or their preferences. These warrant a genuine
 /// follow-up question (the "engage" goal), not a flat acknowledgment.
@@ -92,6 +115,19 @@ pub fn plan(brain: &BrainState) -> Intent {
     let retrieval = brain.retrieval;
     let lower = user_text.to_lowercase();
 
+    // Capability prefilter (Phase 4): keyword hint for whether this turn might
+    // benefit from a tool. Computer-action beats external-info ("打开浏览器搜"
+    // is an action). This is a CANDIDATE, not a call decision — the LLM decides
+    // with tool_choice="auto". Config gating (search_web off → no tools) happens
+    // downstream in capability_to_tools, not here.
+    let capability = if COMPUTER_ACTION_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+        CapabilityMode::ComputerAction
+    } else if EXTERNAL_INFO_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+        CapabilityMode::ExternalInfo
+    } else {
+        CapabilityMode::None
+    };
+
     // Derive memory anchor from top-scored episode (if score > 0.4).
     let memory_anchor = if !retrieval.episodes.is_empty() {
         let top = &retrieval.episodes[0];
@@ -112,6 +148,7 @@ pub fn plan(brain: &BrainState) -> Intent {
             tone: "gentle".to_string(),
             proactive: true,
             action: "proactive_check".to_string(),
+            capability,
         };
     }
 
@@ -129,6 +166,7 @@ pub fn plan(brain: &BrainState) -> Intent {
             tone: "gentle".to_string(),
             proactive: false,
             action: "normal".to_string(),
+            capability,
         };
     }
 
@@ -141,6 +179,7 @@ pub fn plan(brain: &BrainState) -> Intent {
             tone: "excited".to_string(),
             proactive: false,
             action: "normal".to_string(),
+            capability,
         };
     }
 
@@ -154,6 +193,7 @@ pub fn plan(brain: &BrainState) -> Intent {
                     tone: "gentle".to_string(),
                     proactive: true,
                     action: "normal".to_string(),
+                    capability,
                 };
             }
         }
@@ -172,6 +212,7 @@ pub fn plan(brain: &BrainState) -> Intent {
             tone: "curious".to_string(),
             proactive: false,
             action: "normal".to_string(),
+            capability,
         };
     }
 
@@ -182,6 +223,7 @@ pub fn plan(brain: &BrainState) -> Intent {
         tone: "gentle".to_string(),
         proactive: false,
         action: "normal".to_string(),
+        capability,
     }
 }
 
@@ -478,5 +520,86 @@ mod tests {
         assert!(is_good_news("I passed the test!"));
         assert!(is_good_news("We won the game!"));
         assert!(!is_good_news("I failed unfortunately"));
+    }
+
+    // --- Phase 4: capability prefilter ---
+
+    #[test]
+    fn test_capability_external_info_search() {
+        let intent = plan(&brain(
+            "帮我查一下最近的AI新闻",
+            &calm_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert_eq!(intent.capability, CapabilityMode::ExternalInfo);
+    }
+
+    #[test]
+    fn test_capability_computer_action_open() {
+        let intent = plan(&brain(
+            "打开VSCode",
+            &calm_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert_eq!(intent.capability, CapabilityMode::ComputerAction);
+    }
+
+    #[test]
+    fn test_capability_none_for_chitchat() {
+        // 哈哈哈哈 — pure chitchat, no tool needed (abstention).
+        let intent = plan(&brain(
+            "哈哈哈哈",
+            &calm_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert_eq!(intent.capability, CapabilityMode::None);
+    }
+
+    #[test]
+    fn test_capability_none_for_anxiety() {
+        // Emotion, not a tool need.
+        let intent = plan(&brain(
+            "我最近好累",
+            &stressed_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert_eq!(intent.capability, CapabilityMode::None);
+    }
+
+    #[test]
+    fn test_capability_candidate_for_recall_context() {
+        // "你还记得那件新闻吗" matches "新闻" → ExternalInfo CANDIDATE. The
+        // planner sets the candidate; the LLM later chooses NOT to search
+        // (it's a memory question) — abstention is decided downstream, not here.
+        let intent = plan(&brain(
+            "你还记得那件新闻吗",
+            &calm_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert_eq!(intent.capability, CapabilityMode::ExternalInfo);
+    }
+
+    #[test]
+    fn test_capability_none_for_time_question() {
+        // "几点" matches no external-info keyword — time is prompt-injected
+        // (Phase 6), never a tool round.
+        let intent = plan(&brain(
+            "现在几点了",
+            &calm_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert_eq!(intent.capability, CapabilityMode::None);
     }
 }

@@ -572,6 +572,7 @@ mod tests {
             tone: "gentle".to_string(),
             proactive: true,
             action: "normal".to_string(),
+            capability: crate::tools::CapabilityMode::None,
         };
         let prompt = build_system_prompt(&empty_retrieval(), &EmotionState::default(), &intent);
         assert!(prompt.contains("goal: comfort"));

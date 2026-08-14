@@ -121,6 +121,7 @@ pub async fn generate_goodmorning(
         tone: tone.to_string(),
         proactive: true,
         action: "goodmorning".to_string(),
+        capability: crate::tools::CapabilityMode::None,
     };
     let mut messages =
         crate::mind::budget::allocate_and_compress(&retrieval, wm_context, &emotion, &intent);

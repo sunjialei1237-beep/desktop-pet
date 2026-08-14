@@ -504,6 +504,7 @@ mod tests {
             tone: "warm".to_string(),
             proactive: true,
             action: "normal".to_string(),
+            capability: crate::tools::CapabilityMode::None,
         };
         let messages = allocate_and_compress(
             &empty_retrieval(),
@@ -554,6 +555,7 @@ mod tests {
             tone: "gentle".to_string(),
             proactive: false,
             action: "normal".to_string(),
+            capability: crate::tools::CapabilityMode::None,
         };
         let messages = allocate_qa(&r, &[], &EmotionState::default(), &intent);
         let sys = messages[0].content_str();
