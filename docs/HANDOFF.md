@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-14（续²⁹·工具层实跑三连修✅ qa_mode bug/白名单→动态扫描/DDG→头条 + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`，C 盘 Documents\桌宠 已废弃待删）。上轮 2026-08-14（续²⁸·气泡滚动条常驻修复+尾巴补全✅）。上轮 2026-08-14（续²⁷·工具层 7 阶段全部落地✅）。上轮 2026-08-13（续²⁴·全面测试验收+多轮修复+记忆卫生✅）。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
+> 最后更新：**2026-08-14（续³⁰·工具层收尾完成：头条搜索实跑验证✅（gate active→search Success 911ms→中文总结）+ release rebuild✅，桌面快捷方式已用上新工具层）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ qa_mode bug/白名单→动态扫描/DDG→头条 + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`，C 盘 Documents\桌宠 已废弃待删）。上轮 2026-08-14（续²⁸·气泡滚动条常驻修复+尾巴补全✅）。上轮 2026-08-13（续²⁴·全面测试验收+多轮修复+记忆卫生✅）。**续⁸ 自主冒泡灵性重构仍在位**（频率30min + 记忆30/灵性70）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -72,6 +72,17 @@
 > **④ 项目迁移 C→D 盘 ✅**：C 盘爆满，项目完整迁至 `D:\桌宠`（用户手动复制，已核验：199 tracked 文件一致/node_modules 99 包/远端全同步/D 盘 cargo test 369 绿 + tsc 0/Dev 已从 D 盘启动正常）。config+db 在 `%APPDATA%\DesktopPet`（设计如此，不随项目走）；release exe 与快捷方式在 `D:\cargo-target`（不受影响）。
 >
 > 📋 **待办**：① **头条搜索实跑验证**——代码完成（lib 绿）但被 C 盘满/迁移打断，还没在 dev 里实测"查最近AI新闻"看 `[tools/search] status=Success` + 中文总结质量；若头条也间歇失败，备选方向：给 config 加可选搜索 API key（Serper/Brave，海外需 VPN 除外）；② **release rebuild**（qa_mode 修复/动态发现/头条搜索都还没进 release exe，桌面快捷方式跑的是旧版）：`taskkill //IM desktop-pet.exe //F` + 等 3s + `npx tauri build --no-bundle`；③ ⚠️ **C 盘 `Documents\桌宠` 待用户删除**（全部已 push，删无损）；④ follow-up：ToolThinking 前端低头动画（当前复用 thinking 占位）/ DebugPanel Tools 分区 / toutiao 结果 url 未配对（图片与文章 url 交错，只给 title+abstract）。
+
+> **2026-08-14（续³⁰）更新 · 工具层收尾完成：头条搜索实跑验证 ✅ + release rebuild ✅（commit 本轮，工具层 7 阶段 + 续²⁹ 三连修全部进 release）**。接手时仅剩两件事，本轮全部完成：
+>
+> **① 头条搜索实跑验证 ✅（续²⁹ 待办①）**：pre-flight curl 直连 `so.toutiao.com/search?pd=information&dvpf=pc` 确认当前网络可用（HTTP 200 + 真实 AI 新闻）→ 清残留（msedgewebview2×3、1420 空闲）→ dev 分离启动 `nohup npm run tauri dev > dev-run.log 2>&1 &`（~50s 就绪，无重编译）→ **UI 自动化发消息"查一下最近的AI新闻"**（剪贴板 base64 写入中文 + Alt+Space 全局快捷键唤出输入框 + Ctrl+V + Enter；方法归档 `scripts/send_pet_msg.ps1`）→ dev-run.log 全链路命中：
+> `[converse] tool gate: capability=ExternalInfo qa_mode=true tools=["get_time","search_web"] active=true`（**续²⁹ qa_mode 修复实跑生效**：Question 路由不再跳过工具分支）→ `[agent] run 0 tool search_web status=Success duration=911ms`（头条）→ `[converse] tool branch done: 2 rounds, 5485 tokens`（rounds=agent LLM 轮次：1 轮请求搜索 + 1 轮出最终答案）。**回复质量（DB conversations 表回读，气泡可能已消失故查库）**：中文分点总结 4 条真实新闻（徐汇AI青年创业营600项目 / AI推理芯片英伟达垄断被打破 / 成都AI影视创作版权 / IAI国际青创大赛），措辞克制不过分肯定（"刚搜到几条最近的"），主动提"想看哪条细的？我可以再搜深一点"。**结论：搜索质量良好，无需备选方案（Serper/Brave API key 不必加）**。
+>
+> **② release rebuild ✅（续²⁹ 待办②）**：taskkill desktop-pet.exe + 1420 vite + 残留 msedgewebview2 → `npx tauri build --no-bundle` **exit 0**（前端 4.58s 1006 模块 + Rust release 1m53s）→ 产物 `D:\cargo-target\desktop-pet\release\desktop-pet.exe` 21:58 新鲜（旧 16:24，23.4MB）。桌面快捷方式自动用上新工具层（qa_mode 修复 / 动态 .lnk 扫描 / 头条搜索）。
+>
+> **本轮新经验（实跑验证方法论）**：① **发消息的 UI 自动化范式**——SendKeys 无法直接输中文（要过 IME）→ 剪贴板经 base64 传输（防 bash→powershell 引号/编码损坏）+ Ctrl+V 粘贴是唯一可靠路径，已归档 `scripts/send_pet_msg.ps1`（含用法注释）；② **GLM 视觉模型在白壁纸上两次找不到璃**（全屏+窗口裁剪均误报"无角色"，但 GetWindowRect visible=true + 角色粉色像素 249,184,184 在窗口内 + 流式回复/emotion-react/lively 日志全正常）——续¹²"数值诊断优先于视觉模型"再次应验，**实跑验证以日志+DB 为准，勿依赖截图+视觉模型判断角色渲染**；③ 基线复验：D 盘 `cargo test --lib` 369 绿 / git 干净零未推。
+>
+> 📋 **待办（后续 follow-up，无阻塞——工具层正式收尾）**：① ⚠️ C 盘 `Documents\桌宠` 待用户删除（已 push 删无损）；② ToolThinking 前端低头动画（当前复用 thinking 占位）；③ DebugPanel Tools 分区（工具调用可观测）；④ toutiao 结果 url 未配对（图片与文章 url 交错，当前只给 title+abstract）。
 
 > **2026-08-13（续²³）更新 · AIRI 风格视线驱动 ✅ 用户确认没问题（含五连坑排查记录）**。用户"头部绕鼠标转动，只在一定范围内生效且必须是头部转动加身体微侧，鼠标的围绕中心也是头部，幅度都不用太大。可以参考 AIRI"。**纯代码实现**（骨骼旋转，零新素材）：`SpineCanvas.tsx` 加 `pointerRef` prop（App 全局光标轮询已有）+ 每帧 head 骨世界坐标→画布坐标，光标距头顶 `GAZE_RANGE=320px` 内生效、径向衰减、范围外平滑回正（AIRI ignored-return）；头 ±10° 绕颈旋转 + 身体(spine)±3° 微侧；指数平滑 τ=0.12s（挂钟时间不受昼夜变速影响）；睡眠时不跟随。**用户三轮反馈的五个坑全记录在 §最近一轮 (续²³)**——最终形态：**只保留水平旋转通道**（下巴必须固定，上下俯仰留给美术 look_up/look_down 动画）。调参入口：`SpineCanvas.tsx` 顶部 `GAZE_*` 常量。CDP 诊断句柄：`window.__gazeDiag`（凝视数值）/`window.__spine`（spine 实例）/`window.__ctDiag`（origin/scale）。详见 §最近一轮 (续²³)。
 
