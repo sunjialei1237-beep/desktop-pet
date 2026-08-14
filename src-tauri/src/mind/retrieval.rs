@@ -274,7 +274,7 @@ fn get_candidate_episodes(
                     subject, participants, topics, source_type,
                     source_conversation_id, source_turn,
                     memory_strength, recall_count, last_recalled_at,
-                    consolidated, created_at
+                    consolidated, created_at, emotion_anchor
              FROM episodes
              ORDER BY memory_strength DESC
              LIMIT ?1",
@@ -301,6 +301,7 @@ fn get_candidate_episodes(
                 last_recalled_at: row.get(14)?,
                 consolidated: row.get::<_, i32>(15)? != 0,
                 created_at: row.get(16)?,
+                emotion_anchor: row.get(17)?,
             })
         })
         .map_err(|e| format!("Failed to query candidates: {}", e))?;
@@ -457,6 +458,7 @@ mod tests {
     fn make_episode(conn: &Connection, summary: &str, strength: f64, time: &str) -> String {
         let id = format!("ep_test_{}", uuid::Uuid::new_v4().simple());
         let ep = db_episodes::Episode {
+            emotion_anchor: None,
             id: id.clone(),
             time: time.to_string(),
             summary: summary.to_string(),
@@ -565,6 +567,7 @@ mod tests {
         use rand::SeedableRng;
         let make = |id: &str, score: f64, recalled: Option<String>| ScoredEpisode {
             episode: db_episodes::Episode {
+                emotion_anchor: None,
                 id: id.to_string(),
                 time: "2026-07-13T10:00:00+00:00".to_string(),
                 summary: format!("ep {}", id),
@@ -604,6 +607,7 @@ mod tests {
         let now = Utc::now();
         let make = |id: &str| ScoredEpisode {
             episode: db_episodes::Episode {
+                emotion_anchor: None,
                 id: id.to_string(),
                 time: now.to_rfc3339(),
                 summary: format!("ep {}", id),

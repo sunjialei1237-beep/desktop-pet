@@ -291,6 +291,7 @@ mod tests {
         let episodes: Vec<ScoredEpisode> = (0..count)
             .map(|i| ScoredEpisode {
                 episode: Episode {
+                    emotion_anchor: None,
                     id: format!("ep_{}", i),
                     time: "2026-07-10T14:00:00+00:00".to_string(),
                     summary: format!("user did interesting thing number {}", i),

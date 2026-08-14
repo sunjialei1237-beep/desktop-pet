@@ -487,6 +487,7 @@ mod tests {
         RetrievalResult {
             episodes: vec![ScoredEpisode {
                 episode: Episode {
+                    emotion_anchor: None,
                     id: "ep_1".to_string(),
                     time: "2026-07-10T14:00:00+00:00".to_string(),
                     summary: "user ate hotpot with friends".to_string(),

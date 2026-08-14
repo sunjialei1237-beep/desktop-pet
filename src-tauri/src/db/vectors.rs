@@ -115,6 +115,7 @@ mod tests {
         let id = format!("ep_vec_{}", uuid::Uuid::new_v4().simple());
         let now = chrono::Utc::now().to_rfc3339();
         let ep = db_episodes::Episode {
+            emotion_anchor: None,
             id: id.clone(),
             time: now.clone(),
             summary: summary.to_string(),

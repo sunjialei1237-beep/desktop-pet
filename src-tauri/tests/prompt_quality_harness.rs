@@ -278,6 +278,7 @@ fn seed_episode(conn: &Connection, summary: &str, strength: f64, landmark: bool)
     db_episodes::insert(
         conn,
         &db_episodes::Episode {
+            emotion_anchor: None,
             id: format!("ep_{}", uuid::Uuid::new_v4().simple()),
             time: now.clone(),
             summary: summary.to_string(),

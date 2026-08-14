@@ -89,6 +89,7 @@ pub fn store(
     if let Some(ep) = &result.episode {
         let ep_id = format!("ep_{}", Uuid::new_v4().simple());
         let episode = db_episodes::Episode {
+            emotion_anchor: None,
             id: ep_id.clone(),
             time: now.clone(),
             summary: ep.summary.clone(),
@@ -172,6 +173,7 @@ pub fn store(
             .clone()
             .unwrap_or_else(|| remind_date.clone().unwrap_or_else(|| now.clone()));
         let event = db_pending::PendingEvent {
+            origin: "user".to_string(),
             id: pe_id,
             title: pe.title.clone(),
             event_date,

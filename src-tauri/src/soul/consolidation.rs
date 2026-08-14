@@ -69,6 +69,7 @@ pub async fn consolidate(db: &DbState, llm: &LlmClient) -> Result<usize, String>
         let rows = stmt
             .query_map(rusqlite::params![BATCH_SIZE as i64], |row| {
                 Ok(crate::db::episodes::Episode {
+                    emotion_anchor: None,
                     id: row.get(0)?,
                     time: row.get(1)?,
                     summary: row.get(2)?,
@@ -133,6 +134,7 @@ pub async fn consolidate(db: &DbState, llm: &LlmClient) -> Result<usize, String>
 
         // Insert the consolidated summary as a new episode.
         let new_ep = crate::db::episodes::Episode {
+            emotion_anchor: None,
             id: format!("ep_consolidated_{}", chrono::Utc::now().timestamp_millis()),
             time: now.clone(),
             summary: consolidated_summary,
@@ -310,6 +312,7 @@ mod tests {
 
     fn test_episode(id: &str, importance: f64) -> Episode {
         Episode {
+            emotion_anchor: None,
             id: id.to_string(),
             time: "2026-07-14T10:00:00".to_string(),
             summary: "test".to_string(),

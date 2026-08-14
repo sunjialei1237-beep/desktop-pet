@@ -387,6 +387,7 @@ mod tests {
         let ts = (chrono::Utc::now() - chrono::Duration::hours(hours_ago)).to_rfc3339();
         db.with_conn(|conn| {
             crate::db::episodes::insert(conn, &crate::db::episodes::Episode {
+                emotion_anchor: None,
                 id: id.to_string(),
                 time: ts.clone(),
                 summary: "s".to_string(),

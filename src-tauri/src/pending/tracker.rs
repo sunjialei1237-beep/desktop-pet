@@ -59,6 +59,7 @@ fn insert_event(conn: &Connection, id: &str, remind: Option<&str>, status: &str,
         crate::db::pending::insert(
             conn,
             &PendingEvent {
+                origin: "user".to_string(),
                 id: id.to_string(),
                 title: format!("event {}", id),
                 event_date: "2026-07-15".to_string(),

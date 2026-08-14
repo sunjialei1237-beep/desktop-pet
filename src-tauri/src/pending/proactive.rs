@@ -722,6 +722,7 @@ mod tests {
 
     fn pending_event(id: &str, title: &str) -> PendingEvent {
         PendingEvent {
+            origin: "user".to_string(),
             id: id.to_string(),
             title: title.to_string(),
             event_date: "2026-07-15".to_string(),

@@ -761,6 +761,7 @@ pub async fn check_cold_start(db: State<'_, DbState>) -> Result<Option<String>, 
                 rusqlite::params![now],
                 |row| {
                     Ok(crate::db::pending::PendingEvent {
+                        origin: "user".to_string(),
                         id: row.get(0)?,
                         title: row.get(1)?,
                         event_date: row.get(2)?,

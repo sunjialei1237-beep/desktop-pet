@@ -14,6 +14,9 @@ pub struct PendingEvent {
     pub created_at: String,
     pub triggered_at: Option<String>,
     pub resolved_at: Option<String>,
+    /// Who owns this event: "user" (the user's own future event — she reminds
+    /// them about it) or "pet" (a promise SHE made — she shows up to fulfill it).
+    pub origin: String,
 }
 
 /// Inserts a new pending event.
@@ -21,12 +24,12 @@ pub fn insert(conn: &Connection, ev: &PendingEvent) -> Result<(), String> {
     conn.execute(
         "INSERT INTO pending_events (
             id, title, event_date, remind_date, source_episode,
-            status, importance, followup_count, created_at, triggered_at, resolved_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            status, importance, followup_count, created_at, triggered_at, resolved_at, origin
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             ev.id, ev.title, ev.event_date, ev.remind_date, ev.source_episode,
             ev.status, ev.importance, ev.followup_count,
-            ev.created_at, ev.triggered_at, ev.resolved_at,
+            ev.created_at, ev.triggered_at, ev.resolved_at, ev.origin,
         ],
     )
     .map_err(|e| format!("Failed to insert pending event: {}", e))?;
@@ -38,7 +41,7 @@ pub fn get_due(conn: &Connection, now: &str) -> Result<Vec<PendingEvent>, String
     let mut stmt = conn
         .prepare(
             "SELECT id, title, event_date, remind_date, source_episode,
-                    status, importance, followup_count, created_at, triggered_at, resolved_at
+                    status, importance, followup_count, created_at, triggered_at, resolved_at, origin
              FROM pending_events
              WHERE status = 'pending'
                AND remind_date IS NOT NULL
@@ -61,6 +64,7 @@ pub fn get_due(conn: &Connection, now: &str) -> Result<Vec<PendingEvent>, String
                 created_at: row.get(8)?,
                 triggered_at: row.get(9)?,
                 resolved_at: row.get(10)?,
+                origin: row.get(11)?,
             })
         })
         .map_err(|e| format!("Failed to query pending events: {}", e))?;
@@ -96,7 +100,7 @@ pub fn get_all_pending(conn: &Connection) -> Result<Vec<PendingEvent>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, title, event_date, remind_date, source_episode,
-                    status, importance, followup_count, created_at, triggered_at, resolved_at
+                    status, importance, followup_count, created_at, triggered_at, resolved_at, origin
              FROM pending_events
              WHERE status = 'pending'
              ORDER BY created_at DESC",
@@ -116,6 +120,7 @@ pub fn get_all_pending(conn: &Connection) -> Result<Vec<PendingEvent>, String> {
             created_at: row.get(8)?,
             triggered_at: row.get(9)?,
             resolved_at: row.get(10)?,
+            origin: row.get(11)?,
         })
     }).map_err(|e| format!("Failed to query all pending: {}", e))?;
 
@@ -127,7 +132,7 @@ pub fn get_all(conn: &Connection) -> Result<Vec<PendingEvent>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, title, event_date, remind_date, source_episode,
-                    status, importance, followup_count, created_at, triggered_at, resolved_at
+                    status, importance, followup_count, created_at, triggered_at, resolved_at, origin
              FROM pending_events
              ORDER BY created_at ASC",
         )
@@ -146,6 +151,7 @@ pub fn get_all(conn: &Connection) -> Result<Vec<PendingEvent>, String> {
             created_at: row.get(8)?,
             triggered_at: row.get(9)?,
             resolved_at: row.get(10)?,
+            origin: row.get(11)?,
         })
     }).map_err(|e| format!("Failed to query all events: {}", e))?;
 
@@ -167,6 +173,7 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             insert(conn, &PendingEvent {
+                origin: "user".to_string(),
                 id: "pe_1".to_string(),
                 title: "interview tomorrow".to_string(),
                 event_date: "2026-07-15".to_string(),
@@ -183,6 +190,7 @@ mod tests {
             let due = get_due(conn, "2026-07-15T09:00:00")?;
             assert_eq!(due.len(), 1);
             assert_eq!(due[0].title, "interview tomorrow");
+            assert_eq!(due[0].origin, "user");
 
             // Not due yet
             let not_due = get_due(conn, "2026-07-14T20:00:00")?;
@@ -199,6 +207,7 @@ mod tests {
 
     fn pe(id: &str, title: &str, status: &str) -> PendingEvent {
         PendingEvent {
+            origin: "user".to_string(),
             id: id.to_string(),
             title: title.to_string(),
             event_date: "2026-07-15".to_string(),

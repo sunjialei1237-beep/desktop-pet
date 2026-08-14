@@ -42,6 +42,7 @@ fn store_fact(conn: &Connection, category: &str, key: &str, value: &str, confide
 fn store_episode(conn: &Connection, summary: &str, strength: f64) {
     let now = chrono::Utc::now().to_rfc3339();
     db_episodes::insert(conn, &db_episodes::Episode {
+        emotion_anchor: None,
         id: format!("ep_{}", uuid::Uuid::new_v4().simple()),
         time: now.clone(),
         summary: summary.to_string(),
@@ -102,6 +103,7 @@ fn gc_002_pending_event_tracking() {
     db.with_conn(|conn| {
         let now = chrono::Utc::now().to_rfc3339();
         db_pending::insert(conn, &db_pending::PendingEvent {
+            origin: "user".to_string(),
             id: "pe_test_1".to_string(),
             title: "job interview".to_string(),
             event_date: "2026-07-15".to_string(),
@@ -323,6 +325,7 @@ fn gc_008_retrieve_is_pure_read() {
     let ep_id = db.with_conn(|conn| {
         let id = format!("ep_rein_{}", uuid::Uuid::new_v4().simple());
         db_episodes::insert(conn, &db_episodes::Episode {
+            emotion_anchor: None,
             id: id.clone(),
             time: chrono::Utc::now().to_rfc3339(),
             summary: "user went hiking".to_string(),
@@ -597,6 +600,7 @@ fn gc_016_planner_memory_anchor() {
     let retrieval_result = retrieval::RetrievalResult {
         episodes: vec![retrieval::ScoredEpisode {
             episode: db_episodes::Episode {
+                emotion_anchor: None,
                 id: "ep_anchor".to_string(),
                 time: now.clone(),
                 summary: "user likes milk tea".to_string(),
@@ -643,6 +647,7 @@ fn gc_017_pending_full_lifecycle() {
 
     db.with_conn(|conn| {
         db_pending::insert(conn, &db_pending::PendingEvent {
+            origin: "user".to_string(),
             id: "pe_life".to_string(),
             title: "presentation".to_string(),
             event_date: "2026-07-20".to_string(),
@@ -810,6 +815,7 @@ fn gc_026_vector_search_ranking() {
         let now = chrono::Utc::now().to_rfc3339();
         for (id, summary) in [("ep_v1", "hotpot"), ("ep_v2", "coding")] {
             db_episodes::insert(conn, &db_episodes::Episode {
+                emotion_anchor: None,
                 id: id.to_string(), time: now.clone(), summary: summary.to_string(),
                 emotion: None, importance: 0.5, is_landmark: false,
                 subject: "user".to_string(), participants: None, topics: None,
@@ -887,6 +893,7 @@ fn gc_029_lifecycle_cleanup() {
 
     db.with_conn(|conn| {
         db_episodes::insert(conn, &db_episodes::Episode {
+            emotion_anchor: None,
             id: "ep_old_low".to_string(), time: old.clone(),
             summary: "trivial old event".to_string(),
             emotion: None, importance: 0.1, is_landmark: false,
@@ -898,6 +905,7 @@ fn gc_029_lifecycle_cleanup() {
             consolidated: false, created_at: old.clone(),
         })?;
         db_episodes::insert(conn, &db_episodes::Episode {
+            emotion_anchor: None,
             id: "ep_old_lm".to_string(), time: old.clone(),
             summary: "first meeting".to_string(),
             emotion: None, importance: 0.1, is_landmark: true,

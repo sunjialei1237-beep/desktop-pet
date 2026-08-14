@@ -25,6 +25,10 @@ pub struct Episode {
     pub last_recalled_at: Option<String>,
     pub consolidated: bool,
     pub created_at: String,
+    /// One short scene/mood snapshot from the moment it happened
+    /// ("在奶茶店门口，眼睛亮亮的") — optional, surfaced when the memory
+    /// floats up so she can recall it with warmth instead of reciting a file.
+    pub emotion_anchor: Option<String>,
 }
 
 /// Inserts a new episode. memory_strength starts at importance.
@@ -35,14 +39,14 @@ pub fn insert(conn: &Connection, ep: &Episode) -> Result<(), String> {
             subject, participants, topics, source_type,
             source_conversation_id, source_turn,
             memory_strength, recall_count, last_recalled_at,
-            consolidated, created_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            consolidated, created_at, emotion_anchor
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             ep.id, ep.time, ep.summary, ep.emotion, ep.importance,
             ep.is_landmark as i32, ep.subject, ep.participants, ep.topics,
             ep.source_type, ep.source_conversation_id, ep.source_turn,
             ep.memory_strength, ep.recall_count, ep.last_recalled_at,
-            ep.consolidated as i32, ep.created_at,
+            ep.consolidated as i32, ep.created_at, ep.emotion_anchor,
         ],
     )
     .map_err(|e| format!("Failed to insert episode: {}", e))?;
@@ -57,7 +61,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<Episode>, String> {
                     subject, participants, topics, source_type,
                     source_conversation_id, source_turn,
                     memory_strength, recall_count, last_recalled_at,
-                    consolidated, created_at
+                    consolidated, created_at, emotion_anchor, emotion_anchor
              FROM episodes WHERE id = ?1",
         )
         .map_err(|e| format!("Failed to prepare episode query: {}", e))?;
@@ -82,6 +86,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<Episode>, String> {
                 last_recalled_at: row.get(14)?,
                 consolidated: row.get::<_, i32>(15)? != 0,
                 created_at: row.get(16)?,
+                emotion_anchor: row.get(17)?,
             })
         })
         .ok();
@@ -150,7 +155,7 @@ pub fn search_by_ids(conn: &Connection, ids: &[String]) -> Result<Vec<Episode>, 
                 subject, participants, topics, source_type,
                 source_conversation_id, source_turn,
                 memory_strength, recall_count, last_recalled_at,
-                consolidated, created_at
+                consolidated, created_at, emotion_anchor
          FROM episodes WHERE id IN ({})",
         placeholders.join(", ")
     );
@@ -177,6 +182,7 @@ pub fn search_by_ids(conn: &Connection, ids: &[String]) -> Result<Vec<Episode>, 
                 last_recalled_at: row.get(14)?,
                 consolidated: row.get::<_, i32>(15)? != 0,
                 created_at: row.get(16)?,
+                emotion_anchor: row.get(17)?,
             })
         })
         .map_err(|e| format!("Failed to query episodes: {}", e))?;
@@ -192,7 +198,7 @@ pub fn get_all(conn: &Connection) -> Result<Vec<Episode>, String> {
                     subject, participants, topics, source_type,
                     source_conversation_id, source_turn,
                     memory_strength, recall_count, last_recalled_at,
-                    consolidated, created_at
+                    consolidated, created_at, emotion_anchor, emotion_anchor
              FROM episodes
              ORDER BY created_at ASC",
         )
@@ -218,6 +224,7 @@ pub fn get_all(conn: &Connection) -> Result<Vec<Episode>, String> {
                 last_recalled_at: row.get(14)?,
                 consolidated: row.get::<_, i32>(15)? != 0,
                 created_at: row.get(16)?,
+                emotion_anchor: row.get(17)?,
             })
         })
         .map_err(|e| format!("Failed to query episodes: {}", e))?;
@@ -238,6 +245,7 @@ mod tests {
 
     fn test_episode(id: &str, strength: f64) -> Episode {
         Episode {
+            emotion_anchor: None,
             id: id.to_string(),
             time: "2026-07-14T10:00:00".to_string(),
             summary: "test episode".to_string(),
@@ -326,7 +334,7 @@ pub fn get_recent(conn: &Connection, hours_back: i64) -> Result<Vec<Episode>, St
                     subject, participants, topics, source_type,
                     source_conversation_id, source_turn,
                     memory_strength, recall_count, last_recalled_at,
-                    consolidated, created_at
+                    consolidated, created_at, emotion_anchor, emotion_anchor
              FROM episodes WHERE created_at >= ?1 AND consolidated = 0
              ORDER BY created_at DESC LIMIT 50",
         )
@@ -352,6 +360,7 @@ pub fn get_recent(conn: &Connection, hours_back: i64) -> Result<Vec<Episode>, St
                 last_recalled_at: row.get(14)?,
                 consolidated: row.get::<_, i32>(15)? != 0,
                 created_at: row.get(16)?,
+                emotion_anchor: row.get(17)?,
             })
         })
         .map_err(|e| format!("Failed to query recent episodes: {}", e))?;

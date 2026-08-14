@@ -82,6 +82,7 @@ fn seed_cold_start_interviews(db: &DbState) -> Result<(), String> {
             let remind = now + *delay;
             let id = format!("pe_interview_{}", uuid::Uuid::new_v4().simple());
             let event = db_pending::PendingEvent {
+                origin: "user".to_string(),
                 id,
                 title: question.to_string(),
                 event_date: now_str.clone(),

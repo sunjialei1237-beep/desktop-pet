@@ -613,6 +613,7 @@ mod tests {
     /// Build a minimal episode for tests.
     fn ep(id: &str, summary: &str, landmark: bool) -> Episode {
         Episode {
+            emotion_anchor: None,
             id: id.to_string(),
             time: "2026-08-04T00:00:00Z".to_string(),
             summary: summary.to_string(),

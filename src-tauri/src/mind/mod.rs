@@ -98,6 +98,7 @@ pub async fn ingest(
                     .clone()
                     .unwrap_or_else(|| remind_date.clone().unwrap_or_else(|| now.clone()));
                 let event = crate::db::pending::PendingEvent {
+                    origin: "user".to_string(),
                     id: pe_id,
                     title: pe.title.clone(),
                     event_date,

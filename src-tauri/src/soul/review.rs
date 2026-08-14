@@ -180,6 +180,7 @@ mod tests {
     fn insert_episode_at(db: &DbState, id: &str, created_at: &str, source_type: &str) {
         db.with_conn(|conn| {
             crate::db::episodes::insert(conn, &crate::db::episodes::Episode {
+                emotion_anchor: None,
                 id: id.to_string(),
                 time: created_at.to_string(),
                 summary: "s".to_string(),

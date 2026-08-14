@@ -106,6 +106,7 @@ const QUERIES: &[Query] = &[
 fn insert_episode(conn: &Connection, id: &str, summary: &str) {
     let now = chrono::Utc::now().to_rfc3339();
     let ep = db_episodes::Episode {
+        emotion_anchor: None,
         id: id.to_string(),
         time: now.clone(),
         summary: summary.to_string(),
