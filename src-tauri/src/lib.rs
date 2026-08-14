@@ -10,6 +10,7 @@ pub mod pending;
 pub mod lifecycle;
 pub mod soul;
 pub mod perception;
+pub mod tools;
 
 use commands::AppState;
 use std::sync::Mutex;

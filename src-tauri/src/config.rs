@@ -14,6 +14,8 @@ pub struct AppConfig {
     pub scheduler: SchedulerConfig,
     #[serde(default)]
     pub proactive: ProactiveConfig,
+    #[serde(default)]
+    pub tools: ToolsConfig,
 }
 
 /// LLM API configuration (OpenAI-compatible).
@@ -107,6 +109,7 @@ impl Default for AppConfig {
             perception: PerceptionConfig::default(),
             scheduler: SchedulerConfig::default(),
             proactive: ProactiveConfig::default(),
+            tools: ToolsConfig::default(),
         }
     }
 }
@@ -125,6 +128,26 @@ impl Default for ProactiveConfig {
     fn default() -> Self {
         ProactiveConfig {
             min_interval_secs: 30 * 60,
+        }
+    }
+}
+
+/// Tool-layer toggles (Architecture Principle 6: every capability must be
+/// disableable). `get_time` / `open_url` are harmless and have no switch
+/// (always on); `search_web` / `open_application` can be turned off. Missing
+/// [tools] section in older config files uses all-enabled defaults. See
+/// `tools/mod.rs` + the tool-layer plan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolsConfig {
+    pub enable_search_web: bool,
+    pub enable_open_application: bool,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        ToolsConfig {
+            enable_search_web: true,
+            enable_open_application: true,
         }
     }
 }
