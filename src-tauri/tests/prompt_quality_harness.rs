@@ -268,6 +268,8 @@ fn seed_fact(conn: &Connection, category: &str, key: &str, value: &str, confiden
             mention_count: 1,
             created_at: now.clone(),
             updated_at: now,
+            surfaced_count: 0,
+            last_surfaced_at: None,
         },
     )
     .unwrap();

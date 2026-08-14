@@ -14,6 +14,12 @@ pub struct Fact {
     pub mention_count: i64,
     pub created_at: String,
     pub updated_at: String,
+    /// Times this fact was proactively surfaced in a bubble (proactive
+    /// bubble-governance v5). Anchor selection hard-excludes recently surfaced
+    /// facts, so this is the "already said it" ledger for round-robin rotation.
+    pub surfaced_count: i64,
+    /// Last time this fact was proactively surfaced (RFC3339). None = never.
+    pub last_surfaced_at: Option<String>,
 }
 
 /// Inserts a fact. If the exact (category, key, value) already exists,
@@ -77,6 +83,21 @@ pub fn dedup_insert(conn: &Connection, fact: &Fact) -> Result<(), String> {
     Ok(())
 }
 
+/// Records that a fact was proactively surfaced (voiced in a bubble). Called
+/// the moment the fact is picked as the anchor — before generation — so a
+/// concurrent/repeated path can't re-pick the same fact within the window
+/// (conservative: 宁少勿突兀). `surfaced_count` feeds the round-robin rotation
+/// and `last_surfaced_at` powers the hard repeat-exclusion window.
+pub fn bump_surfaced(conn: &Connection, id: &str, now: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE facts SET surfaced_count = surfaced_count + 1, last_surfaced_at = ?1
+         WHERE id = ?2",
+        params![now, id],
+    )
+    .map_err(|e| format!("Failed to bump fact surfaced: {}", e))?;
+    Ok(())
+}
+
 /// Expires a SINGLE fact by id (selective forgetting — user-directed).
 /// Sets valid_to = now on the still-active fact with this id. Unlike
 /// `expire_old` (which expires every value of a category+key when a
@@ -114,7 +135,8 @@ pub fn get_active(conn: &Connection, category: &str, key: &str) -> Result<Vec<Fa
     let mut stmt = conn
         .prepare(
             "SELECT id, category, key, value, confidence, valid_from, valid_to,
-                    source_episode, mention_count, created_at, updated_at
+                    source_episode, mention_count, created_at, updated_at,
+                    surfaced_count, last_surfaced_at
              FROM facts WHERE category = ?1 AND key = ?2
              AND valid_to IS NULL
              ORDER BY mention_count DESC, confidence DESC",
@@ -135,6 +157,8 @@ pub fn get_active(conn: &Connection, category: &str, key: &str) -> Result<Vec<Fa
                 mention_count: row.get(8)?,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
+                surfaced_count: row.get(11)?,
+                last_surfaced_at: row.get(12)?,
             })
         })
         .map_err(|e| format!("Failed to query facts: {}", e))?;
@@ -147,7 +171,8 @@ pub fn get_by_category(conn: &Connection, category: &str) -> Result<Vec<Fact>, S
     let mut stmt = conn
         .prepare(
             "SELECT id, category, key, value, confidence, valid_from, valid_to,
-                    source_episode, mention_count, created_at, updated_at
+                    source_episode, mention_count, created_at, updated_at,
+                    surfaced_count, last_surfaced_at
              FROM facts WHERE category = ?1
              ORDER BY key, mention_count DESC",
         )
@@ -167,6 +192,8 @@ pub fn get_by_category(conn: &Connection, category: &str) -> Result<Vec<Fact>, S
                 mention_count: row.get(8)?,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
+                surfaced_count: row.get(11)?,
+                last_surfaced_at: row.get(12)?,
             })
         })
         .map_err(|e| format!("Failed to query facts: {}", e))?;
@@ -180,7 +207,8 @@ pub fn get_all(conn: &Connection) -> Result<Vec<Fact>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, category, key, value, confidence, valid_from, valid_to,
-                    source_episode, mention_count, created_at, updated_at
+                    source_episode, mention_count, created_at, updated_at,
+                    surfaced_count, last_surfaced_at
              FROM facts
              ORDER BY created_at ASC",
         )
@@ -200,6 +228,8 @@ pub fn get_all(conn: &Connection) -> Result<Vec<Fact>, String> {
                 mention_count: row.get(8)?,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
+                surfaced_count: row.get(11)?,
+                last_surfaced_at: row.get(12)?,
             })
         })
         .map_err(|e| format!("Failed to query facts: {}", e))?;
@@ -230,6 +260,8 @@ mod tests {
             mention_count: 1,
             created_at: "2026-07-14T10:00:00".to_string(),
             updated_at: "2026-07-14T10:00:00".to_string(),
+            surfaced_count: 0,
+            last_surfaced_at: None,
         }
     }
 
@@ -326,7 +358,8 @@ pub fn get_all_active(conn: &Connection, limit: i64) -> Result<Vec<Fact>, String
     let mut stmt = conn
         .prepare(
             "SELECT id, category, key, value, confidence, valid_from, valid_to,
-                    source_episode, mention_count, created_at, updated_at
+                    source_episode, mention_count, created_at, updated_at,
+                    surfaced_count, last_surfaced_at
              FROM facts WHERE valid_to IS NULL
              ORDER BY mention_count DESC, confidence DESC
              LIMIT ?1",
@@ -347,6 +380,8 @@ pub fn get_all_active(conn: &Connection, limit: i64) -> Result<Vec<Fact>, String
                 mention_count: row.get(8)?,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
+                surfaced_count: row.get(11)?,
+                last_surfaced_at: row.get(12)?,
             })
         })
         .map_err(|e| format!("Failed to query facts: {}", e))?;

@@ -54,6 +54,23 @@ fn get_db(app: &AppHandle) -> Option<tauri::State<'_, DbState>> {
     app.try_state::<DbState>()
 }
 
+/// The global proactive-bubble budget gate (2026-08-14): atomic check-and-occupy
+/// of the shared, persisted interval. Every proactive EMIT point (pending
+/// follow-up / welcome-back / lonely nudge) must pass this before emitting, so
+/// bubbles can't stack across paths (previously each path gated only on its own
+/// conditions → several bubbles within minutes). Returns false when the budget
+/// is not available — the caller stays silent (Architecture #12).
+fn bubble_budget_ok(app: &AppHandle) -> bool {
+    let Some(db) = get_db(app) else {
+        return false;
+    };
+    let min = app
+        .try_state::<AppState>()
+        .map(|s| s.config.proactive.min_interval_secs)
+        .unwrap_or(3600);
+    crate::pending::budget::try_occupy_budget(&db, min, chrono::Utc::now())
+}
+
 /// Medium tick: emotion homeostasis, pending event check, emotion push.
 fn medium_tick(app: &AppHandle) {
     let db = match get_db(app) {
@@ -97,21 +114,33 @@ fn medium_tick(app: &AppHandle) {
     match db.with_conn(|conn| crate::db::pending::get_due(conn, &now)) {
         Ok(events) if !events.is_empty() => {
             log::info!("Life loop: {} pending events due", events.len());
-            if let Some(first) = events.first() {
-                let _ = app.emit(
-                    "proactive-prompt",
-                    serde_json::json!({
-                        "title": &first.title,
-                        "event_id": &first.id,
-                    }),
+            // Global bubble budget: a due reminder still has to wait for the
+            // interval if another bubble just fired (it stays pending — get_due
+            // keeps returning it, so it fires at the next window, no loss).
+            if bubble_budget_ok(app) {
+                if let Some(first) = events.first() {
+                    let _ = app.emit(
+                        "proactive-prompt",
+                        serde_json::json!({
+                            "title": &first.title,
+                            "event_id": &first.id,
+                        }),
+                    );
+                }
+                crate::lifecycle::scheduler::record(
+                    "pending_check",
+                    true,
+                    "ok",
+                    Some(format!("{} due", events.len())),
+                );
+            } else {
+                crate::lifecycle::scheduler::record(
+                    "pending_check",
+                    true,
+                    "ok",
+                    Some(format!("{} due, budget held", events.len())),
                 );
             }
-            crate::lifecycle::scheduler::record(
-                "pending_check",
-                true,
-                "ok",
-                Some(format!("{} due", events.len())),
-            );
         }
         Ok(_) => {
             crate::lifecycle::scheduler::record("pending_check", true, "ok", None);
@@ -211,6 +240,14 @@ fn check_presence_transition(
                     "Life loop: user returned after {}s, but 早安 already fired today — yielding to ritual",
                     away_secs
                 );
+            } else if !bubble_budget_ok(app) {
+                // Global bubble budget: another bubble fired within the interval
+                // (e.g. a pending reminder moments ago) — stay silent; the
+                // return is still acknowledged by presence itself (Arch #12).
+                log::info!(
+                    "Life loop: user returned after {}s, but bubble budget held — skipping welcome-back",
+                    away_secs
+                );
             } else {
                 log::info!(
                     "Life loop: user returned after {}s away — emitting welcome-back",
@@ -290,6 +327,17 @@ fn check_lonely_nudge(app: &AppHandle, last_nudge: &mut Option<std::time::Instan
         }
     }
 
+    // Global bubble budget (2026-08-14): the lonely nudge's own cooldown is
+    // subsumed by the shared interval — if any bubble fired recently (welcome-
+    // back / reminder / lively), she stays quiet instead of stacking on top.
+    if !bubble_budget_ok(app) {
+        log::info!(
+            "Life loop: loneliness={:.2} but bubble budget held — skipping lonely-nudge",
+            loneliness
+        );
+        return;
+    }
+
     log::info!(
         "Life loop: loneliness={:.2} closeness={:.0} — emitting lonely-nudge",
         loneliness, closeness
@@ -348,6 +396,12 @@ fn check_goodmorning(app: &AppHandle) {
     // Mark done BEFORE emitting so a crash or rapid re-tick can't double-fire.
     // (Idempotent: re-writing today is a no-op.)
     let _ = db.with_conn(|conn| crate::soul::ritual::mark_goodmorning_done(conn));
+
+    // 早安 is a date-driven ritual — it fires regardless of the interval gate
+    // (the user's first meeting of the day is the most expected bubble), but it
+    // OCCUPIES the shared budget so no other bubble follows within the interval
+    // (proactive bubble governance 2026-08-14).
+    crate::pending::budget::occupy_budget_always(&db);
 
     log::info!("Life loop: 早安 ritual firing (tod={})", tod);
     let _ = app.emit(

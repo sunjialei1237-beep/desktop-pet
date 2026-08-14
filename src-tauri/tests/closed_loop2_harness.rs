@@ -74,7 +74,7 @@ async fn proactive_bubble_brings_up_due_pending() {
     let db = test_db();
     seed(&db).expect("seed due pending event");
 
-    let bubble = proactive::generate(&db, &llm, None, &[])
+    let bubble = proactive::generate(&db, &llm, None, &[], proactive::DEFAULT_MEMORY_RATIO)
         .await
         .expect("proactive::generate errored — closed-loop-2 chain broken");
 
@@ -147,7 +147,7 @@ async fn proactive_bubble_fulfills_pet_promise() {
     let db = test_db();
     seed_promise(&db).expect("seed due pet promise");
 
-    let outcome = proactive::generate(&db, &llm, None, &[])
+    let outcome = proactive::generate(&db, &llm, None, &[], proactive::DEFAULT_MEMORY_RATIO)
         .await
         .expect("proactive::generate errored")
         .expect("no bubble for a due pet promise — she stayed silent on her own word");

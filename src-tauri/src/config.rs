@@ -114,20 +114,25 @@ impl Default for AppConfig {
     }
 }
 
-/// Proactive-bubble frequency control (Architecture Principle 6: every feature
-/// must be disableable/tunable). Missing [proactive] section in older config
-/// files uses the 30-minute default. Design doc 9.2: bubbles at most every
-/// 30 minutes.
+/// Proactive-bubble frequency + content control (Architecture Principle 6: every
+/// feature must be disableable/tunable). Missing [proactive] section in older
+/// config files uses these defaults. Design doc 9.2: bubbles at most every
+/// 30 minutes — raised to 60 (2026-08-14, user feedback: 频率太高).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProactiveConfig {
-    /// Minimum seconds between proactive bubbles (default 30 min).
+    /// Minimum seconds between proactive bubbles (default 60 min).
     pub min_interval_secs: i64,
+    /// Percent of no-pending proactive bubbles that anchor on a memory (0-100);
+    /// the rest are lively, anchorless chatter (default 15: 85% 碎碎念).
+    /// User feedback 2026-08-14: 不需要那么多消息带记忆.
+    pub memory_bubble_ratio: i64,
 }
 
 impl Default for ProactiveConfig {
     fn default() -> Self {
         ProactiveConfig {
-            min_interval_secs: 30 * 60,
+            min_interval_secs: 60 * 60,
+            memory_bubble_ratio: 15,
         }
     }
 }

@@ -5,7 +5,7 @@ use rusqlite::Connection;
 pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     let current_version = get_schema_version(conn)?;
 
-    if current_version >= 4 {
+    if current_version >= 5 {
         log::info!("Database schema at version {}, no migration needed", current_version);
         return Ok(());
     }
@@ -45,6 +45,15 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         log::info!("Migration v4 applied successfully");
     }
 
+    let current_version = get_schema_version(conn)?;
+    if current_version < 5 {
+        log::info!("Running migration v5 (fact surfacing ledger)...");
+        let sql = include_str!("../../migrations/005_fact_surfacing.sql");
+        conn.execute_batch(sql)
+            .map_err(|e| format!("Migration v5 failed: {}", e))?;
+        log::info!("Migration v5 applied successfully");
+    }
+
     Ok(())
 }
 
@@ -82,11 +91,11 @@ mod tests {
     fn test_migration_runs_once() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 4);
+        assert_eq!(get_schema_version(&conn).unwrap(), 5);
 
         // Running again should be a no-op
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 4);
+        assert_eq!(get_schema_version(&conn).unwrap(), 5);
     }
 
     #[test]

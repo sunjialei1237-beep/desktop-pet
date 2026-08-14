@@ -1,4 +1,4 @@
-﻿//! Grounded Generation: builds the system prompt with memory constraints
+//! Grounded Generation: builds the system prompt with memory constraints
 //! and formats retrieved memories with confidence/source annotations.
 //! Design doc 5.10: LLM may only reference retrieved memories; must say
 //! "not sure" rather than fabricate when relevant memory is absent.
@@ -406,6 +406,12 @@ pub fn check_groundedness(
         "你最喜欢",
         "你最爱的",
         "你一直很喜欢",
+        // Deictic-time claim variants (2026-08-14): "你说今天在找实习" asserts a
+        // past statement with a relative time word — must be grounded too.
+        "你说今天",
+        "你说昨天",
+        "你说明天",
+        "你说你",
     ];
     let lower = response.to_lowercase();
 
@@ -527,6 +533,8 @@ mod tests {
                 mention_count: 3,
                 created_at: "2026-07-14T10:00:00+00:00".to_string(),
                 updated_at: "2026-07-14T10:00:00+00:00".to_string(),
+                surfaced_count: 0,
+                last_surfaced_at: None,
             }],
             relationship: Some(Relationship {
                 closeness: 35.0,
@@ -684,6 +692,8 @@ mod tests {
             mention_count: 1,
             created_at: "2026-08-08T00:00:00+00:00".to_string(),
             updated_at: "2026-08-08T00:00:00+00:00".to_string(),
+            surfaced_count: 0,
+            last_surfaced_at: None,
         });
         let violations = check_groundedness("你最喜欢奶茶对吧，给你带了一杯。", &retrieval);
         assert!(

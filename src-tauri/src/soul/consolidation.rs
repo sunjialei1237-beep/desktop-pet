@@ -233,6 +233,8 @@ fn write_facts(
                 mention_count: 1,
                 created_at: now.clone(),
                 updated_at: now.clone(),
+                surfaced_count: 0,
+                last_surfaced_at: None,
             },
         )?;
         written += 1;
@@ -435,6 +437,8 @@ mod tests {
                 mention_count: 3,
                 created_at: "2026-07-01".to_string(),
                 updated_at: "2026-07-01".to_string(),
+                surfaced_count: 0,
+                last_surfaced_at: None,
             })?;
 
             // Backfill contradicts (drink=coffee -> milk tea) + duplicates (same fact twice).

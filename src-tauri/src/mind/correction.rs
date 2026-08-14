@@ -129,6 +129,8 @@ fn finish_correction(
             mention_count: 1,
             created_at: now.clone(),
             updated_at: now,
+            surfaced_count: 0,
+            last_surfaced_at: None,
         };
         db_facts::dedup_insert(conn, &new_fact)?;
 

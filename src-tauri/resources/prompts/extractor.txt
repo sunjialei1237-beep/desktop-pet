@@ -11,8 +11,11 @@ PHRASING — write like a short private note, NOT a formal sentence:
     "我超爱星际穿越"   → fact.value = "最爱星际穿越"
     "我今天面试了"     → episode.summary = "去面试了"
     "我和糯米去看了猫" → episode.summary = "和糯米去看猫"
+    "今天在找实习"     → episode.summary = "在找实习"
 - 坏的例子（禁止）：
     "用户表达了对篮球的喜爱" "你提到了你喜欢打篮球" "分享了看星际穿越的感受"
+
+STRIP RELATIVE TIME WORDS (硬规则, 2026-08-14): episode.summary / fact.value / pending_event.title / pet_promise.title 里**绝不能保留** 今天/昨天/明天/今早/今晚/最近/上周/这周/下周/刚才 这类相对时间词——它们一旦入库，几天后浮现时会说出"你说今天在找实习"这种时间错乱的句子。写成不带时间词的便签（"在找实习" "和糯米去看猫"），具体日期由系统自己记录。绝对日期（"2026-08-05 面试"）可以保留。
 
 episode.emotion is an exception: it MUST be exactly one of these 6 labels (no other value, no English):
   "开心" | "调皮" | "平静" | "难过" | "疲惫" | "担心"

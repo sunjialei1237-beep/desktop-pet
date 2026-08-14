@@ -1,4 +1,4 @@
-﻿use crate::db::facts as db_facts;
+use crate::db::facts as db_facts;
 use crate::db::persona as db_persona;
 use crate::db::relationship as db_relationship;
 use crate::db::episodes as db_episodes;
@@ -31,8 +31,11 @@ const RECENCY_HALFLIFE_DAYS: f64 = 30.0;
 const NOVELTY_TAU: f64 = 5.0;
 
 /// Surfacing cooldown: an episode recalled within this many hours is dropped
-/// from proactive-anchor sampling (the pet just talked about it).
-pub const SURFACE_COOLDOWN_HOURS: i64 = 12;
+/// from proactive-anchor sampling (the pet just talked about it). 7 days =
+/// the hard repeat window for proactive bubbles ("同一条记忆绝不能多次浮现");
+/// once everything is on cooldown the round-robin relax picks the LEAST
+/// recently surfaced one instead of re-voicing the freshest.
+pub const SURFACE_COOLDOWN_HOURS: i64 = 168;
 
 /// Softmax temperature for the weighted surfacing draw. Lower = still mostly
 /// the top memories; higher = flatter, more exploratory. 0.6 keeps the best
@@ -208,15 +211,18 @@ pub fn compute_novelty(recall_count: i64) -> f64 {
     (-(recall_count as f64) / NOVELTY_TAU).exp()
 }
 
-/// Weighted-random surfacing anchor selection (diversity fix 2026-08-13).
+/// Weighted-random surfacing anchor selection (diversity fix 2026-08-13;
+/// repeat-window hardening 2026-08-14).
 ///
-/// Picks ONE episode from the scored pool for a proactive bubble — a weighted
-/// draw, not an argmax:
-///   1. Cooldown: episodes with `last_recalled_at` within
-///      `SURFACE_COOLDOWN_HOURS` are dropped (the pet just talked about them).
-///      If that empties the pool, cooldown is relaxed so she can still speak
-///      rather than fall silent.
-///   2. Softmax over `score / SURFACE_TEMPERATURE` among the survivors —
+/// Picks ONE episode from the scored pool for a proactive bubble:
+///   1. Repeat window: episodes with `last_recalled_at` within
+///      `SURFACE_COOLDOWN_HOURS` (7 days) are dropped — the pet just voiced
+///      them, they must NOT surface again.
+///   2. If that empties the pool, relax via round-robin: pick the LEAST
+///      recently surfaced episode (oldest `last_recalled_at`; never-surfaced
+///      first), never the freshest — a small memory pool can no longer re-cycle
+///      the same top memory every bubble.
+///   3. Softmax over `score / SURFACE_TEMPERATURE` among the fresh pool —
 ///      dominant memories stay *more likely* but can no longer win every
 ///      bubble ("浮现永远都是星际穿越/糯米").
 ///
@@ -239,10 +245,23 @@ pub fn sample_surface_anchor(
             .map(|dt| now.signed_duration_since(dt.with_timezone(&Utc)) < cooldown)
             .unwrap_or(false)
     };
-    let mut idxs: Vec<usize> = (0..scored.len()).filter(|&i| !in_cooldown(i)).collect();
+    let idxs: Vec<usize> = (0..scored.len()).filter(|&i| !in_cooldown(i)).collect();
     if idxs.is_empty() {
-        // Everything is on cooldown — relax rather than go silent.
-        idxs = (0..scored.len()).collect();
+        // Everything on cooldown: round-robin relax — oldest last_recalled_at
+        // first (None = never surfaced = most deserving). Guarantees the
+        // freshest memory can never be re-voiced before the rest of the pool.
+        let mut all: Vec<usize> = (0..scored.len()).collect();
+        all.sort_by(|&a, &b| {
+            let ra = &scored[a].episode.last_recalled_at;
+            let rb = &scored[b].episode.last_recalled_at;
+            match (ra, rb) {
+                (None, None) => a.cmp(&b),
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (Some(x), Some(y)) => x.cmp(y),
+            }
+        });
+        return Some(all[0]);
     }
     let weights: Vec<f64> = idxs
         .iter()
@@ -317,7 +336,8 @@ fn get_active_facts(conn: &Connection) -> Result<Vec<db_facts::Fact>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, category, key, value, confidence, valid_from, valid_to,
-                    source_episode, mention_count, created_at, updated_at
+                    source_episode, mention_count, created_at, updated_at,
+                    surfaced_count, last_surfaced_at
              FROM facts
              WHERE valid_to IS NULL
              ORDER BY confidence DESC",
@@ -338,6 +358,8 @@ fn get_active_facts(conn: &Connection) -> Result<Vec<db_facts::Fact>, String> {
                 mention_count: row.get(8)?,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
+                surfaced_count: row.get(11)?,
+                last_surfaced_at: row.get(12)?,
             })
         })
         .map_err(|e| format!("Failed to query facts: {}", e))?;

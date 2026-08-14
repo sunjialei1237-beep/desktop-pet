@@ -96,21 +96,47 @@ pub async fn generate_goodmorning(
         db,
         8,
     )?;
-    // Genuine recall reinforces the memory used to greet (same as welcome_back).
-    crate::mind::retrieval::reinforce_top(db, &retrieval.episodes);
-
+    // Optional anchor: only ~25% of 早安 attach a memory (user feedback
+    // 2026-08-14: 不用带那么多记忆), and only from the fresh pool. No anchor →
+    // still a valid pure greeting. The picked anchor is recorded as surfaced
+    // before the LLM call; only THIS anchor is reinforced (not the top-8 — fix
+    // for recall_count/cooldown inflation).
     let (memory_anchor, has_anchor): (String, bool) = {
+        use rand::Rng;
+        let now_utc = chrono::Utc::now();
         let mut rng = rand::thread_rng();
-        if let Some(f) = crate::pending::proactive::sample_anchorable_fact(&retrieval.facts, &mut rng) {
-            (format!("{}: {}", f.key, f.value), true)
-        } else if let Some(i) = crate::mind::retrieval::sample_surface_anchor(
-            &retrieval.episodes,
-            &chrono::Utc::now(),
-            &mut rng,
-        ) {
-            (retrieval.episodes[i].episode.summary.clone(), true)
-        } else {
+        if rng.gen_range(0..100) >= crate::pending::proactive::ANCHOR_PROB_PERCENT {
             (String::new(), false)
+        } else {
+            let fact =
+                crate::pending::proactive::sample_anchorable_fact(&retrieval.facts, &now_utc);
+            let episode = if fact.is_none() {
+                crate::mind::retrieval::sample_surface_anchor(&retrieval.episodes, &now_utc, &mut rng)
+                    .map(|i| &retrieval.episodes[i].episode)
+            } else {
+                None
+            };
+            match (fact, episode) {
+                (Some(f), _) => {
+                    crate::pending::proactive::record_anchor_surfaced(
+                        db, Some(f), None, &now_utc.to_rfc3339(),
+                    );
+                    (
+                        crate::pending::proactive::present_anchor(
+                            &format!("{}: {}", f.key, f.value),
+                            Some(&f.created_at),
+                        ),
+                        true,
+                    )
+                }
+                (None, Some(ep)) => {
+                    crate::pending::proactive::record_anchor_surfaced(
+                        db, None, Some(ep), &now_utc.to_rfc3339(),
+                    );
+                    (crate::pending::proactive::present_anchor(&ep.summary, Some(&ep.time)), true)
+                }
+                (None, None) => (String::new(), false),
+            }
         }
     };
 
@@ -140,7 +166,7 @@ pub async fn generate_goodmorning(
         String::new()
     };
     messages.push(ChatMessage::user(format!(
-        "（{time_clause}{anchor_clause}简短自然，1-2 句早安招呼。称呼对方用「你」，不要用「用户」。按规则回复。）"
+        "（{time_clause}{anchor_clause}这条不一定要问问题——一句带着温度的早安陈述就好，真的好奇最多一个问句。简短自然，1-2 句早安招呼。称呼对方用「你」，不要用「用户」。按规则回复。）"
     )));
 
     log::info!(

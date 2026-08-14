@@ -3,6 +3,7 @@
 
 pub mod proactive;
 pub mod tracker;
+pub mod budget;
 
 pub use proactive::{generate, trigger_proactive, PerceptionState, ProactiveAction};
 pub use tracker::{check_due, expire_stale, increment_followup, mark_triggered, resolve};

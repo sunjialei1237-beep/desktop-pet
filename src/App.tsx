@@ -161,6 +161,9 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
  // (used by the idle-sigh guard below).
  const bubbleVisibleRef = useRef(false);
  const isThinkingRef = useRef(false);
+ // Idle-sigh cooldown (2026-08-14): a "呼…" at most every 5 minutes — it was
+ // 8% per 5s tick with no cooldown, i.e. potentially several sighs a minute.
+ const lastSighRef = useRef(0);
  useEffect(() => { bubbleVisibleRef.current = bubbleVisible; }, [bubbleVisible]);
  useEffect(() => { isThinkingRef.current = isThinking; }, [isThinking]);
  // Foley: preload all buffers + startup greeting on mount (greeting defers to
@@ -454,8 +457,10 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
           !isThinkingRef.current &&
           !onboardingActiveRef.current &&
           !awayMode &&
-          Math.random() < 0.08
+          Date.now() - lastSighRef.current > 5 * 60 * 1000 &&
+          Math.random() < 0.03
         ) {
+          lastSighRef.current = Date.now();
           showBubble("呼…", 2500, "bubble-glyph", "", "sigh");
         }
       } catch { /* ignore */ }

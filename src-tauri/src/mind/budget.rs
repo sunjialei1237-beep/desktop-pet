@@ -459,6 +459,8 @@ mod tests {
                 mention_count: 1,
                 created_at: "2026-07-14T10:00:00+00:00".to_string(),
                 updated_at: "2026-07-14T10:00:00+00:00".to_string(),
+                surfaced_count: 0,
+                last_surfaced_at: None,
             }],
             relationship: Some(Relationship {
                 closeness: 20.0,

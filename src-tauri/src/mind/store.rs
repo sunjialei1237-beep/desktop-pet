@@ -260,6 +260,8 @@ fn store_fact(
         mention_count: 1,
         created_at: now.to_string(),
         updated_at: now.to_string(),
+        surfaced_count: 0,
+        last_surfaced_at: None,
     };
 
     db_facts::dedup_insert(conn, &new_fact)?;

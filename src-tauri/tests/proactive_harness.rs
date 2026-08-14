@@ -81,7 +81,7 @@ async fn proactive_recall_meets_standards() {
     // Drive the real pipeline via the single source of truth — no duplicated
     // emotion/retrieval/anchor/budget/LLM logic. generate returns the reply plus
     // the anchor it grounded on; the anchor is what S1 checks the reply against.
-    let outcome = proactive::generate(&db, &llm, None, &[])
+    let outcome = proactive::generate(&db, &llm, None, &[], proactive::DEFAULT_MEMORY_RATIO)
         .await
         .expect("proactive::generate errored")
         .expect("no memory to anchor on — run a conversation first so facts/episodes exist");

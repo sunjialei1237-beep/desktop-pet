@@ -113,7 +113,6 @@ pub fn run() {
             working_memory,
             question_pacing: Default::default(),
             last_decision: std::sync::Mutex::new(None),
-            last_proactive_bubble: std::sync::Mutex::new(None),
             pending_forget: std::sync::Mutex::new(None),
             clickthrough_diag: std::sync::Mutex::new(None),
         })

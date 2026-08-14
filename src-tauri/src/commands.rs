@@ -29,11 +29,6 @@ pub struct AppState {
     /// (Architecture #11: "她为什么这么说" — intent + retrieval + trigger +
     /// violations). Written in send_message, read in get_debug_snapshot.
     pub last_decision: std::sync::Mutex<Option<DecisionTrace>>,
-    /// Last proactive-bubble emission time (frequency gate). None = never.
-    /// Updated in check_proactive the moment a bubble is greenlit — before
-    /// proactive_bubble runs — so the 5-min frontend poll can't re-fire within
-    /// the interval even if generation later fails (conservative: 宁少勿突兀).
-    pub last_proactive_bubble: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
     /// Pending cross-turn forget disambiguation (None normally). Holds the ≥2
     /// candidate memories from a "忘掉X" that matched several, awaiting the
     /// user's clarifying reply. Mirrors `question_pacing` as a Mutex slot.
@@ -519,13 +514,12 @@ pub async fn check_proactive(
         closeness,
     };
 
-    // Real last-bubble time (was hardcoded to now-31min, which always passed the
-    // 30-min gate → bubbles fired every 5-min poll). None = never → sentinel a
-    // century back so elapsed is huge and the first bubble is allowed.
-    let last_bubble = state
-        .last_proactive_bubble
-        .lock()
-        .map_err(|e| format!("proactive lock error: {}", e))?
+    // Global bubble budget (2026-08-14): the ONLY frequency gate, persisted in
+    // app_config and shared by every proactive path (this poll + the backend
+    // pending/welcome/lonely emitters). None = never bubbled → sentinel a
+    // century back so the first bubble is allowed (kept for trigger_proactive's
+    // own interval rule, which mirrors the budget as a cheap double check).
+    let last_bubble = crate::pending::budget::read_last_bubble(&db)
         .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(36500));
     let action = crate::pending::trigger_proactive(
         &events,
@@ -534,13 +528,20 @@ pub async fn check_proactive(
         &last_bubble,
         state.config.proactive.min_interval_secs,
     );
-    // Occupy this interval the instant a bubble is greenlit — before
-    // proactive_bubble generates the text — so the 5-min frontend poll can't
-    // re-trigger within min_interval_secs even if generation later returns None.
-    if action.is_some() {
-        if let Ok(mut t) = state.last_proactive_bubble.lock() {
-            *t = Some(chrono::Utc::now());
-        }
+    if action.is_none() {
+        return Ok(None);
+    }
+    // Atomic check-and-occupy: the winner of this slot owns the interval —
+    // concurrent paths (welcome-back / lonely / pending-emit firing moments
+    // ago) can't double-fire. Occupying on greenlight, before generation,
+    // keeps the 5-min poll from re-triggering even if generation later returns
+    // None (conservative: 宁少勿突兀).
+    if !crate::pending::budget::try_occupy_budget(
+        &db,
+        state.config.proactive.min_interval_secs,
+        chrono::Utc::now(),
+    ) {
+        return Ok(None);
     }
 
     if let Some(a) = &action {
@@ -583,8 +584,14 @@ pub async fn proactive_bubble(
     // layer; logic in modules). The command's IPC contract stays Option<String>
     // (the reply); the anchor is dropped here — it is consumed only by tests and
     // (eventually) the Debug Panel, not the frontend bubble.
-    let outcome =
-        crate::pending::proactive::generate(&db, &llm, Some(&state.embedding), &wm_context).await?;
+    let outcome = crate::pending::proactive::generate(
+        &db,
+        &llm,
+        Some(&state.embedding),
+        &wm_context,
+        state.config.proactive.memory_bubble_ratio,
+    )
+    .await?;
     Ok(outcome.map(|o| o.reply))
 }
 
@@ -1039,6 +1046,10 @@ pub struct DebugSnapshot {
     /// Deep-focus tracking (P14.3): sustained same-Work-app foreground time.
     pub continuous_work_secs: u64,
     pub is_deep_focus: bool,
+    /// Proactive-bubble budget observability (2026-08-14): when the last bubble
+    /// fired and how long until the next is allowed (Architecture #11).
+    pub last_bubble_at: Option<String>,
+    pub next_bubble_in_secs: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1057,6 +1068,9 @@ pub struct DebugFact {
     pub value: String,
     pub confidence: f64,
     pub created_at: Option<String>,
+    /// Times surfaced by proactive bubbles (2026-08-14 round-robin rotation).
+    pub surfaced_count: i64,
+    pub last_surfaced_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1139,7 +1153,7 @@ pub async fn get_debug_snapshot(
         // in Debug Panel, so the user couldn't see/manage it. Volumes are small
         // (tens), the panel scrolls.
         let mut stmt = conn
-            .prepare("SELECT id, category, key, value, confidence, created_at FROM facts WHERE valid_to IS NULL ORDER BY confidence DESC")
+            .prepare("SELECT id, category, key, value, confidence, created_at, surfaced_count, last_surfaced_at FROM facts WHERE valid_to IS NULL ORDER BY confidence DESC")
             .map_err(|e| format!("Prepare error: {}", e))?;
         let recent_facts: Vec<DebugFact> = stmt
             .query_map([], |row| Ok(DebugFact {
@@ -1149,6 +1163,8 @@ pub async fn get_debug_snapshot(
                 value: row.get(3)?,
                 confidence: row.get(4)?,
                 created_at: row.get(5)?,
+                surfaced_count: row.get(6)?,
+                last_surfaced_at: row.get(7)?,
             }))
             .map_err(|e| format!("Query error: {}", e))?
             .filter_map(|r| r.ok())
@@ -1235,6 +1251,27 @@ pub async fn get_debug_snapshot(
             } else {
                 false
             },
+            // Proactive-bubble budget observability (2026-08-14): when the last
+            // bubble fired + seconds until the next is allowed (#11).
+            last_bubble_at: crate::db::onboarding::get(
+                conn,
+                crate::pending::budget::LAST_BUBBLE_KEY,
+            )
+            .ok()
+            .flatten(),
+            next_bubble_in_secs: crate::db::onboarding::get(
+                conn,
+                crate::pending::budget::LAST_BUBBLE_KEY,
+            )
+            .ok()
+            .flatten()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|d| {
+                let elapsed =
+                    (chrono::Utc::now() - d.with_timezone(&chrono::Utc)).num_seconds();
+                (state.config.proactive.min_interval_secs - elapsed).max(0)
+            })
+            .unwrap_or(0),
         })
     })
 }

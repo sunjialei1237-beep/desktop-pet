@@ -19,7 +19,7 @@ interface DebugSnapshot {
   fact_count: number;
   pending_count: number;
   recent_episodes: { id: string; summary: string; strength: number; recall_count: number }[];
-  recent_facts: { id: string; category: string; key: string; value: string; confidence: number; created_at: string | null }[];
+  recent_facts: { id: string; category: string; key: string; value: string; confidence: number; created_at: string | null; surfaced_count: number; last_surfaced_at: string | null }[];
   pending_events: { id: string; title: string; status: string; remind_date: string | null }[];
   change_log: { timestamp: string; module: string; action: string; target: string | null; field: string | null; old_value: string | null; new_value: string | null; reason: string | null }[];
   last_decision: {
@@ -48,6 +48,8 @@ interface DebugSnapshot {
   llm_configured: boolean;
   continuous_work_secs: number;
   is_deep_focus: boolean;
+  last_bubble_at: string | null;
+  next_bubble_in_secs: number;
 }
 
 interface JobStat {
@@ -342,12 +344,22 @@ export function DebugPanel({ anim, onClose, onQuit }: {
         </div>
       </div>
 
+      <div className="debug-section">
+        <span className="debug-title">主动气泡预算</span>
+        <div className="debug-bar">
+          <span>上次气泡 {snapshot.last_bubble_at ? snapshot.last_bubble_at.slice(0, 19).replace("T", " ") : "从未"} | 下次还需 {Math.floor(snapshot.next_bubble_in_secs / 60)} 分钟</span>
+        </div>
+      </div>
+
       {snapshot.recent_facts.length > 0 && (
         <div className="debug-section">
           <span className="debug-title">Facts</span>
           {snapshot.recent_facts.map((f) => (
             <div key={f.id} className="debug-item">
-              <span>[{f.category}] {f.key}: {f.value} ({f.confidence.toFixed(2)}){f.created_at ? ` · ${f.created_at.slice(0, 10)}` : ""}</span>
+              <span>[{f.category}] {f.key}: {f.value} ({f.confidence.toFixed(2)})
+                {f.surfaced_count > 0 ? ` · 浮现 ${f.surfaced_count} 次${f.last_surfaced_at ? ` (${f.last_surfaced_at.slice(0, 10)})` : ""}` : ""}
+                {f.created_at ? ` · ${f.created_at.slice(0, 10)}` : ""}
+              </span>
               <button className="debug-x" type="button"
                 title="忘掉这条 fact（软删除，可重新习得）"
                 onClick={() => {

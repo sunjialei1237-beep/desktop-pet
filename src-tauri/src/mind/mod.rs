@@ -16,6 +16,7 @@ pub mod agent;
 pub mod pacing;
 pub mod evaluation;
 pub mod export;
+pub mod deictic;
 
 pub use correction::{handle_correction, CorrectionResult};
 pub use forget::{

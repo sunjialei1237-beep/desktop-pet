@@ -785,7 +785,7 @@ pub fn sample_anchorable_fact<'a>(facts: &'a [Fact], now: &DateTime<Utc>) -> Opt
 fn surfaced_recently(f: &Fact, now: &DateTime<Utc>) -> bool {
     match &f.last_surfaced_at {
         Some(s) => match DateTime::parse_from_rfc3339(s) {
-            Ok(d) => (now - d.with_timezone(&Utc)).num_days() < FACT_REPEAT_WINDOW_DAYS,
+            Ok(d) => (*now - d.with_timezone(&Utc)).num_days() < FACT_REPEAT_WINDOW_DAYS,
             Err(_) => false,
         },
         None => false,
@@ -823,7 +823,7 @@ fn is_anchorable_fact(f: &Fact) -> bool {
 /// ("今天在找实习" → "在找实习") plus the memory's date as a bracketed
 /// reference ("（这是 ta 8月13日 提到的事）") — she gets a correct sense of when
 /// without echoing stale deictic words (fix: "你说今天在找实习").
-fn present_anchor(anchor: &str, date: Option<&str>) -> String {
+pub fn present_anchor(anchor: &str, date: Option<&str>) -> String {
     let mut s = crate::mind::deictic::neutralize_deictic(anchor);
     if let Some(d) = date {
         if let Some(fmt) = crate::mind::deictic::format_memory_date(d) {
@@ -840,7 +840,7 @@ fn present_anchor(anchor: &str, date: Option<&str>) -> String {
 /// rotates past them; episodes reuse `last_recalled_at` via `episodes::reinforce`.
 /// Called the moment the anchor is picked, before generation (conservative:
 /// 宁少勿突兀 — a failed generation still consumes the pick, no instant re-pick).
-fn record_anchor_surfaced(db: &DbState, fact: Option<&Fact>, episode: Option<&crate::db::episodes::Episode>, now: &str) {
+pub fn record_anchor_surfaced(db: &DbState, fact: Option<&Fact>, episode: Option<&crate::db::episodes::Episode>, now: &str) {
     if let Some(f) = fact {
         if let Err(e) = db.with_conn(|conn| crate::db::facts::bump_surfaced(conn, &f.id, now)) {
             log::warn!("Failed to bump fact surfaced {}: {}", f.id, e);
@@ -1016,12 +1016,12 @@ mod tests {
     }
 
     #[test]
-    fn test_sample_anchorable_fact_explores_unmentioned() {
-        // Weight 1/(1+mention_count): a fact voiced 100 times must almost never
-        // win over a never-voiced one, regardless of confidence order.
-        use rand::rngs::StdRng;
-        use rand::SeedableRng;
-        let make = |id: &str, key: &str, confidence: f64, mentions: i64| Fact {
+    fn test_sample_anchorable_fact_round_robin_never_repeats() {
+        // Round-robin (2026-08-14): never-surfaced facts win deterministically;
+        // a fact surfaced within the 7-day repeat window is HARD-excluded —
+        // the "同一条记忆绝对不能多次浮现" guarantee.
+        let now = Utc::now();
+        let make = |id: &str, key: &str, confidence: f64, mentions: i64, surfaced: i64, last: Option<&str>| Fact {
             id: id.to_string(),
             category: "preference".to_string(),
             key: key.to_string(),
@@ -1033,33 +1033,38 @@ mod tests {
             mention_count: mentions,
             created_at: "2026-07-01T00:00:00+00:00".to_string(),
             updated_at: "2026-07-01T00:00:00+00:00".to_string(),
+            surfaced_count: surfaced,
+            last_surfaced_at: last.map(|s| s.to_string()),
         };
-        // Old faithful: highest confidence, mentioned 100 times.
-        let stale = make("f1", "movie", 0.98, 100);
-        // Newer memory: slightly lower confidence, never mentioned.
-        let fresh = make("f2", "hobby", 0.8, 0);
+        // Old faithful: highest confidence but surfaced 100 times.
+        let stale = make("f1", "movie", 0.98, 100, 100, Some("2026-08-01T00:00:00+00:00"));
+        // Never surfaced, never mentioned → must win regardless of confidence.
+        let fresh = make("f2", "hobby", 0.8, 0, 0, None);
         let facts = vec![stale.clone(), fresh.clone()];
+        let picked = sample_anchorable_fact(&facts, &now).unwrap();
+        assert_eq!(picked.id, "f2", "never-surfaced fact wins over heavily-surfaced");
 
-        let mut fresh_wins = 0usize;
-        for seed in 0..100u64 {
-            let mut rng = StdRng::seed_from_u64(seed);
-            if let Some(f) = sample_anchorable_fact(&facts, &mut rng) {
-                if f.id == "f2" {
-                    fresh_wins += 1;
-                }
-            }
-        }
+        // Hard exclusion: everything surfaced within the window → None (caller
+        // falls back to episodes/lively rather than repeat a memory). Both
+        // facts were surfaced recently (relative to `now`) — inside 7 days.
+        let stale_in_window = make(
+            "f1",
+            "movie",
+            0.98,
+            100,
+            100,
+            Some(&(now - chrono::Duration::days(1)).to_rfc3339()),
+        );
+        let just_now = (now - chrono::Duration::hours(1)).to_rfc3339();
+        let repeated = make("f3", "drink", 0.9, 0, 1, Some(&just_now));
         assert!(
-            fresh_wins >= 95,
-            "fresh fact should dominate the draw (got {}/100)",
-            fresh_wins
+            sample_anchorable_fact(&[stale_in_window, repeated], &now).is_none(),
+            "all facts inside the repeat window → None, never a repeat"
         );
     }
 
     #[test]
     fn test_sample_anchorable_fact_filters_non_anchorable() {
-        use rand::rngs::StdRng;
-        use rand::SeedableRng;
         let low_conf = Fact {
             id: "f1".to_string(),
             category: "trivia".to_string(),
@@ -1072,10 +1077,29 @@ mod tests {
             mention_count: 0,
             created_at: "2026-07-01T00:00:00+00:00".to_string(),
             updated_at: "2026-07-01T00:00:00+00:00".to_string(),
+            surfaced_count: 0,
+            last_surfaced_at: None,
         };
-        let mut rng = StdRng::seed_from_u64(3);
-        assert!(sample_anchorable_fact(&[low_conf], &mut rng).is_none());
-        assert!(sample_anchorable_fact(&[], &mut rng).is_none());
+        let now = Utc::now();
+        assert!(sample_anchorable_fact(&[low_conf], &now).is_none());
+        assert!(sample_anchorable_fact(&[], &now).is_none());
+    }
+
+    #[test]
+    fn test_present_anchor_strips_deictic_and_adds_date() {
+        // "今天在找实习" recorded 2026-07-26 must never be echoed as "今天" later
+        // (user feedback 2026-08-14: 时间完全对不上).
+        let s = present_anchor("今天在找实习", Some("2026-07-26T08:00:00+00:00"));
+        assert!(!s.contains("今天"), "deictic word must be stripped: {}", s);
+        assert!(s.contains("在找实习"));
+        assert!(s.contains("7月26日"), "date reference injected: {}", s);
+
+        // No date available → just stripped.
+        assert_eq!(present_anchor("明天去面试", None), "去面试");
+
+        // No deictic → content untouched (reference still appended when known).
+        let s3 = present_anchor("在准备找实习", Some("2026-07-26T08:00:00+00:00"));
+        assert!(s3.starts_with("在准备找实习"), "no-deictic content preserved: {}", s3);
     }
 
     #[test]
