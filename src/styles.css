@@ -839,10 +839,12 @@ html, body, #root {
 .pet-bubble-tail {
   position: absolute;
   left: 15px;
-  /* bottom:-12px + height:12px => the tail's top is FLUSH with the bubble's
-     bottom edge (no overlap into the bubble body). It used to be -7px, which
-     put the tail's top 5px inside the bubble (visible overlap ~4px). */
-  bottom: -12px;
+  /* bottom:-10px + height:12px => tail top sits 2px INTO the bubble body.
+     It was -12px (flush) but the -5deg rotation tilts the tail's top edge
+     (left corner dips ~0.7px below the pivot), leaving a visible ~1px
+     wedge gap between the tail top and the bubble bottom. Overlapping 2px
+     is invisible (tail and bubble share the same fill) and kills the gap. */
+  bottom: -10px;
   width: 17px;
   height: 12px;
   background: rgba(250, 248, 243, 0.90);
