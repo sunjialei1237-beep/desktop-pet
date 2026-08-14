@@ -18,6 +18,8 @@ use crate::config::ToolsConfig;
 use crate::llm::client::ToolDef;
 
 pub mod policy;
+mod search;
+mod system;
 
 /// What *category* of external capability the Brain grants this turn. The
 /// Planner emits this (not a tool name) — Brain never sees tool names. `None`
@@ -143,14 +145,15 @@ fn tool_def(kind: ToolKind) -> ToolDef {
     }
 }
 
-/// Execute a tool by dispatch. Phase 3 wires these to `tools::search` /
-/// `tools::system`; until then this is a stub so the registry type-signature
-/// is fixed and the agent loop (Phase 5) can compile against it.
-pub async fn execute(kind: ToolKind, _args: &serde_json::Value, _cfg: &ToolsConfig) -> ToolResult {
-    log::warn!("[tools] execute stub for {} (phase 3 not yet implemented)", kind.name());
-    ToolResult {
-        status: policy::ToolStatus::Failed,
-        content: "此工具尚未实现。".to_string(),
+/// Execute a tool by dispatch (enum + match, scheduler.rs style). The policy
+/// gate has already run by the time this is called; these functions re-verify
+/// as defense-in-depth before spawning any process.
+pub async fn execute(kind: ToolKind, args: &serde_json::Value, _cfg: &ToolsConfig) -> ToolResult {
+    match kind {
+        ToolKind::GetTime => system::get_time(args).await,
+        ToolKind::SearchWeb => search::search_web(args).await,
+        ToolKind::OpenApplication => system::open_application(args).await,
+        ToolKind::OpenUrl => system::open_url(args).await,
     }
 }
 
@@ -209,8 +212,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_stub_returns_failed() {
+    async fn execute_get_time_dispatches() {
         let r = execute(ToolKind::GetTime, &serde_json::json!({}), &cfg(true, true)).await;
-        assert_eq!(r.status, policy::ToolStatus::Failed);
+        assert_eq!(r.status, policy::ToolStatus::Success);
+        assert!(r.content.contains("现在是"));
+    }
+
+    #[tokio::test]
+    async fn execute_open_app_rejects_non_whitelist() {
+        let r = execute(
+            ToolKind::OpenApplication,
+            &serde_json::json!({"app": "evil"}),
+            &cfg(true, true),
+        )
+        .await;
+        assert_eq!(r.status, policy::ToolStatus::Rejected);
     }
 }

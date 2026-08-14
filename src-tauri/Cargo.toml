@@ -28,6 +28,8 @@ rand = "0.8"
 rusqlite = { version = "0.31", features = ["bundled"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
+scraper = "0.20"
+async-trait = "0.1"
 zip = "2"
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["load-dynamic", "ndarray", "api-20"] }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
