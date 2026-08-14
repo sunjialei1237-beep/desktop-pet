@@ -374,6 +374,7 @@ fn gc_009_store_pipeline_completeness() {
 
     let extraction = ExtractionResult {
         episode: Some(EpisodeInput {
+            emotion_anchor: None,
             summary: "user is preparing for internship".to_string(),
             emotion: Some("motivated".to_string()),
             importance: 0.8,
@@ -943,6 +944,7 @@ fn gc_030_end_to_end_memory_loop() {
 
     let extraction = ExtractionResult {
         episode: Some(EpisodeInput {
+            emotion_anchor: None,
             summary: "user is preparing for an internship interview".to_string(),
             emotion: None,
             importance: 0.8,

@@ -275,7 +275,7 @@ pub async fn generate(
                         "playful",
                     )),
                     (None, Some(ep)) => Some((
-                        present_anchor(&ep.summary, Some(&ep.time)),
+                        with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep),
                         "accompany",
                         "gentle",
                     )),
@@ -339,6 +339,18 @@ pub async fn generate(
             anchor: memory_anchor,
         })),
         None => Ok(None),
+    }
+}
+
+/// Appends the moment's atmosphere ("当时的氛围") to a surfaced episode
+/// anchor so she recalls it with warmth — "我想起你当时…" instead of
+/// reciting a file (memory-trigger "context" idea, adapted). No-op when the
+/// episode has no anchor. Appended AFTER present_anchor so the deictic
+/// neutralization never touches the atmosphere text.
+fn with_emotion_anchor(anchor: String, ep: &crate::db::episodes::Episode) -> String {
+    match ep.emotion_anchor.as_deref() {
+        Some(a) if !a.trim().is_empty() => format!("{}（当时的氛围：{}）", anchor, a),
+        _ => anchor,
     }
 }
 
@@ -538,7 +550,7 @@ pub async fn generate_welcome_back(
                 }
                 (None, Some(ep)) => {
                     record_anchor_surfaced(db, None, Some(ep), &now_utc.to_rfc3339());
-                    (present_anchor(&ep.summary, Some(&ep.time)), true)
+                    (with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep), true)
                 }
                 (None, None) => (String::new(), false),
             }
@@ -691,7 +703,7 @@ pub async fn generate_lonely_bubble(
                 }
                 (None, Some(ep)) => {
                     record_anchor_surfaced(db, None, Some(ep), &now_utc.to_rfc3339());
-                    (present_anchor(&ep.summary, Some(&ep.time)), true)
+                    (with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep), true)
                 }
                 (None, None) => (String::new(), false),
             }
@@ -873,6 +885,29 @@ mod tests {
         assert!(p.contains("我说过要"), "promise voice, not alarm reminder");
         assert!(p.contains("明早叫 ta 起床"));
         assert!(!p.contains("突然想起了这件事"));
+    }
+
+    #[test]
+    fn test_with_emotion_anchor_appends_atmosphere() {
+        let mut ep = crate::db::episodes::Episode {
+            id: "ep_1".into(), time: "2026-08-14T10:00:00+00:00".into(),
+            summary: "和糯米去看猫".into(), emotion: Some("开心".into()),
+            importance: 0.7, is_landmark: false, subject: "user".into(),
+            participants: None, topics: None, source_type: "conversation".into(),
+            source_conversation_id: None, source_turn: None,
+            memory_strength: 0.7, recall_count: 0, last_recalled_at: None,
+            consolidated: false, created_at: "2026-08-14T10:00:00+00:00".into(),
+            emotion_anchor: Some("在猫咖，眼睛亮亮的".into()),
+        };
+        let out = with_emotion_anchor("和糯米去看猫（ta 8月14日 提到的事）".into(), &ep);
+        assert!(out.contains("（当时的氛围：在猫咖，眼睛亮亮的）"));
+        assert!(out.starts_with("和糯米去看猫"), "anchor body comes first");
+
+        ep.emotion_anchor = Some("   ".into());
+        assert_eq!(with_emotion_anchor("anchor".into(), &ep), "anchor", "blank anchor is a no-op");
+
+        ep.emotion_anchor = None;
+        assert_eq!(with_emotion_anchor("anchor".into(), &ep), "anchor", "missing anchor is a no-op");
     }
 
     fn pending_event(id: &str, title: &str) -> PendingEvent {

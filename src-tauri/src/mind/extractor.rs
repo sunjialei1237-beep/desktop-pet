@@ -25,6 +25,13 @@ pub struct EpisodeInput {
     pub summary: String,
     #[serde(default)]
     pub emotion: Option<String>,
+    /// One short scene/mood snapshot from the moment it happened
+    /// ("在奶茶店门口，眼睛亮亮的") — surfaced later with the memory so she
+    /// recalls it with warmth instead of reciting a file (memory-trigger
+    /// "context" idea, adapted). Optional; omitted unless the moment had a
+    /// clear atmosphere.
+    #[serde(default)]
+    pub emotion_anchor: Option<String>,
     #[serde(default = "default_importance")]
     pub importance: f64,
     #[serde(default)]
@@ -248,6 +255,21 @@ mod tests {
         let json = r#"{"facts": []}"#;
         let result = parse_extraction(json).unwrap();
         assert!(result.pet_promise.is_none());
+    }
+
+    #[test]
+    fn test_parse_emotion_anchor() {
+        let json = r#"{
+            "episode": {"summary": "和糯米去看猫", "emotion": "开心", "emotion_anchor": "在猫咖，眼睛亮亮的", "importance": 0.7}
+        }"#;
+        let result = parse_extraction(json).unwrap();
+        let ep = result.episode.expect("episode should parse");
+        assert_eq!(ep.emotion_anchor.as_deref(), Some("在猫咖，眼睛亮亮的"));
+
+        // Absent key -> None (serde default), old-format output still parses.
+        let legacy = r#"{"episode": {"summary": "去面试了"}}"#;
+        let legacy_result = parse_extraction(legacy).unwrap();
+        assert!(legacy_result.episode.unwrap().emotion_anchor.is_none());
     }
 
     #[test]

@@ -21,6 +21,8 @@ episode.emotion is an exception: it MUST be exactly one of these 6 labels (no ot
   "开心" | "调皮" | "平静" | "难过" | "疲惫" | "担心"
 Pick the one that best matches the user's emotional state in this message. Omit episode.emotion entirely if nothing fits.
 
+episode.emotion_anchor (optional): one short Chinese phrase (≤20 字) capturing the SCENE or mood AT THAT MOMENT — e.g. "在奶茶店门口，眼睛亮亮的" "深夜赶工的疲惫" "说到猫就笑了". Fill it ONLY when the message has a clear scene or emotional atmosphere; most episodes should omit it. NEVER invent details not in the message, and follow the same STRIP RELATIVE TIME rule. This is what lets the pet later say "我想起你当时…" with warmth instead of reciting a file.
+
 KNOWN FACTS ABOUT THE USER (skip duplicates, flag contradictions):
 {known_facts}
 
@@ -40,7 +42,7 @@ Default: most messages produce facts: []. When unsure whether something is a dur
 
 Output JSON only:
 {
-  "episode": {"summary": "...", "emotion": "...", "importance": 0.0, "participants": [], "topics": []},
+  "episode": {"summary": "...", "emotion": "...", "emotion_anchor": "...", "importance": 0.0, "participants": [], "topics": []},
   "facts": [{"category": "...", "key": "...", "value": "...", "confidence": 0.0}],
   "emotion_delta": {"mood": 0.0, "stress": 0.0, "energy": 0.0},
   "pending_event": {"title": "...", "event_date": "2026-01-01", "offset_minutes": 30},

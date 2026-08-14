@@ -89,7 +89,7 @@ pub fn store(
     if let Some(ep) = &result.episode {
         let ep_id = format!("ep_{}", Uuid::new_v4().simple());
         let episode = db_episodes::Episode {
-            emotion_anchor: None,
+            emotion_anchor: ep.emotion_anchor.clone(),
             id: ep_id.clone(),
             time: now.clone(),
             summary: ep.summary.clone(),
@@ -344,6 +344,7 @@ mod tests {
         let result = ExtractionResult {
             pet_promise: None,
             episode: Some(EpisodeInput {
+                emotion_anchor: None,
                 summary: "ate hotpot with friends".to_string(),
                 emotion: Some("happy".to_string()),
                 importance: 0.7,
@@ -589,6 +590,34 @@ mod tests {
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].title, "明早叫 ta 起床");
         assert_eq!(due[0].origin, "pet");
+    }
+
+    #[test]
+    fn test_store_episode_emotion_anchor_persisted() {
+        let db = test_db();
+        let result = ExtractionResult {
+            episode: Some(EpisodeInput {
+                summary: "和糯米去看猫".to_string(),
+                emotion: Some("开心".to_string()),
+                emotion_anchor: Some("在猫咖，眼睛亮亮的".to_string()),
+                importance: 0.7,
+                participants: vec![],
+                topics: vec![],
+            }),
+            facts: vec![],
+            emotion_delta: None,
+            pending_event: None,
+            pet_promise: None,
+        };
+
+        let ep_id = store(&result, "conv_anchor", 0, &db, None).unwrap().unwrap();
+
+        db.with_conn(|conn| {
+            let ep = crate::db::episodes::get(conn, &ep_id)?.unwrap();
+            assert_eq!(ep.emotion_anchor.as_deref(), Some("在猫咖，眼睛亮亮的"));
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
