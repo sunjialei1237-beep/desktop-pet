@@ -51,6 +51,26 @@ pub fn resolve_first_met(conn: &rusqlite::Connection) -> String {
     first_met
 }
 
+/// Read-only resolution of the first-met moment: cached app_config key, else
+/// the earliest change_log write. Does NOT persist (unlike `resolve_first_met`),
+/// so read paths (retrieval's days_known backfill) can derive the real
+/// relationship age without a write side effect.
+pub fn first_met_readonly(conn: &rusqlite::Connection) -> Option<chrono::DateTime<chrono::Utc>> {
+    let raw = onboarding::get(conn, FIRST_MET_KEY)
+        .ok()
+        .flatten()
+        .or_else(|| {
+            conn.query_row("SELECT MIN(timestamp) FROM change_log", [], |r| r.get(0))
+                .ok()
+                .flatten()
+        });
+    raw.and_then(|s| {
+        chrono::DateTime::parse_from_rfc3339(&s)
+            .ok()
+            .map(|d| d.with_timezone(&chrono::Utc))
+    })
+}
+
 fn celebrated_ids(conn: &rusqlite::Connection) -> Vec<String> {
     onboarding::get(conn, CELEBRATED_KEY)
         .ok()

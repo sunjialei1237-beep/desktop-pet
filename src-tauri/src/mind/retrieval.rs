@@ -158,8 +158,9 @@ pub fn retrieve(
     // Retrieve active facts.
     let facts = db.with_conn(get_active_facts)?;
 
-    // Retrieve persona snapshot.
-    let relationship = db.with_conn(db_relationship::get).ok();
+    // Retrieve persona snapshot (with the dead `days_known` column fixed at
+    // read time — see `load_relationship_with_days`).
+    let relationship = db.with_conn(|conn| load_relationship_with_days(conn)).ok().flatten();
     let persona_traits = db.with_conn(|conn| {
         Ok(db_persona::get_all_traits(conn)
             .unwrap_or_default())
@@ -184,6 +185,49 @@ pub fn retrieve(
         persona_traits,
         user_profile,
     })
+}
+
+/// Relationship with the dead `days_known` column fixed at read time: derived
+/// from the first-met anchor (earliest change_log write, cached by landmark).
+/// `days_known` is never written by anything, so injecting "known 0 days"
+/// forever is a dead signal — and appellation-by-relationship-state (Soul v2
+/// plan §3.3) needs the real age. Read-only derivation, no write side effect.
+fn load_relationship_with_days(
+    conn: &rusqlite::Connection,
+) -> Result<Option<db_relationship::Relationship>, String> {
+    let Some(mut rel) = db_relationship::get(conn).ok() else {
+        return Ok(None);
+    };
+    if let Some(first_met) = crate::soul::landmark::first_met_readonly(conn) {
+        let days = (Utc::now() - first_met).num_days().max(0);
+        if days > rel.days_known {
+            rel.days_known = days;
+        }
+    }
+    Ok(Some(rel))
+}
+
+/// Loads the identity slice of a RetrievalResult: persona / relationship /
+/// relationship review / user profile — everything that says who she is and
+/// who she is talking to, with NO episodic/factual memories. Used by paths
+/// that must sound like 璃 without anchoring on memory (lively self-talk
+/// bubbles — Soul v2 plan L2b, QA direct answers). Cheap: pure DB reads,
+/// no embedding, no episode scan.
+pub fn load_identity(db: &DbState) -> RetrievalResult {
+    db.with_conn(|conn| {
+        Ok(RetrievalResult {
+            episodes: Vec::new(),
+            facts: Vec::new(),
+            relationship: load_relationship_with_days(conn)?,
+            relationship_review: crate::db::relationship_reviews::get_latest(conn)
+                .ok()
+                .flatten()
+                .map(|r| r.summary),
+            persona_traits: crate::db::persona::get_all_traits(conn).unwrap_or_default(),
+            user_profile: crate::db::onboarding::load(conn).unwrap_or_default(),
+        })
+    })
+    .unwrap_or_default()
 }
 
 /// Reinforces the given episodes as a genuine-recall write: strength grows
@@ -521,6 +565,53 @@ mod tests {
     use super::*;
     use crate::db::test_utils::test_db;
     use crate::db::episodes as db_episodes;
+
+    #[test]
+    fn load_identity_returns_identity_without_memories() {
+        // Soul v2 plan L2b: lively/QA identity slice — persona, relationship
+        // (days_known backfilled), onboarding profile present; memories empty.
+        let db = test_db();
+        let old = (Utc::now() - chrono::Duration::days(40)).to_rfc3339();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO change_log (timestamp, module, action, target, field, old_value, new_value, reason)
+                 VALUES (?1, 'test', 'seed', 'x', 'f', '', '', '')",
+                rusqlite::params![old],
+            )
+            .map_err(|e| e.to_string())?;
+            crate::db::persona::upsert_trait(
+                conn,
+                &crate::db::persona::PersonaTrait {
+                    id: "t_core_1".to_string(),
+                    trait_type: "core".to_string(),
+                    trait_key: "温柔".to_string(),
+                    confidence: 0.9,
+                    source: "seed".to_string(),
+                    created_at: "t".to_string(),
+                    updated_at: "t".to_string(),
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            let _ = crate::db::onboarding::save(conn, "user_nickname", "小磊");
+            Ok::<(), String>(())
+        })
+        .unwrap();
+
+        let r = load_identity(&db);
+        assert!(r.episodes.is_empty(), "identity slice carries no episodes");
+        assert!(r.facts.is_empty(), "identity slice carries no facts");
+        assert!(
+            r.persona_traits.iter().any(|t| t.trait_key == "温柔"),
+            "persona traits loaded"
+        );
+        assert_eq!(r.user_profile.user_nickname.as_deref(), Some("小磊"));
+        let rel = r.relationship.expect("relationship row exists");
+        assert!(
+            rel.days_known >= 40,
+            "days_known backfilled from change_log (got {})",
+            rel.days_known
+        );
+    }
 
     fn make_episode(conn: &Connection, summary: &str, strength: f64, time: &str) -> String {
         let id = format!("ep_test_{}", uuid::Uuid::new_v4().simple());

@@ -270,14 +270,10 @@ pub async fn converse(
         // Loaded cheaply (no embedding, no episode scan) so a QA reply still
         // sounds like 璃 and can address the user by name. (Architecture #1:
         // identity is Rust-loaded, not LLM-imagined.)
-        let mut r = crate::mind::retrieval::RetrievalResult::default();
-        let _ = db.with_conn(|c| {
-            r.persona_traits = crate::db::persona::get_all_traits(c).unwrap_or_default();
-            r.relationship = crate::db::relationship::get(c).ok();
-            r.user_profile = crate::db::onboarding::load(c).unwrap_or_default();
-            Ok::<(), String>(())
-        });
-        (r, "question route (QA mode)".to_string())
+        (
+            crate::mind::retrieval::load_identity(db),
+            "question route (QA mode)".to_string(),
+        )
     } else {
         let trigger_decision = crate::mind::trigger::should_retrieve(text, &emotion, wm_context);
         let reason = trigger_decision.reason.clone();

@@ -487,7 +487,13 @@ pub async fn generate_lively(
     wm_context: &[ChatMessage],
     emotion: &EmotionState,
 ) -> Result<Option<BubbleOutcome>, String> {
-    let retrieval = crate::mind::retrieval::RetrievalResult::default();
+    // Identity-only retrieval (Soul v2 plan L2b): she knows who she is, who
+    // she's talking to, and how old the relationship is — but carries no
+    // episodic/factual memories, so grounding_guard still blocks any invented
+    // claim about the user's past. Previously RetrievalResult::default() left
+    // 85% of bubbles persona-less (format_persona fell back to a generic
+    // English companion line).
+    let retrieval = crate::mind::retrieval::load_identity(db);
     let hour: u32 = Local::now().format("%H").to_string().parse().unwrap_or(12);
     let tone = lively_tone(emotion);
 

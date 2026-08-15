@@ -159,12 +159,20 @@ fn format_persona(
         lines.push(format!("Adaptive traits: {}", adaptive_traits.join(", ")));
     }
 
-    // Relationship snapshot
+    // Relationship snapshot. `trust` is a dead column (never written) —
+    // injecting "trust 0.0" next to a real closeness is a contradictory
+    // signal, so it stays hidden until something actually maintains it
+    // (宁缺勿假). `days_known` is backfilled at read time in retrieval.
     if let Some(rel) = relationship {
+        let trust_part = if rel.trust > 0.0 {
+            format!(", trust {:.1}/100", rel.trust)
+        } else {
+            String::new()
+        };
         lines.push(format!(
-            "Relationship: closeness {}/100, trust {:.1}/100, known {} days, {} conversations",
+            "Relationship: closeness {}/100{}, known {} days, {} conversations",
             rel.closeness as i32,
-            rel.trust,
+            trust_part,
             rel.days_known,
             rel.total_conversations,
        ));
@@ -179,7 +187,10 @@ fn format_persona(
         lines.push(format!("你的名字: {}", pn));
     }
     if let Some(ps) = &user_profile.personality_style {
-        lines.push(format!("你被期望的性格: {}", ps));
+        // Not "你被期望的性格" — that framing is a casting-mask cue that
+        // licenses performing a role; these settings are the seed she grew
+        // her personality from (Soul v2 plan §3.3).
+        lines.push(format!("你性格的底子（ta 最初的心愿）: {}", ps));
     }
     if let Some(rs) = &user_profile.relationship_style {
         lines.push(format!("与用户的关系设定: {}", rs));
@@ -746,6 +757,43 @@ mod tests {
             prompt.contains("暂无相关记忆"),
             "empty memory must show the explicit no-fabrication marker"
         );
+    }
+
+    #[test]
+    fn dead_trust_column_hidden_alive_trust_injected() {
+        // Soul v2 plan §3.3: trust is a dead column — "trust 0.0" next to a
+        // real closeness is a contradictory relationship signal, hide it.
+        let rel = |trust: f64| Relationship {
+            closeness: 60.0,
+            trust,
+            days_known: 30,
+            total_conversations: 10,
+            shared_events: 0,
+            last_interaction_at: None,
+            last_interaction_type: None,
+            closeness_log: None,
+            updated_at: "t".to_string(),
+        };
+        let mut r = empty_retrieval();
+        r.relationship = Some(rel(0.0));
+        let p = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
+        assert!(!p.contains("trust"), "dead trust column must stay hidden");
+        assert!(p.contains("known 30 days"));
+
+        r.relationship = Some(rel(40.0));
+        let p2 = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
+        assert!(p2.contains("trust 40"), "maintained trust stays injected");
+    }
+
+    #[test]
+    fn personality_style_wording_is_roots_not_expectation() {
+        // Soul v2 plan §3.3: "你被期望的性格" is a casting-mask cue that
+        // licenses performing a role; the settings are the seed she grew from.
+        let mut r = empty_retrieval();
+        r.user_profile.personality_style = Some("温柔，又有点调皮".to_string());
+        let p = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
+        assert!(p.contains("你性格的底子"), "wording should frame roots, got: {}", p);
+        assert!(!p.contains("被期望"));
     }
 
     #[test]
