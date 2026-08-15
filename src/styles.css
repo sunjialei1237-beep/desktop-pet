@@ -172,29 +172,6 @@ html, body, #root {
   z-index: 10;
 }
 
-.settings-btn {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: rgba(255, 255, 255, 0.6);
-  border-radius: 50%;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #999;
-  z-index: 20;
-  transition: background 0.2s, color 0.2s;
-}
-
-.settings-btn:hover {
-  background: rgba(255, 255, 255, 0.9);
-  color: #666;
-}
-
 .settings-overlay {
   position: fixed;
   top: 0;
