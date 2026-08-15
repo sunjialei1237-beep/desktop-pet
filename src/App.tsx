@@ -126,6 +126,10 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // release so monitor changes are picked up.
   const gravityRef = useRef<GravityState>(createGravity());
   const floorYRef = useRef(0);
+  // Logical-px monitor bounds (currentMonitor at init). The "walls" that keep
+  // the pet's BODY fully on-screen via clampModelToScreen — without them the
+  // OS drag could park her half-off-screen (上半身出屏 → 头不可见、无法再抓).
+  const screenSizeRef = useRef({ w: 1920, h: 1080 });
   const winSizeRef = useRef({ w: 0, h: 0 });
   // B2 (P12.1): free-fall stops after a THIRD of the drop distance (user
   // preference 08-01) — she floats to a hover instead of hitting the floor.
@@ -168,6 +172,13 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSnapRestoreRef = useRef<{
     held: PetPosition; snapped: PetPosition; at: number;
   } | null>(null);
+  // Manual-drag in progress: threshold crossed, until the left button
+  // releases. The OS native drag (startDragging) is NOT used anymore — it
+  // lets the window slide past the screen boundary freely (head off-screen =
+  // 穿模) and cannot be clamped. Instead the global-cursor pipeline drives
+  // the window to a clamped target (see the lbutton branch below), so the
+  // pet's body can never leave the monitor: screen edges act as walls.
+  const draggingRef = useRef(false);
   // Logical release point where the user let go. Cursor-based capture
   // (lastHeldCursor − grabOffset) is authoritative — it cannot be clobbered by
   // the top-clamp snap's move event — with the onMoved-based capture as
@@ -181,6 +192,39 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       };
     }
     return lastHeldPosRef.current;
+  };
+  // Keep the pet's BODY fully on-screen: screen edges act as walls. The Tauri
+  // window (400×760) is wider than the model, so the window's left/right edges
+  // may sit slightly off-screen — up to the point where the model itself would
+  // leave the monitor (model fully visible, head/feet/arms all grabbable).
+  // The TOP is clamped to y≥0 (window never off-screen at the top): releasing
+  // with the top edge above the screen makes Windows snap the window back to
+  // y=0 (a visible bounce), so the top "wall" stops her before that can ever
+  // happen. The BOTTOM wall is the work-area floor (taskbar top), so her feet
+  // rest on the taskbar instead of sliding behind it.
+  // Without all of this she can be parked half-off-screen where the head is
+  // unreachable and the pet can't be dragged (用户: "上半身出去了,没法拖动,穿模").
+  // Returns the input unchanged when geometry isn't ready yet.
+  const clampModelToScreen = (pos: { x: number; y: number }): { x: number; y: number } => {
+    const canvas = canvasRectRef.current;
+    const mb = modelBoundsRef.current;
+    if (!canvas || !mb) return pos; // geometry not reported yet — no clamp
+    const screen = screenSizeRef.current;
+    // Model rect inside the window (viewport coords, logical px).
+    const mLeft = canvas.left + mb.x;
+    const mTop = canvas.top + mb.y;
+    const mRight = mLeft + mb.width;
+    const mBottom = mTop + mb.height;
+    // Window top-left (logical) that keeps the model within the monitor.
+    const minX = -mLeft;
+    const maxX = screen.w - mRight;
+    const minY = 0; // top wall: never off-screen (no OS snap bounce)
+    const floor = floorYRef.current > 0 ? floorYRef.current : screen.h;
+    const maxY = floor - mBottom;
+    return {
+      x: maxX >= minX ? Math.min(Math.max(pos.x, minX), maxX) : pos.x,
+      y: maxY >= minY ? Math.min(Math.max(pos.y, minY), maxY) : pos.y,
+    };
   };
   // Physical left-button state from the backend's global-cursor events (OS
   // truth via GetAsyncKeyState). Native drags swallow webview mouseup, so the
@@ -621,6 +665,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
          screenW = monitor.size.width / factor;
          screenH = monitor.size.height / factor;
        }
+       screenSizeRef.current = { w: screenW, h: screenH };
      } catch { /* keep fallback 1920x1080 */ }
       const x = Math.max(20, Math.round(screenW - WINDOW_W - 20));
       const y = Math.max(20, Math.round(screenH - WINDOW_H - 48)); // above taskbar
@@ -756,10 +801,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
         logical.y < SNAP_GAP &&
         logical.y > held.y + SNAP_GAP
       ) {
-        lastSnapRestoreRef.current = { held, snapped: logical, at: Date.now() };
-        console.warn("[drag] OS top-clamp snap undone", { held, snapped: logical });
-        petPosRef.current = held;
-        win.setPosition(new LogicalPosition(held.x, held.y)).catch((err) =>
+        const restore = clampModelToScreen(held);
+        lastSnapRestoreRef.current = { held: restore, snapped: logical, at: Date.now() };
+        console.warn("[drag] OS top-clamp snap undone", { held: restore, snapped: logical });
+        petPosRef.current = restore;
+        win.setPosition(new LogicalPosition(restore.x, restore.y)).catch((err) =>
           console.warn("[drag] snap-undo setPosition failed", err),
         );
       }
@@ -801,10 +847,32 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       // (see grabOffsetRef); immune to the top-clamp snap's move race.
       if (lbuttonRef.current) {
         lastHeldCursorRef.current = { x: sx, y: sy };
+        // Manual drag driver (see draggingRef): move the window to a clamped
+        // target so the pet's body stays fully on-screen while dragging —
+        // screen edges act as walls (drag her up and the head pins at the top
+        // edge instead of 穿模-ing off-screen). The cursor pipeline keeps
+        // emitting even while the window is click-through over transparent
+        // areas (cursor above the pinned model), so the drag never stalls.
+        if (draggingRef.current) {
+          const off = grabOffsetRef.current;
+          if (off) {
+            const f = scaleFactorRef.current || 1;
+            const target = clampModelToScreen({
+              x: (sx - off.x) / f,
+              y: (sy - off.y) / f,
+            });
+            getCurrentWindow().setPosition(new LogicalPosition(target.x, target.y)).catch(() => {});
+          }
+        }
       } else if (prevLbutton) {
-        // Released. If she was parked off-screen at the top, Windows clamps her
-        // top edge back to y=0 — undo it a tick later so the clamp has landed
-        // (release fast path; the arm's 300ms quiet would read as a bounce).
+        // Released: end the manual drag (movement gate off; isBeingDragged is
+        // cleared by the first onMoved after the drag, and force-capture no
+        // longer needs to hold once the button is up).
+        draggingRef.current = false;
+        // If she was parked with her top edge off-screen (the clamped top park
+        // position is y<0), Windows snaps the top edge back to y=0 — undo it a
+        // tick later so the clamp has landed (release fast path; the arm's
+        // 300ms quiet would read as a bounce).
         const rel = releasePosRef();
         if (rel && rel.y < -SNAP_GAP) {
           setTimeout(() => {
@@ -821,12 +889,19 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
               snapped.y < SNAP_GAP &&
               snapped.y > rel.y + SNAP_GAP
             ) {
-              lastSnapRestoreRef.current = { held: rel, snapped, at: Date.now() };
-              console.warn("[drag] OS top-clamp snap undone (release fast path)", { held: rel, snapped });
-              petPosRef.current = rel;
-              getCurrentWindow().setPosition(new LogicalPosition(rel.x, rel.y)).catch((err) =>
-                console.warn("[drag] snap-undo setPosition failed", err),
-              );
+              const restore = clampModelToScreen(rel);
+              // Only act if it actually moves the window — otherwise this is a
+              // false positive: she was clamped at a wall while the cursor kept
+              // going (release point beyond the wall), not an OS snap. The
+              // restore target equals her current (clamped) position then.
+              if (Math.abs(restore.x - snapped.x) > 0.5 || Math.abs(restore.y - snapped.y) > 0.5) {
+                lastSnapRestoreRef.current = { held: restore, snapped, at: Date.now() };
+                console.warn("[drag] OS top-clamp snap undone (release fast path)", { held: restore, snapped });
+                petPosRef.current = restore;
+                getCurrentWindow().setPosition(new LogicalPosition(restore.x, restore.y)).catch((err) =>
+                  console.warn("[drag] snap-undo setPosition failed", err),
+                );
+              }
             }
           }, 80);
         }
@@ -1055,12 +1130,30 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
                 const held = releasePosRef();
                 let pos = real;
                 if (held && held.y < -SNAP_GAP && real.y < SNAP_GAP && real.y > held.y + SNAP_GAP) {
-                  lastSnapRestoreRef.current = { held, snapped: real, at: Date.now() };
-                  console.warn("[drag] OS top-clamp snap undone (arm fallback)", { held, real });
-                  pos = held;
-                  getCurrentWindow().setPosition(new LogicalPosition(held.x, held.y)).catch((err) =>
-                    console.warn("[drag] snap-undo setPosition failed", err),
-                  );
+                  const restore = clampModelToScreen(held);
+                  // Only act when it actually moves the window — otherwise this
+                  // is the wall-clamp false positive (cursor past the wall, she
+                  // already sits at the clamped target), not an OS snap.
+                  if (Math.abs(restore.x - real.x) > 0.5 || Math.abs(restore.y - real.y) > 0.5) {
+                    lastSnapRestoreRef.current = { held: restore, snapped: real, at: Date.now() };
+                    console.warn("[drag] OS top-clamp snap undone (arm fallback)", { held: restore, real });
+                    pos = restore;
+                    getCurrentWindow().setPosition(new LogicalPosition(restore.x, restore.y)).catch((err) =>
+                      console.warn("[drag] snap-undo setPosition failed", err),
+                    );
+                  }
+                } else {
+                  // No snap to undo — but the release might still be off-screen
+                  // (e.g. parked against the left/right/bottom edge). Pull the
+                  // model back fully on-screen so she's always grabbable.
+                  const clamped = clampModelToScreen(pos);
+                  if (Math.abs(clamped.x - pos.x) > 0.5 || Math.abs(clamped.y - pos.y) > 0.5) {
+                    console.warn("[drag] release off-screen — clamped to visible", { real, clamped });
+                    pos = clamped;
+                    getCurrentWindow().setPosition(new LogicalPosition(clamped.x, clamped.y)).catch((err) =>
+                      console.warn("[drag] visible-clamp setPosition failed", err),
+                    );
+                  }
                 }
                 const stale = petPosRef.current;
                 const drift = stale ? Math.hypot(pos.x - stale.x, pos.y - stale.y) : Infinity;
@@ -1128,6 +1221,10 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       lastHeldCursor: lastHeldCursorRef.current,
       grabOffset: grabOffsetRef.current,
       releasePos: releasePosRef(),
+      dragging: draggingRef.current,
+      canvas: canvasRectRef.current,
+      modelBounds: modelBoundsRef.current,
+      screenSize: screenSizeRef.current,
       fallLimitBottom: Math.round(fallLimitBottomRef.current),
       floorY: Math.round(floorYRef.current),
       winH: Math.round(winSizeRef.current.h),
@@ -1263,25 +1360,28 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       const dx = _ev.clientX - startClientX;
       const dy = _ev.clientY - startClientY;
       if (Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD) return;
-      // Real drag: hand off to OS compositor (in lockstep with pointer, no jitter).
+      // Real drag: engage manual drag mode. The OS native drag
+      // (win.startDragging) is deliberately NOT used — it moves the window in
+      // lockstep with the pointer past the screen boundary (head off-screen =
+      // 穿模) and cannot be clamped. Instead the global-cursor pipeline
+      // (60Hz, GetAsyncKeyState) drives the window to a clamped target below,
+      // so the pet's body can never leave the monitor.
       dragStarted = true;
       wasDraggedRef.current = true;
       isBeingDraggedRef.current = true;
       setIsBeingDragged(true);
+      draggingRef.current = true;
       sound.play("drag");
-      const win = getCurrentWindow();
-      win.startDragging().catch((err) => console.warn("[drag] startDragging failed", err));
-      // The OS drag keeps the cursor↔window offset fixed at THIS point, so the
-      // release position can be recovered as lastHeldCursor − grabOffset even
-      // if the top-clamp snap's move event races ahead of lbutton=false.
+      // The cursor↔window offset is FIXED from here on, so the release
+      // position can be recovered as lastHeldCursor − grabOffset (also immune
+      // to the top-clamp snap's move event racing ahead of lbutton=false).
       grabOffsetRef.current = {
         x: _ev.clientX * (scaleFactorRef.current || 1),
         y: _ev.clientY * (scaleFactorRef.current || 1),
       };
-      cleanup(); // stop watching; compositor drives movement from here.
-      // NOTE: no mouseup path here — native dragging swallows webview mouse
-      // events entirely, so drag-end is detected via onMoved + quiet period
-      // plus the OS button state in lbuttonRef (see the gravity loop).
+      cleanup(); // stop watching; the cursor pipeline drives movement now.
+      // NOTE: no mouseup path here — drag-end is detected via the pipeline's
+      // lbutton=false transition (see the gravity loop / global-cursor).
     };
 
     window.addEventListener("mousemove", onMove);
