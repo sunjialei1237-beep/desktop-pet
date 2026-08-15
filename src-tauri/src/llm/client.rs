@@ -226,6 +226,11 @@ struct Usage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
+    /// DeepSeek prefix-cache accounting (0 when the provider omits them).
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_cache_miss_tokens: Option<u32>,
 }
 
 /// Result of a chat completion call.
@@ -235,6 +240,11 @@ pub struct ChatResult {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// DeepSeek prefix-cache hit/miss for this call (None when unsupported).
+    /// Soul v2 L2a observability: the near-end split keeps the static system
+    /// prefix stable so these hits should rise vs the v1 layout.
+    pub prompt_cache_hit_tokens: Option<u32>,
+    pub prompt_cache_miss_tokens: Option<u32>,
     /// Tool calls the LLM requested this round (non-streaming only). `Some` +
     /// non-empty + `finish_reason == "tool_calls"` means the agent loop must
     /// execute tools and re-prompt; `None`/empty means this is a final answer.
@@ -476,6 +486,8 @@ impl LlmClient {
         }
 
         let usage = chat_resp.usage.unwrap_or(Usage {
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
@@ -483,6 +495,8 @@ impl LlmClient {
 
         let result = ChatResult {
             content,
+            prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
+            prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
@@ -650,12 +664,16 @@ impl LlmClient {
             log::warn!("[llm-stream-empty] no content deltas received");
         }
         let usage = usage.unwrap_or(Usage {
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
         });
         ChatResult {
             content,
+            prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
+            prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,

@@ -677,6 +677,12 @@ pub async fn converse(
                 log::warn!("[converse] main reply still empty after retry");
             }
         }
+        // Soul v2 L2a observability (#8): prefix-cache hit/miss — the near-end
+        // split should keep the static system prefix cache-hit across turns.
+        log::info!(
+            "[converse] cache hit={:?} miss={:?}",
+            chat_result.prompt_cache_hit_tokens, chat_result.prompt_cache_miss_tokens
+        );
         (chat_result.content, 0)
     };
 
