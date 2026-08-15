@@ -23,6 +23,20 @@ use crate::mind::planner::Intent;
 #[allow(dead_code)]
 const MAX_TOKENS: usize = 4096;
 
+// --- Soul v2 plan L2a: near-end directive switch --------------------------------
+// `[prompt] near_end_directive` (config.toml), set once at startup (lib.rs).
+// Default ON. OFF = exact v1 message layout — a runtime rollback path that
+// needs no rebuild (Architecture #6).
+static NEAR_END_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_near_end_enabled(v: bool) {
+    NEAR_END_ENABLED.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_near_end_enabled() -> bool {
+    NEAR_END_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Budget allocations per module (in approximate tokens).
 mod budget {
     pub const CONVERSATION: usize = 1600;
@@ -114,6 +128,16 @@ pub fn allocate_and_compress(
     let conv_messages = compress_conversation(working_memory, budget::CONVERSATION);
     messages.extend(conv_messages);
 
+    // 3. Soul v2 plan L2a: near-end directive (time + mood + intent) as a
+    // trailing system message after the history — the recency-weighted
+    // steering slot (CCv2 post_history_instructions). All callers of this
+    // allocator get it uniformly. Off-switch restores the exact v1 layout.
+    if is_near_end_enabled() {
+        messages.push(ChatMessage::system(
+            crate::mind::grounding::build_near_end_directive(emotion, intent),
+        ));
+    }
+
     messages
 }
 
@@ -136,6 +160,13 @@ pub fn allocate_qa(
 
     let conv_messages = compress_conversation(working_memory, budget::CONVERSATION);
     messages.extend(conv_messages);
+
+    // Soul v2 L2a: QA near-end directive (direct-answer + time + mood).
+    if is_near_end_enabled() {
+        messages.push(ChatMessage::system(
+            crate::mind::grounding::build_qa_near_end(emotion, intent),
+        ));
+    }
 
     messages
 }
@@ -274,6 +305,14 @@ fn compress_conversation(messages: &[ChatMessage], budget_tokens: usize) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// The near-end switch is global state; tests that allocate messages and
+    /// the test that flips the flag must not run concurrently.
+    fn flag_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
     use crate::db::episodes::Episode;
     use crate::db::facts::Fact;
     use crate::db::persona::PersonaTrait;
@@ -359,6 +398,7 @@ mod tests {
 
     #[test]
     fn test_allocate_basic() {
+        let _flag = flag_lock().lock().unwrap_or_else(|e| e.into_inner());
         let retrieval = empty_retrieval();
         let wm = vec![
             msg("user", "hello"),
@@ -366,14 +406,18 @@ mod tests {
         ];
         let messages = allocate_and_compress(&retrieval, &wm, &EmotionState::default(), &Intent::default());
 
-        // Should have system + 2 conversation messages
-        assert_eq!(messages.len(), 3);
+        // Soul v2 L2a: system + 2 conversation messages + trailing near-end
+        // directive (time/mood/intent) — 4 messages.
+        assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, "system");
         assert!(messages[0].content_str().contains("[Grounding Constraint]"));
+        assert_eq!(messages[3].role, "system", "trailing near-end directive");
+        assert!(messages[3].content_str().contains("[Current time]"));
     }
 
     #[test]
     fn test_total_tokens_within_budget() {
+        let _flag = flag_lock().lock().unwrap_or_else(|e| e.into_inner());
         let retrieval = retrieval_with_episodes(5);
         let mut wm = vec![];
         for i in 0..20 {
@@ -449,6 +493,7 @@ mod tests {
 
     #[test]
     fn test_system_prompt_with_memories() {
+        let _flag = flag_lock().lock().unwrap_or_else(|e| e.into_inner());
         let retrieval = RetrievalResult {
             episodes: vec![],
             facts: vec![Fact {
@@ -504,7 +549,32 @@ mod tests {
     }
 
     #[test]
+    fn test_near_end_switch_restores_v1_layout() {
+        let _flag = flag_lock().lock().unwrap_or_else(|e| e.into_inner());
+        // Soul v2 L2a rollback path: switch OFF -> exact v1 layout (single
+        // system message, no trailing directive).
+        set_near_end_enabled(false);
+        let messages = allocate_and_compress(
+            &empty_retrieval(),
+            &[],
+            &EmotionState::default(),
+            &Intent::default(),
+        );
+        assert_eq!(messages.len(), 1, "v1 layout: system only, no trailing directive");
+        set_near_end_enabled(true);
+        let messages = allocate_and_compress(
+            &empty_retrieval(),
+            &[],
+            &EmotionState::default(),
+            &Intent::default(),
+        );
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].role, "system");
+    }
+
+    #[test]
     fn test_intent_in_system_prompt() {
+        let _flag = flag_lock().lock().unwrap_or_else(|e| e.into_inner());
         let intent = Intent {
             goal: "encourage".to_string(),
             memory_anchor: "user has interview".to_string(),
@@ -519,9 +589,13 @@ mod tests {
             &EmotionState::default(),
             &intent,
         );
-        assert!(messages[0].content_str().contains("encourage"));
-        assert!(messages[0].content_str().contains("interview"));
-        assert!(messages[0].content_str().contains("proactive"));
+        // Soul v2 L2a: intent lives in the trailing near-end directive now.
+        let near_end = messages.last().unwrap();
+        assert_eq!(near_end.role, "system");
+        assert!(near_end.content_str().contains("encourage"));
+        assert!(near_end.content_str().contains("interview"));
+        assert!(near_end.content_str().contains("proactive"));
+        assert!(!messages[0].content_str().contains("encourage"), "static system stays intent-free");
     }
 
     #[test]
@@ -536,6 +610,7 @@ mod tests {
 
     #[test]
     fn test_qa_keeps_identity() {
+        let _flag = flag_lock().lock().unwrap_or_else(|e| e.into_inner());
         // QA mode must KEEP identity (persona + user name) so a direct answer
         // still sounds like 璃 and can address the user by name. Locks the fix
         // where qa_mode loads persona/relationship/user_profile instead of a

@@ -27,6 +27,8 @@ pub struct RetrievedScoreDebug {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PromptTokenDebug {
     pub system_tokens: usize,
+    /// Trailing near-end directive + thought clause (Soul v2 L2a, #11).
+    pub near_end_tokens: usize,
     pub input_tokens: usize,
     pub budget: usize,
     pub conversation_turns: usize,
@@ -575,8 +577,17 @@ pub async fn converse(
     messages.push(ChatMessage::user(text.to_string()));
 
     let system_tokens = crate::mind::budget::estimate_tokens(messages[0].content_str());
+    // Trailing directive block (near-end system + thought clause) — Soul v2
+    // L2a observability (#11): shows the recency-slot cost separately.
+    let near_end_tokens: usize = messages
+        .iter()
+        .skip(1)
+        .filter(|m| m.role == "system")
+        .map(|m| crate::mind::budget::estimate_tokens(m.content_str()))
+        .sum();
     let prompt_debug = PromptTokenDebug {
         system_tokens,
+        near_end_tokens,
         input_tokens: crate::mind::budget::estimate_messages_tokens(&messages),
         budget: if qa_mode {
             crate::mind::budget::qa_system_prompt_budget()

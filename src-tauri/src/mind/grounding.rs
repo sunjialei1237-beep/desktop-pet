@@ -49,34 +49,54 @@ fn current_time_section() -> String {
 
 pub fn build_system_prompt(
     retrieval: &RetrievalResult,
-    emotion: &EmotionState,
-    intent: &Intent,
+    _emotion: &EmotionState,
+    _intent: &Intent,
 ) -> String {
-    let mut sections = vec![SYSTEM_TEMPLATE.to_string(), current_time_section()];
+    // Soul v2 plan L2a: the STATIC system prompt — identity template + persona
+    // + grounding constraint + memories. Everything stable within a session,
+    // so the message prefix stays cache-friendly (DeepSeek prefix caching;
+    // the old layout had current_time in slot 2, invalidating the cache for
+    // everything after it every minute). The volatile per-turn directives
+    // (time / mood / intent) moved to `build_near_end_directive`, injected
+    // after the conversation history where recency attention is strongest
+    // (CCv2 post_history_instructions, @depth 0). Params are kept in the
+    // signature so the ~19 call sites stay unchanged.
+    let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
 
-   // 1. Persona + relationship
-   sections.push(format_persona(
-       &retrieval.persona_traits,
-       &retrieval.relationship,
-       &retrieval.user_profile,
-   ));
+    // 1. Persona + relationship
+    sections.push(format_persona(
+        &retrieval.persona_traits,
+        &retrieval.relationship,
+        &retrieval.user_profile,
+    ));
 
     // 2. Grounding constraint
     sections.push(MEMORY_CONSTRAINT.to_string());
 
-    // 3. Emotion
-    sections.push(format_emotion(emotion));
-
-    // 4. Intent
-    sections.push(format_intent(intent));
-
-    // 5. Retrieved memories
+    // 3. Retrieved memories
     let memories = format_memories(retrieval);
     if !memories.is_empty() {
         sections.push(memories);
     }
 
     sections.join("\n\n")
+}
+
+/// Near-end directive (Soul v2 plan L2a): current time + current mood (with
+/// an optional expressive-permission hint) + this turn's intent, injected as
+/// a trailing system message after the conversation history. The recency
+/// slot is the strongest steering channel — and keeping volatile content out
+/// of the top system message keeps the static prefix cache-hit.
+pub fn build_near_end_directive(emotion: &EmotionState, intent: &Intent) -> String {
+    let mut s = current_time_section();
+    s.push_str("\n\n");
+    s.push_str(&format_emotion(emotion));
+    if let Some(hint) = tone_hint(emotion, intent) {
+        s.push_str(&format!("\n（如果和此刻话题不冲突：{hint}）"));
+    }
+    s.push_str("\n\n");
+    s.push_str(&format_intent(intent));
+    s
 }
 
 /// The direct-answer directive injected for question routes. Written in
@@ -99,10 +119,12 @@ const QA_MODE_PROMPT: &str = "\
 /// Memory focus is stripped from the intent for the same reason.
 pub fn build_qa_system_prompt(
     retrieval: &RetrievalResult,
-    emotion: &EmotionState,
-    intent: &Intent,
+    _emotion: &EmotionState,
+    _intent: &Intent,
 ) -> String {
-    let mut sections = vec![SYSTEM_TEMPLATE.to_string(), current_time_section()];
+    // Soul v2 L2a: static part only — the QA directive / time / mood / intent
+    // moved to `build_qa_near_end` (mirrors the main-path split).
+    let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
 
     sections.push(format_persona(
         &retrieval.persona_traits,
@@ -110,16 +132,23 @@ pub fn build_qa_system_prompt(
         &retrieval.user_profile,
     ));
 
-    sections.push(format_emotion(emotion));
+    sections.join("\n\n")
+}
 
+/// QA-mode near-end directive: direct-answer directive + time + mood +
+/// neutralized intent (goal=converse, no memory focus).
+pub fn build_qa_near_end(emotion: &EmotionState, intent: &Intent) -> String {
     let mut qa_intent = intent.clone();
     qa_intent.goal = "converse".to_string();
     qa_intent.memory_anchor.clear();
-    sections.push(format_intent(&qa_intent));
-
-    sections.push(QA_MODE_PROMPT.to_string());
-
-    sections.join("\n\n")
+    let mut s = QA_MODE_PROMPT.to_string();
+    s.push_str("\n\n");
+    s.push_str(&current_time_section());
+    s.push_str("\n\n");
+    s.push_str(&format_emotion(emotion));
+    s.push_str("\n\n");
+    s.push_str(&format_intent(&qa_intent));
+    s
 }
 
 /// The grounding guardrail text injected into every system prompt.
@@ -215,6 +244,44 @@ fn format_emotion(emotion: &EmotionState) -> String {
         emotion.social_battery,
         emotion.stress,
     )
+}
+
+/// Expressive-permission hint from the current emotion (Soul v2 plan §3.2).
+/// Pure Rust decision (Principle #1): the LLM only voices, never decides its
+/// own state. Phrasing is PERMISSION, not a state command (GPT 评审 C3):
+/// "今晚可以慢一点" grants expressive latitude instead of ordering a mood
+/// the model would perform. Emotion accumulates mathematically while the
+/// live conversation may be mid-flow — hence the weak-hint framing.
+fn tone_hint(emotion: &EmotionState, intent: &Intent) -> Option<&'static str> {
+    use crate::perception::time::current_time_of_day;
+    // Distress yield (报告 §7.4 危机时少说): when the planner routed this
+    // turn to emotional support (care/listen) or silence, the reaching-out /
+    // playful hints stand down — quieter, steadier, catch the person first.
+    let distress =
+        matches!(intent.goal.as_str(), "care" | "listen") || intent.action == "silence";
+    tone_hint_at(emotion, distress, current_time_of_day())
+}
+
+/// Pure, clock-free core of `tone_hint` (testable with an explicit tod).
+fn tone_hint_at(
+    emotion: &EmotionState,
+    distress: bool,
+    tod: crate::perception::time::TimeOfDay,
+) -> Option<&'static str> {
+    use crate::perception::time::TimeOfDay;
+    if emotion.stress > 0.65 {
+        return Some("今晚可以慢一点，不着急把话说完整");
+    }
+    if matches!(tod, TimeOfDay::LateNight | TimeOfDay::DeepNight) && emotion.rest_need > 0.6 {
+        return Some("困了的话，句子可以更短更糊，没关系");
+    }
+    if !distress && emotion.loneliness > 0.6 && !matches!(tod, TimeOfDay::DeepNight) {
+        return Some("要是想搭句话也可以，一句就好，不追问");
+    }
+    if !distress && emotion.mood >= 0.7 {
+        return Some("心情不错的话，语气可以带点雀跃");
+    }
+    None
 }
 
 /// Formats the Planner's intent as a directive.
@@ -620,26 +687,63 @@ mod tests {
             action: "normal".to_string(),
             capability: crate::tools::CapabilityMode::None,
         };
+        // Soul v2 L2a: intent moved to the near-end directive.
         let prompt = build_system_prompt(&empty_retrieval(), &EmotionState::default(), &intent);
-        assert!(prompt.contains("goal: comfort"));
-        assert!(prompt.contains("exam tomorrow"));
-        assert!(prompt.contains("proactive"));
+        assert!(!prompt.contains("goal:"), "static system is intent-free");
+        let near = build_near_end_directive(&EmotionState::default(), &intent);
+        assert!(near.contains("goal: comfort"));
+        assert!(near.contains("exam tomorrow"));
+        assert!(near.contains("proactive"));
+    }
+
+    #[test]
+    fn tone_hint_permission_phrasing_and_yield() {
+        use crate::perception::time::TimeOfDay;
+        let mut e = EmotionState::default();
+        // stress branch (allowed even in distress — 危机时少说)
+        e.stress = 0.7;
+        assert!(tone_hint_at(&e, false, TimeOfDay::Morning).unwrap().contains("慢一点"));
+        assert!(tone_hint_at(&e, true, TimeOfDay::Morning).unwrap().contains("慢一点"));
+        // deep-night sleepiness
+        e.stress = 0.3;
+        e.rest_need = 0.7;
+        assert!(tone_hint_at(&e, false, TimeOfDay::DeepNight).unwrap().contains("困"));
+        // loneliness reaching-out: midday OK, distress yields
+        e.rest_need = 0.3;
+        e.loneliness = 0.7;
+        assert!(tone_hint_at(&e, false, TimeOfDay::Afternoon).unwrap().contains("搭句话"));
+        assert!(tone_hint_at(&e, true, TimeOfDay::Afternoon).is_none(), "distress yields reaching-out");
+        // playful: yields under distress too
+        e.loneliness = 0.2;
+        e.mood = 0.8;
+        assert!(tone_hint_at(&e, false, TimeOfDay::Morning).unwrap().contains("雀跃"));
+        assert!(tone_hint_at(&e, true, TimeOfDay::Morning).is_none(), "distress yields playful");
+        // neutral: no hint
+        e.mood = 0.5;
+        assert!(tone_hint_at(&e, false, TimeOfDay::Morning).is_none());
     }
 
     #[test]
     fn test_system_prompt_injects_current_time() {
         // Phase 6: time is prompt-injected so "几点" is answered without a tool.
+        // Soul v2 L2a: time moved to the near-end directive (also keeps the
+        // static system prefix cache-friendly — time changed every minute).
         let prompt =
             build_system_prompt(&empty_retrieval(), &EmotionState::default(), &Intent::default());
-        assert!(prompt.contains("[Current time]"));
-        assert!(prompt.contains("时段"));
+        assert!(!prompt.contains("[Current time]"), "static system is time-free");
+        let near = build_near_end_directive(&EmotionState::default(), &Intent::default());
+        assert!(near.contains("[Current time]"));
+        assert!(near.contains("时段"));
     }
 
     #[test]
     fn test_qa_prompt_injects_current_time() {
         let prompt =
             build_qa_system_prompt(&empty_retrieval(), &EmotionState::default(), &Intent::default());
-        assert!(prompt.contains("[Current time]"));
+        assert!(!prompt.contains("[Current time]"), "QA static system is time-free");
+        let near = build_qa_near_end(&EmotionState::default(), &Intent::default());
+        assert!(near.contains("[Current time]"));
+        assert!(near.contains("直接"), "QA direct-answer directive rides near-end");
     }
 
     #[test]
@@ -802,9 +906,12 @@ mod tests {
             mood: 0.8,
             ..EmotionState::default()
         };
+        // Soul v2 L2a: mood moved to the near-end directive.
         let prompt = build_system_prompt(&empty_retrieval(), &emotion, &Intent::default());
-        assert!(prompt.contains("[Current Mood]"));
-        assert!(prompt.contains("开心"));
+        assert!(!prompt.contains("[Current Mood]"), "static system is mood-free");
+        let near = build_near_end_directive(&emotion, &Intent::default());
+        assert!(near.contains("[Current Mood]"));
+        assert!(near.contains("开心"));
     }
 }
 

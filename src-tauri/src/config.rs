@@ -16,6 +16,8 @@ pub struct AppConfig {
     pub proactive: ProactiveConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
+    #[serde(default)]
+    pub prompt: PromptConfig,
 }
 
 /// LLM API configuration (OpenAI-compatible).
@@ -112,6 +114,7 @@ impl Default for AppConfig {
             scheduler: SchedulerConfig::default(),
             proactive: ProactiveConfig::default(),
             tools: ToolsConfig::default(),
+            prompt: PromptConfig::default(),
         }
     }
 }
@@ -155,6 +158,24 @@ impl Default for ToolsConfig {
         ToolsConfig {
             enable_search_web: true,
             enable_open_application: true,
+        }
+    }
+}
+
+/// Prompt-layout switches (Soul v2 plan L2a, Architecture Principle 6).
+/// Missing [prompt] section in older config files uses the enabled default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptConfig {
+    /// Inject time/mood/intent as a trailing system message after the
+    /// conversation history (near-end directive, CCv2 post_history_instructions).
+    /// false = exact v1 layout (runtime rollback without rebuild).
+    pub near_end_directive: bool,
+}
+
+impl Default for PromptConfig {
+    fn default() -> Self {
+        PromptConfig {
+            near_end_directive: true,
         }
     }
 }

@@ -304,9 +304,12 @@ fn gc_007_system_prompt_grounded() {
     assert!(prompt.contains("Persona"),
         "GC_007 FAIL: system prompt must contain persona section");
 
-    // Must contain emotion
-    assert!(prompt.contains("Current Mood"),
-        "GC_007 FAIL: system prompt must contain emotion snapshot");
+    // Soul v2 L2a: the emotion snapshot moved to the near-end directive
+    // (trailing system message after history); the static system stays
+    // mood-free for prefix-cache stability.
+    let near_end = grounding::build_near_end_directive(&emotion, &Intent::default());
+    assert!(near_end.contains("Current Mood"),
+        "GC_007 FAIL: near-end directive must contain the emotion snapshot");
 
     println!("GC_007 PASS: system prompt is grounded");
 }

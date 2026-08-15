@@ -33,6 +33,11 @@ pub fn run() {
         }
     };
 
+    // Soul v2 plan L2a: prompt-layout switch (near-end directive). Set once
+    // at startup; `[prompt] near_end_directive = false` restores the v1
+    // message layout without a rebuild (Architecture #6 rollback path).
+    mind::budget::set_near_end_enabled(config.prompt.near_end_directive);
+
     let db_path = config::resolve_db_path(&config);
     let db_state = match db::DbState::open(&db_path) {
         Ok(db) => {

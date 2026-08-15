@@ -51,3 +51,10 @@ enable_rituals = true             # 早安 (first meeting each day) greeting
 # gracefully ("关掉 search, 她照常聊天, 只是不能搜"). See tools/mod.rs.
 enable_search_web = true
 enable_open_application = true
+
+[prompt]
+# Soul v2 (2026-08-15): near-end directive — time/mood/intent injected as a
+# trailing system message after the conversation history (the recency-weighted
+# steering slot, CCv2 post_history_instructions). false = v1 layout (rollback
+# without rebuild).
+near_end_directive = true
