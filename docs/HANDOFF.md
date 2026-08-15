@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-15（续³⁴·二期第一梯队三连落地✅：晚安+周日总结+里程碑+Serendipity，lib 406 绿+真LLM harness 3 绿+release rebuild）。上轮 （续³³·搜索源级联+rebuild）。上轮 2026-08-14（续³²·主动冒泡治理全部落地 ✅ commit b9055a9：全局预算 60min/记忆 15%/轮转 7 天硬排除/时间词中和，lib 384 绿。b6bef1a 中间坏点编译错已解除，并行会话可继续情感锚点）。上轮 2026-08-14（续³¹·承诺追踪落地 ✅，情感锚点+recall_reason ⏸ 等 governance 提交）。上轮 2026-08-14（续³⁰·工具层收尾：头条搜索实跑✅ + release rebuild✅）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
+> 最后更新：**2026-08-15（续³⁵·Soul v2 灵魂工程全链路落地✅：P1 身份补全+P2 system.txt v2+P2b 文风+P3 近端指令通道+v2.1 定向手术；评测闭环 M1-M10 全跑 A/B 双臂+150 条复测+缓存实测+回归三件套全绿，报告 docs/review/soul-upgrade-report-2026-08-15.md，已 rebuild）。上轮 续³⁴（二期第一梯队三连落地✅：晚安+周日总结+里程碑+Serendipity，lib 406 绿+真LLM harness 3 绿+release rebuild）。上轮 （续³³·搜索源级联+rebuild）。上轮 2026-08-14（续³²·主动冒泡治理全部落地 ✅ commit b9055a9：全局预算 60min/记忆 15%/轮转 7 天硬排除/时间词中和，lib 384 绿。b6bef1a 中间坏点编译错已解除，并行会话可继续情感锚点）。上轮 2026-08-14（续³¹·承诺追踪落地 ✅，情感锚点+recall_reason ⏸ 等 governance 提交）。上轮 2026-08-14（续³⁰·工具层收尾：头条搜索实跑✅ + release rebuild✅）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,10 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-15（续³⁵）更新 · Soul v2 灵魂工程全链路落地 ✅（方案 `docs/plans/2026-08-15-soul-engineering-upgrade.md`，commits ed09b19→151b601 共 8 个；lib 411 绿 / golden 29 绿 / tsc 0 / 真 LLM：冒烟 10 对 + A/B 双臂（soul M1-M10 + 150 条）+ v2.1 定向复测 + 回归三件套（closed_loop2 2 + soul_ritual 3 + memory_recall 1）全绿 / release 已 rebuild）**。四层改造：**P1 L2b** lively/QA 最小身份 retrieval（修 85% 气泡空身份）+ days_known 读时回填（landmark::first_met_readonly）+ trust 死列隐藏 + "被期望"措辞去面具；**P2 L1** system.txt v2（正面引导/认知透镜+防导师化/称谓动态/温和推回/身份自指/14 示例 Core-State-Edge 分层）+ SYSTEM_SCAFFOLD 300→900；**P2b L2c** lively_prompt v2 声部改写（黑名单→身份理由）；**P3 L2a** 静态/近端消息拆分（时间+情绪+Intent 移到历史之后的末位 system=@depth 0，冒烟实验先证 API 接受）+ tone_hint 表达许可措辞+distress 让位 + `[prompt] near_end_directive` 开关（false=v1 布局免 rebuild 回滚）+ near_end_tokens 观测 + B14 缓存字段。**评测结论**（报告 §1-§8）：M1 盲认 3.87→4.43（GLM 异源）/克隆 20%→14%/糯米 40%→29%；M10 擅自建议 4/10→2/10；M6 气泡 10/10；M7 CV 0.23→0.32；150 条提问结尾 20%→15%、human_like 4.07→4.14、模板词 10→7；**缓存实测 239 次调用 80-90% 前缀命中**。**v2.1 三处手术**（决策规则触发）：危机守则（M8 实验"翻记忆摆理由"劣化→复测 2/2 safe）/"对不上号的上次宁可不说"（实验组硬编造 1→4 条触红线→复测硬型清零，软假设残留 ~3/150 观察项）/面试示例去"过了？"吸引子（M2 4/10→指标修正后 8-9/10 达标——原指标用示例原文测属 few-shot 最坏压测）。**踩坑记录**：①评测报告文件名不含臂标记，子集复测覆写实验组 150 全量报告（数据已转录报告 §3，日志在 experiment-run.log）——后续 harness 报告名加 arm+filter；②judge 输出 JSON 布尔值时解析只认整数（v_bool 已修双态）；③judge prompt 必须双极显式定义（M8 只定义 0 极导致照字面输出 0）；④评测中途改源码会撞正在编译的 cargo（实验组首跑因此重跑）。
+>
+> 📋 **待办**：① **用户盲选偏好测试**——`docs/review/user-blind-preference-2026-08-15.md`（15 对乱序，判据"如果不是璃我会马上觉得不对"，key 文件选完再看）；② D-check 七项见报告 §8（称谓率/气泡人设/Last Turn 两段/深夜 tone_hint/身份问题/危机/软假设"上次"）；③ 观察项 backlog：软假设型记忆残留（可选 grounding B 档阻断）、M6 同时段气泡同质、M5/M4 judge rubbin 校准（双臂天花板无区分度）、lively_prompt"别和上一条像"；④ worktree D:\桌宠-wt 已清理。
 
 > **2026-08-15（续³⁴）更新 · 二期第一梯队三连全部落地 ✅（`618b0fd` 晚安 + `bbfc2c7` 周日总结&里程碑 + `4b4fd95` Serendipity + `b83d04c` harness，lib 406 绿 / soul_ritual_harness 真 LLM 3 绿 / golden 29 + closed_loop2 2 / tsc 0 / release 已 rebuild）**。上轮盘点 MVP 外缺口后用户钦定第一梯队三连（仪式感补全 + 关系里程碑 + 记忆机缘），全部照早安已验证链路（check → 纯函数判定 → 先 mark → occupy_budget_always → emit → ritual_bubble(kind) → generate → canned 兜底），零新架构概念：
 >
