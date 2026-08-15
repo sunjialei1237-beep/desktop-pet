@@ -288,7 +288,7 @@ async fn soul_style_metrics() {
             let db = seed_identity_db();
             let mut wm = Vec::new();
             let reply = run_turn(&llm, &db, emb, &mut wm, input).await;
-            println!("[M1 {:02}] {} -> {}", i + 1, input, &reply[..reply.len().min(60)]);
+            println!("[M1 {:02}] {} -> {}", i + 1, input, reply.chars().take(60).collect::<String>());
             samples.push((*input, reply));
         }
         // 匿名乱序写样本 + 独立 key 文件（评分前不看 key）
@@ -346,7 +346,7 @@ async fn soul_style_metrics() {
             let db = seed_identity_db();
             let mut wm = Vec::new();
             let reply = run_turn(&llm, &db, emb, &mut wm, input).await;
-            println!("[M3] {} -> {}", input, &reply[..reply.len().min(50)]);
+            println!("[M3] {} -> {}", input, reply.chars().take(50).collect::<String>());
             casual_replies.push(reply);
         }
     }
