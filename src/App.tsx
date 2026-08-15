@@ -151,6 +151,37 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastArmDriftRef = useRef<{
     drift: number; stale: PetPosition | null; real: PetPosition; at: number;
   } | null>(null);
+  // Window position at the LAST onMoved while the left button was HELD — the
+  // position the user actually released at. Windows snaps a window whose top
+  // edge is above the screen (y<0) back to y=0 when a drag ends, so the
+  // post-release position ≠ the release point; this ref lets us undo that
+  // snap ("上移后仍回原位" root cause, 2026-08-15) and park the pet high.
+  const lastHeldPosRef = useRef<PetPosition | null>(null);
+  // Cursor-based release-point capture (续³⁹·2, more robust than onMoved-based:
+  // the top-clamp snap's move event can arrive before the lbutton=false cursor
+  // event and overwrite lastHeldPosRef with the snapped y=0, killing the undo).
+  // The OS drag keeps the cursor↔window offset fixed at the threshold-crossing
+  // point, so releasePos = lastHeldCursor − grabOffset, immune to that race.
+  const grabOffsetRef = useRef<{ x: number; y: number } | null>(null); // physical px
+  const lastHeldCursorRef = useRef<{ x: number; y: number } | null>(null); // physical px
+  // Telemetry: the last OS top-clamp snap we undid (__dragDiag.lastSnapRestore).
+  const lastSnapRestoreRef = useRef<{
+    held: PetPosition; snapped: PetPosition; at: number;
+  } | null>(null);
+  // Logical release point where the user let go. Cursor-based capture
+  // (lastHeldCursor − grabOffset) is authoritative — it cannot be clobbered by
+  // the top-clamp snap's move event — with the onMoved-based capture as
+  // fallback. Shared by the onMoved fast path and the arm fallback.
+  const releasePosRef = (): PetPosition | null => {
+    if (lastHeldCursorRef.current && grabOffsetRef.current) {
+      const f = scaleFactorRef.current || 1;
+      return {
+        x: (lastHeldCursorRef.current.x - grabOffsetRef.current.x) / f,
+        y: (lastHeldCursorRef.current.y - grabOffsetRef.current.y) / f,
+      };
+    }
+    return lastHeldPosRef.current;
+  };
   // Physical left-button state from the backend's global-cursor events (OS
   // truth via GetAsyncKeyState). Native drags swallow webview mouseup, so the
   // page alone can't tell "user paused mid-drag" from "user released" — this
@@ -706,6 +737,32 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
         isBeingDraggedRef.current = false;
         setIsBeingDragged(false);
       }
+      // 2026-08-15 (续³⁹·2): OS top-clamp snap-undo. Capture the release point
+      // while the button is held; Windows clamps a window released with its
+      // top edge off-screen (y<0) back to y=0 (measured: T=-504 → T=0 within
+      // 2ms of release) — the "上移后仍回原位" the user still saw after the
+      // fall was disabled. When a post-release move shows the window snapped
+      // DOWN from an off-screen release point, undo it immediately so the pet
+      // can actually be parked high (拖到哪停哪 includes 上面).
+      if (lbuttonRef.current) {
+        lastHeldPosRef.current = logical;
+      }
+      const held = releasePosRef();
+      if (
+        !lbuttonRef.current &&
+        wasDraggedRef.current &&
+        held &&
+        held.y < -SNAP_GAP &&
+        logical.y < SNAP_GAP &&
+        logical.y > held.y + SNAP_GAP
+      ) {
+        lastSnapRestoreRef.current = { held, snapped: logical, at: Date.now() };
+        console.warn("[drag] OS top-clamp snap undone", { held, snapped: logical });
+        petPosRef.current = held;
+        win.setPosition(new LogicalPosition(held.x, held.y)).catch((err) =>
+          console.warn("[drag] snap-undo setPosition failed", err),
+        );
+      }
       // Throttle the click-through origin refresh: it does an async
       // outerPosition IPC per move, which floods during fast motion
       // (drag/fall/walk) and causes visible stutter.
@@ -737,8 +794,43 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       lastCursorEventAtRef.current = performance.now();
       // OS-level button truth (see lbuttonRef declaration) — refresh it before
       // anything below so the physics loop always reads the freshest state.
+      const prevLbutton = lbuttonRef.current;
       lbuttonRef.current = e.payload.lbutton === true;
       const { x: sx, y: sy } = e.payload; // physical screen px
+      // Last cursor position while the button was held — release-point capture
+      // (see grabOffsetRef); immune to the top-clamp snap's move race.
+      if (lbuttonRef.current) {
+        lastHeldCursorRef.current = { x: sx, y: sy };
+      } else if (prevLbutton) {
+        // Released. If she was parked off-screen at the top, Windows clamps her
+        // top edge back to y=0 — undo it a tick later so the clamp has landed
+        // (release fast path; the arm's 300ms quiet would read as a bounce).
+        const rel = releasePosRef();
+        if (rel && rel.y < -SNAP_GAP) {
+          setTimeout(() => {
+            if (lbuttonRef.current || isBeingDraggedRef.current) return; // re-grabbed
+            // Guards against false positives: wasDragged proves a real OS drag
+            // just happened (grabOffset is fresh); snapped.y≈0 proves the
+            // top-clamp actually pulled her to the top edge (startDragging can
+            // fail without moving the window — petPosRef would stay put).
+            const snapped = petPosRef.current; // synced by the snap's onMoved
+            if (
+              wasDraggedRef.current &&
+              snapped &&
+              rel.y < -SNAP_GAP &&
+              snapped.y < SNAP_GAP &&
+              snapped.y > rel.y + SNAP_GAP
+            ) {
+              lastSnapRestoreRef.current = { held: rel, snapped, at: Date.now() };
+              console.warn("[drag] OS top-clamp snap undone (release fast path)", { held: rel, snapped });
+              petPosRef.current = rel;
+              getCurrentWindow().setPosition(new LogicalPosition(rel.x, rel.y)).catch((err) =>
+                console.warn("[drag] snap-undo setPosition failed", err),
+              );
+            }
+          }, 80);
+        }
+      }
       const origin = windowOriginRef.current;
       const scale = scaleFactorRef.current;
       const canvas = canvasRectRef.current;
@@ -955,29 +1047,44 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
                 // arming now would start the fall mid-drag (fight).
                 if (lbuttonRef.current || isBeingDraggedRef.current) return;
                 const real = { x: phys.x / f, y: phys.y / f };
+                // Snap-undo fallback: the onMoved fast path (above) handles
+                // the normal case; this covers the rare one where the snap's
+                // move event never reached the webview. Same condition — a
+                // release off-screen at the top that ended up snapped to y≥0.
+                // Idempotent: after a restore, outerPosition() == held.
+                const held = releasePosRef();
+                let pos = real;
+                if (held && held.y < -SNAP_GAP && real.y < SNAP_GAP && real.y > held.y + SNAP_GAP) {
+                  lastSnapRestoreRef.current = { held, snapped: real, at: Date.now() };
+                  console.warn("[drag] OS top-clamp snap undone (arm fallback)", { held, real });
+                  pos = held;
+                  getCurrentWindow().setPosition(new LogicalPosition(held.x, held.y)).catch((err) =>
+                    console.warn("[drag] snap-undo setPosition failed", err),
+                  );
+                }
                 const stale = petPosRef.current;
-                const drift = stale ? Math.hypot(real.x - stale.x, real.y - stale.y) : Infinity;
+                const drift = stale ? Math.hypot(pos.x - stale.x, pos.y - stale.y) : Infinity;
                 if (drift > 2) {
                   lastArmDriftRef.current = {
-                    drift: Math.round(drift), stale, real, at: Date.now(),
+                    drift: Math.round(drift), stale, real: pos, at: Date.now(),
                   };
                   console.warn("[drag] stale petPos at fall-arm — calibrated instead", {
-                    drift: Math.round(drift), stale, real,
+                    drift: Math.round(drift), stale, real: pos,
                   });
                 }
-                petPosRef.current = real;
+                petPosRef.current = pos;
                 // 2026-08-15 (user, after three escalating reports): she must
                 // STAY where she is released — the post-release 1/3 hover-fall
                 // kept moving her off the drop point ("回原位/触底触顶反弹/
                 // 无法停在上面和下面"), and its size scales with altitude.
                 // Flip this constant to resurrect the fall (1/3 arc, g=1200/9).
-                const atFloor = real.y + winSizeRef.current.h >= floorYRef.current - 2;
+                const atFloor = pos.y + winSizeRef.current.h >= floorYRef.current - 2;
                 if (ENABLE_POST_DRAG_FALL && !atFloor) {
                   gravityRef.current.grounded = false;
                   gravityRef.current.vy = 0;
                   // Only fall a third of the way to the floor (old preference).
                   fallLimitBottomRef.current =
-                    real.y + winSizeRef.current.h + (floorYRef.current - (real.y + winSizeRef.current.h)) / 3;
+                    pos.y + winSizeRef.current.h + (floorYRef.current - (pos.y + winSizeRef.current.h)) / 3;
                 } else if (atFloor) {
                   sound.play("land"); // dropped right on the floor: thud now
                 }
@@ -1016,6 +1123,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       lastMovedAgoMs: Math.round(performance.now() - lastMovedRef.current),
       lastCursorEventAgoMs: Math.round(performance.now() - lastCursorEventAtRef.current),
       lastArmDrift: lastArmDriftRef.current,
+      lastSnapRestore: lastSnapRestoreRef.current,
+      lastHeldPos: lastHeldPosRef.current,
+      lastHeldCursor: lastHeldCursorRef.current,
+      grabOffset: grabOffsetRef.current,
+      releasePos: releasePosRef(),
       fallLimitBottom: Math.round(fallLimitBottomRef.current),
       floorY: Math.round(floorYRef.current),
       winH: Math.round(winSizeRef.current.h),
@@ -1062,6 +1174,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // the fall's 1/3-arc scales with altitude so it read as bouncing back).
   // Set true to bring the 1/3 hover-fall back (arm path is kept intact).
   const ENABLE_POST_DRAG_FALL = false;
+  // Minimum off-screen release distance (logical px) that triggers the OS
+  // top-clamp snap-undo (see onMoved + arm fallback). Windows forces a window
+  // released with its top edge above the screen back to y=0; releases at
+  // least this far off-screen get restored to the actual release point.
+  const SNAP_GAP = 10;
 
   // Any user interaction refreshes the DeepNight sleep-idle timer and wakes the
   // pet if asleep. Stable (deps []): only touches refs, so callers may omit it
@@ -1154,6 +1271,13 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       sound.play("drag");
       const win = getCurrentWindow();
       win.startDragging().catch((err) => console.warn("[drag] startDragging failed", err));
+      // The OS drag keeps the cursor↔window offset fixed at THIS point, so the
+      // release position can be recovered as lastHeldCursor − grabOffset even
+      // if the top-clamp snap's move event races ahead of lbutton=false.
+      grabOffsetRef.current = {
+        x: _ev.clientX * (scaleFactorRef.current || 1),
+        y: _ev.clientY * (scaleFactorRef.current || 1),
+      };
       cleanup(); // stop watching; compositor drives movement from here.
       // NOTE: no mouseup path here — native dragging swallows webview mouse
       // events entirely, so drag-end is detected via onMoved + quiet period
