@@ -883,13 +883,13 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       // fall must not integrate and a new fall must not arm — otherwise the
       // rAF setPosition here fights the OS drag every frame (violent shake).
       if (pos && !isBeingDraggedRef.current && !lbuttonRef.current && !awayMode) {
-        // B2 (P12.1): free-fall toward a hover point (1/3 of the way to the
-        // taskbar). Runs until grounded.
+        // B2 (P12.1): free-fall toward a hover point (1/6 of the way to the
+        // taskbar, user 2026-08-15 从 1/3 再砍半). Runs until grounded.
         if (!gravity.grounded) {
           const win = getCurrentWindow();
           const bottom = pos.y + winSizeRef.current.h;
           const newBottom = stepGravity(gravity, dt, bottom);
-          // 1/3-arc rule: she falls only a third of the way to the floor, then
+          // 1/6-arc rule: she falls only a sixth of the way to the floor, then
           // floats to a stop (hover). Reaching the hover point plays the
           // settling sound.
           let finalBottom = newBottom;
@@ -917,9 +917,10 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
             if (pos.y + winSizeRef.current.h < floorYRef.current - 2) {
               gravity.grounded = false;
               gravity.vy = 0;
-              // Only fall a third of the way to the floor (user preference).
+              // Only fall a sixth of the way to the floor (user 2026-08-15:
+              // 1/3 → 1/6 再砍一半，配合重力减半做缓缓飘落).
               fallLimitBottomRef.current =
-                pos.y + winSizeRef.current.h + (floorYRef.current - (pos.y + winSizeRef.current.h)) / 3;
+                pos.y + winSizeRef.current.h + (floorYRef.current - (pos.y + winSizeRef.current.h)) / 6;
             } else {
               sound.play("land"); // dropped right on the floor: thud now
             }
