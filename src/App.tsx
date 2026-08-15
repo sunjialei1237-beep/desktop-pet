@@ -205,6 +205,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const boundsOverlayRef = useRef<HTMLDivElement | null>(null);
   const boundsShownRef = useRef(false); // current shown state (for edge-trigger)
   const boundsHideTimerRef = useRef<number | null>(null); // 250ms debounce hide
+  // Trigger cooldown (user 2026-08-15): after the border SHOWS once, the cursor
+  // re-approaching the band within this window will NOT re-trigger it. Only an
+  // approach after the window expires shows it again, and so on. Timed from
+  // the show moment (not the hide moment).
+  const boundsCooldownUntilRef = useRef(0); // performance.now() timestamp
 
   if (!fsmRef.current) {
     fsmRef.current = new AnimationFSM();
@@ -743,6 +748,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       // div, which is a sibling of the canvas inside pet-char-wrapper.
       if (mb && boundsOverlayRef.current) {
         const BAND = 12; // px (screen) band around the outline that triggers show
+        const TRIGGER_COOLDOWN_MS = 5000; // re-approach must wait this long after a show
         const nearBorder =
           sx >= left - BAND && sx <= right + BAND &&
           sy >= top - BAND && sy <= bottom + BAND &&
@@ -782,8 +788,15 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
           o.style.top = `${clampedTop}px`;
           o.style.width = `${Math.max(0, clampedRight - clampedLeft)}px`;
           o.style.height = `${Math.max(0, clampedBottom - clampedTop)}px`;
-          if (!boundsShownRef.current) {
+          if (
+            !boundsShownRef.current &&
+            performance.now() >= boundsCooldownUntilRef.current
+          ) {
             boundsShownRef.current = true;
+            // Cooldown starts at the show moment: approaches inside the window
+            // are ignored, the next approach after it shows again (循环).
+            boundsCooldownUntilRef.current =
+              performance.now() + TRIGGER_COOLDOWN_MS;
             o.classList.add("bounds-visible");
           }
           if (boundsHideTimerRef.current) {
