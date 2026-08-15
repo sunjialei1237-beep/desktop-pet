@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-14（续³³·搜索源国外优先级联✅（DDG 可达即用→CAPTCHA/超时 10min 冷却→头条兜底，`0f06253`）+ release rebuild✅（worktree@8ad79f6 全量，代续³² 待办③））。上轮 2026-08-14（续³²·主动冒泡治理全部落地 ✅ commit b9055a9：全局预算 60min/记忆 15%/轮转 7 天硬排除/时间词中和，lib 384 绿。b6bef1a 中间坏点编译错已解除，并行会话可继续情感锚点）。上轮 2026-08-14（续³¹·承诺追踪落地 ✅，情感锚点+recall_reason ⏸ 等 governance 提交）。上轮 2026-08-14（续³⁰·工具层收尾：头条搜索实跑✅ + release rebuild✅）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
+> 最后更新：**2026-08-15（续³⁴·二期第一梯队三连落地✅：晚安+周日总结+里程碑+Serendipity，lib 406 绿+真LLM harness 3 绿+release rebuild）。上轮 （续³³·搜索源级联+rebuild）。上轮 2026-08-14（续³²·主动冒泡治理全部落地 ✅ commit b9055a9：全局预算 60min/记忆 15%/轮转 7 天硬排除/时间词中和，lib 384 绿。b6bef1a 中间坏点编译错已解除，并行会话可继续情感锚点）。上轮 2026-08-14（续³¹·承诺追踪落地 ✅，情感锚点+recall_reason ⏸ 等 governance 提交）。上轮 2026-08-14（续³⁰·工具层收尾：头条搜索实跑✅ + release rebuild✅）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,16 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-15（续³⁴）更新 · 二期第一梯队三连全部落地 ✅（`618b0fd` 晚安 + `bbfc2c7` 周日总结&里程碑 + `4b4fd95` Serendipity + `b83d04c` harness，lib 406 绿 / soul_ritual_harness 真 LLM 3 绿 / golden 29 + closed_loop2 2 / tsc 0 / release 已 rebuild）**。上轮盘点 MVP 外缺口后用户钦定第一梯队三连（仪式感补全 + 关系里程碑 + 记忆机缘），全部照早安已验证链路（check → 纯函数判定 → 先 mark → occupy_budget_always → emit → ritual_bubble(kind) → generate → canned 兜底），零新架构概念：
+>
+> **① 晚安仪式（`618b0fd`）**：21:00-23:59 + presence Active + 每日一次（设计未定义晚安，本轮定义）；**接管"该睡了"职责**——mark 后前端深夜 nudge（唯一不查预算的冒泡点）经新命令 `ritual_done_today(goodnight)` 当日静默，一天只有一个睡前声音；21-22 点温柔收尾 / 23 点后嗔怪催睡两段 prompt；复用 enable_rituals 开关。
+> **② 周日总结（`bbfc2c7` 上半）**：soul/weekly.rs——本周 episodes(≤50)+新 facts(≤20) 构造成 RetrievalResult **一石二鸟**（budget 注入 [Memories] + grounding_guard 允许池=本周本身，复盘必然提及用户的事）；空周 mark 后静默（#12）；db 层新增 episodes/facts `get_since`（含 consolidated 取最近 N 升序）；ISO 周一键幂等，now 参数化可测。
+> **③ 关系里程碑（`bbfc2c7` 下半）**：soul/landmark.rs——**days_known 死字段的补法**：first_met_date = MIN(change_log.timestamp)（事件溯源最早写入≈初识日）一次性回填，空库兜底 now（第 1 天起算，7 天后首庆）；认识 {7,30,100,365} 天 + 对话 {100,1000} 次；**降序覆盖语义**（celebrated 阈值 >=m 则 m 被覆盖——第 31 天才发现时自然说"满 30 天"且 7 永不补蹦）；generate 锚定最早 3 条 episodes（"还记得那时候…"）合并进语义池；新 config `enable_landmarks`；凌晨里程碑等早饭（Morning..Evening 窗口）。
+> **④ Memory Serendipity（`4b4fd95`）**：generate 记忆分支（~15%）内 1/3 概率走弱相关带（score ∈ [0.15,0.45]——低于地板是噪声、高于天花板只是强记忆，都不是"惊喜"），带内 1/(1+recall_count) 加权（从未想起过的旧事优先），reason="不知道为什么突然想到这个"；due 分支在其前不受影响；**零新增 LLM 调用零签名变更**，不加开关（零成本判例）。
+> **测试轮（用户要求自证可用）**：纯函数 19 新单测（晚安三态/周键 ISO/空周/first_met 双源回填/里程碑覆盖幂等/serendipity 带过滤 30 seeds+空带）+ **soul_ritual_harness 真 LLM 三闭环**（晚安 mark 静默 / 周总结提真事+**硬检查零编造** / 里程碑庆祝+一次性）——亮点输出：里程碑「还记得你刚深夜赶完大作业那天，我还没怎么敢跟你说话。今天正好满30天了」、周总结「面试完了，大作业也熬过来了，还带糯米去猫咖撸了个爽」。JobStat +3（ritual_goodnight/ritual_weekly/landmark_celebration）进 Debug Panel。
+>
+> 📋 **实跑 D-check（下一会话/日常观察）**：① 21 点后开 dev → 晚安气泡 + 当晚"该睡了"nudge 消失 + 次日不重发；② Debug Panel scheduler 页看三个新 JobStat；③ 里程碑可临时改 app_config first_met_date 为 30 天前实测庆祝；④ 周日总结等本周日或临时调窗；⑤ serendipity 长跑观察日志 reason="突然想到" 的锚是否自然。**剩余 backlog**（第二梯队起）：感知型 Episode（"连续工作8小时"入记忆）、喂食/拖文件礼物、Shared History 翻历史 UI、番茄钟/跨显示器/全屏降级、告别动画（等美术）、VITS。
 
 > **2026-08-13（续²⁴）更新 · 全面测试验收 + 多轮修复 + 记忆卫生 ✅ 已收尾（release 已 rebuild）**。用户"继续测试"驱动——按 verify-checklist 全量验收 + 实测反馈逐项修复。**六条主线**：
 >
