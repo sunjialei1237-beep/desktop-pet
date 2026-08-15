@@ -966,15 +966,22 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
                   });
                 }
                 petPosRef.current = real;
-                if (real.y + winSizeRef.current.h < floorYRef.current - 2) {
+                // 2026-08-15 (user, after three escalating reports): she must
+                // STAY where she is released — the post-release 1/3 hover-fall
+                // kept moving her off the drop point ("回原位/触底触顶反弹/
+                // 无法停在上面和下面"), and its size scales with altitude.
+                // Flip this constant to resurrect the fall (1/3 arc, g=1200/9).
+                const atFloor = real.y + winSizeRef.current.h >= floorYRef.current - 2;
+                if (ENABLE_POST_DRAG_FALL && !atFloor) {
                   gravityRef.current.grounded = false;
                   gravityRef.current.vy = 0;
-                  // Only fall a third of the way to the floor (user preference).
+                  // Only fall a third of the way to the floor (old preference).
                   fallLimitBottomRef.current =
                     real.y + winSizeRef.current.h + (floorYRef.current - (real.y + winSizeRef.current.h)) / 3;
-                } else {
+                } else if (atFloor) {
                   sound.play("land"); // dropped right on the floor: thud now
                 }
+                // Mid-air + fall disabled → stays exactly where released.
               })
               .catch(() => { armPendingRef.current = false; });
           }
@@ -1050,6 +1057,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // pure click (press+release without moving) never enters the OS drag loop and
   // Spine hit-test clicks (head/body bubbles) still fire normally.
   const DRAG_THRESHOLD = 5;
+  // 2026-08-15: post-drag free-fall DISABLED by user decision — she stays
+  // exactly where released ("无法停在上面和下面/回原位" across three reports;
+  // the fall's 1/3-arc scales with altitude so it read as bouncing back).
+  // Set true to bring the 1/3 hover-fall back (arm path is kept intact).
+  const ENABLE_POST_DRAG_FALL = false;
 
   // Any user interaction refreshes the DeepNight sleep-idle timer and wakes the
   // pet if asleep. Stable (deps []): only touches refs, so callers may omit it
