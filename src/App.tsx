@@ -137,6 +137,20 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // mid-air, free-fall starts.
   const wasDraggedRef = useRef(false);
   const lastMovedRef = useRef(0);
+  // Timestamp (performance.now) of the last received global-cursor event.
+  // The fall only arms when this is FRESH (<1.5s): if the event pipeline ever
+  // goes silent, the lbutton state is unverifiable and arming on a guess can
+  // fight the OS drag (shake) or teleport from a stale petPos (回原位 bug).
+  const lastCursorEventAtRef = useRef(0);
+  // One-shot guard so the async (IPC-calibrated) fall-arm can't double-fire
+  // across rAF frames while the outerPosition roundtrip is in flight.
+  const armPendingRef = useRef(false);
+  // Telemetry: petPos-vs-real-window drift seen at the last fall-arm (>2px
+  // means the onMoved sync missed drag moves — the stale-position teleport
+  // the user reported on 2026-08-15). Surfaced via __dragDiag + console.
+  const lastArmDriftRef = useRef<{
+    drift: number; stale: PetPosition | null; real: PetPosition; at: number;
+  } | null>(null);
   // Physical left-button state from the backend's global-cursor events (OS
   // truth via GetAsyncKeyState). Native drags swallow webview mouseup, so the
   // page alone can't tell "user paused mid-drag" from "user released" — this
@@ -718,6 +732,9 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     };
     listen<{ x: number; y: number; lbutton: boolean }>("global-cursor", (e) => {
       resetWatchdog();
+      // Pipeline liveness timestamp (see lastCursorEventAtRef) — refreshed
+      // before anything else so every consumer below reads fresh state.
+      lastCursorEventAtRef.current = performance.now();
       // OS-level button truth (see lbuttonRef declaration) — refresh it before
       // anything below so the physics loop always reads the freshest state.
       lbuttonRef.current = e.payload.lbutton === true;
@@ -907,22 +924,59 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
         } else {
           // B2 (P12.1): drag-end detection. After a native drag the window
           // goes still once the user releases; if she was left above the
-          // work-area bottom, start free-fall. The !lbuttonRef gate is the
-          // fix for the shake bug: movement quiescence alone can't tell a
-          // mid-drag pause (button still held) from a real release, and
-          // arming the fall during a pause makes the physics loop fight the
-          // OS drag the moment the user moves again.
-          if (wasDraggedRef.current && !lbuttonRef.current && now - lastMovedRef.current > 300) {
+          // work-area bottom, start free-fall. Gates:
+          // - !lbuttonRef: OS button truth — a mid-drag pause (button held)
+          //   must not arm the fall (the original shake bug).
+          // - fresh lastCursorEventAtRef: if the global-cursor pipeline went
+          //   silent, lbutton is unverifiable — defer (keep wasDragged) until
+          //   events flow again rather than arm on a guess.
+          // - arm-time outerPosition() calibration: the arm uses the window's
+          //   REAL position, not petPosRef. If the onMoved sync ever misses
+          //   drag moves (the 松手回原位 bug reported 2026-08-15), a stale
+          //   petPos made the fall teleport her back to where she was before
+          //   the drag. Calibrating from the source of truth makes that
+          //   physically impossible, and the >2px drift is logged as
+          //   telemetry (lastArmDriftRef / __dragDiag).
+          if (
+            wasDraggedRef.current &&
+            !lbuttonRef.current &&
+            !armPendingRef.current &&
+            now - lastCursorEventAtRef.current < 1500 &&
+            now - lastMovedRef.current > 300
+          ) {
             wasDraggedRef.current = false;
-            if (pos.y + winSizeRef.current.h < floorYRef.current - 2) {
-              gravity.grounded = false;
-              gravity.vy = 0;
-              // Only fall a third of the way to the floor (user preference).
-              fallLimitBottomRef.current =
-                pos.y + winSizeRef.current.h + (floorYRef.current - (pos.y + winSizeRef.current.h)) / 3;
-            } else {
-              sound.play("land"); // dropped right on the floor: thud now
-            }
+            armPendingRef.current = true;
+            const f = scaleFactorRef.current || 1;
+            getCurrentWindow()
+              .outerPosition()
+              .then((phys) => {
+                armPendingRef.current = false;
+                // The user may have re-grabbed her during the IPC roundtrip —
+                // arming now would start the fall mid-drag (fight).
+                if (lbuttonRef.current || isBeingDraggedRef.current) return;
+                const real = { x: phys.x / f, y: phys.y / f };
+                const stale = petPosRef.current;
+                const drift = stale ? Math.hypot(real.x - stale.x, real.y - stale.y) : Infinity;
+                if (drift > 2) {
+                  lastArmDriftRef.current = {
+                    drift: Math.round(drift), stale, real, at: Date.now(),
+                  };
+                  console.warn("[drag] stale petPos at fall-arm — calibrated instead", {
+                    drift: Math.round(drift), stale, real,
+                  });
+                }
+                petPosRef.current = real;
+                if (real.y + winSizeRef.current.h < floorYRef.current - 2) {
+                  gravityRef.current.grounded = false;
+                  gravityRef.current.vy = 0;
+                  // Only fall a third of the way to the floor (user preference).
+                  fallLimitBottomRef.current =
+                    real.y + winSizeRef.current.h + (floorYRef.current - (real.y + winSizeRef.current.h)) / 3;
+                } else {
+                  sound.play("land"); // dropped right on the floor: thud now
+                }
+              })
+              .catch(() => { armPendingRef.current = false; });
           }
           // (2026-08-08) Walk-back-to-nest removed — 桌宠驻留，拖到哪停哪，
           // 不再自主走回角落窝。Body 层只剩自由落体 + 落地弹跳 + 昼夜节律。
@@ -948,10 +1002,13 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       lbutton: lbuttonRef.current,
       wasDragged: wasDraggedRef.current,
       isBeingDragged: isBeingDraggedRef.current,
+      armPending: armPendingRef.current,
       grounded: gravityRef.current.grounded,
       vy: Math.round(gravityRef.current.vy),
       petPos: petPosRef.current,
       lastMovedAgoMs: Math.round(performance.now() - lastMovedRef.current),
+      lastCursorEventAgoMs: Math.round(performance.now() - lastCursorEventAtRef.current),
+      lastArmDrift: lastArmDriftRef.current,
       fallLimitBottom: Math.round(fallLimitBottomRef.current),
       floorY: Math.round(floorYRef.current),
       winH: Math.round(winSizeRef.current.h),
