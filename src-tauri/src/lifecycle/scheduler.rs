@@ -48,6 +48,7 @@ fn default_jobs() -> Vec<JobStat> {
         JobStat { name: "presence_watch",cadence: "30s", enabled: true,  disableable: false, last_run_at: None, last_status: "idle", last_message: None },
         JobStat { name: "lonely_nudge",  cadence: "30s", enabled: true,  disableable: false, last_run_at: None, last_status: "idle", last_message: None },
         JobStat { name: "ritual_goodmorning", cadence: "30s", enabled: true, disableable: true, last_run_at: None, last_status: "idle", last_message: None },
+        JobStat { name: "ritual_goodnight",   cadence: "30s", enabled: true, disableable: true, last_run_at: None, last_status: "idle", last_message: None },
         // Slow loop (1h) — Soul capabilities, individually disableable.
         JobStat { name: "memory_decay",        cadence: "1h", enabled: true, disableable: false, last_run_at: None, last_status: "idle", last_message: None },
         JobStat { name: "closeness_drift",     cadence: "1h", enabled: true, disableable: false, last_run_at: None, last_status: "idle", last_message: None },
@@ -129,7 +130,7 @@ mod tests {
         for j in snapshot() {
             match j.name {
                 "lifecycle_cleanup" | "reflection" | "consolidation" | "relationship_review"
-                | "ritual_goodmorning" => {
+                | "ritual_goodmorning" | "ritual_goodnight" => {
                     assert!(j.disableable, "{} should be disableable", j.name);
                 }
                 _ => assert!(!j.disableable, "{} should NOT be disableable", j.name),

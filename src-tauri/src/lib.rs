@@ -230,6 +230,7 @@ pub fn run() {
             commands::welcome_back_bubble,
             commands::lonely_bubble,
             commands::ritual_bubble,
+            commands::ritual_done_today,
             commands::get_llm_status,
             commands::resolve_pending_event,
             commands::get_llm_config,

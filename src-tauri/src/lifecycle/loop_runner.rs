@@ -34,6 +34,10 @@ pub fn start_life_loop(app: AppHandle) {
             // return fires 早安 (date-driven) first; the welcome-back path then
             // sees today's 早安 already done and yields to it.
             check_goodmorning(&app);
+            // 晚安 runs after 早安 (the windows never overlap: Morning/Afternoon
+            // vs 21:00+). Once 晚安 fires, the frontend "该睡了" nudge also
+            // yields for the rest of the day via ritual_done_today.
+            check_goodnight(&app);
             check_presence_transition(&app, &mut last_presence, &mut away_since);
             check_lonely_nudge(&app, &mut last_lonely_nudge);
         });
@@ -413,6 +417,68 @@ fn check_goodmorning(app: &AppHandle) {
         true,
         "ok",
         Some(format!("tod={}", tod)),
+    );
+}
+
+/// 晚安 ritual: the day's closing (21:00-23:59, user present, once per local
+/// day). Mirrors check_goodmorning: date-driven, fires regardless of the
+/// interval gate but OCCUPIES the shared budget; once fired, the frontend
+/// "该睡了" nudge yields for the rest of the day (one bedtime voice per day).
+fn check_goodnight(app: &AppHandle) {
+    use chrono::Timelike;
+
+    // Capability toggle — same switch as all rituals (Architecture #6).
+    let enabled = app
+        .try_state::<AppState>()
+        .map(|s| s.config.scheduler.enable_rituals)
+        .unwrap_or(true);
+    if !crate::lifecycle::scheduler::should_run(enabled) {
+        crate::lifecycle::scheduler::record("ritual_goodnight", false, "skipped", None);
+        return;
+    }
+
+    // Only in the bedtime window (21:00-23:59 local).
+    if !(21..=23).contains(&chrono::Local::now().hour()) {
+        return;
+    }
+
+    // Only when the user is actually at the desk (a goodnight to an empty
+    // room is wasted).
+    if crate::perception::presence::current_presence()
+        != crate::perception::presence::PresenceState::Active
+    {
+        return;
+    }
+
+    let db = match get_db(app) {
+        Some(s) => s,
+        None => return,
+    };
+    let due = db
+        .with_conn(|conn| Ok(crate::soul::ritual::should_run_goodnight(conn)))
+        .unwrap_or(false);
+    if !due {
+        return;
+    }
+
+    // Mark done BEFORE emitting (same crash-safety contract as 早安).
+    let _ = db.with_conn(|conn| crate::soul::ritual::mark_goodnight_done(conn));
+
+    // Date-driven ritual: exempt from the interval gate, but occupies the
+    // shared budget so nothing else bubbles right after the goodnight.
+    crate::pending::budget::occupy_budget_always(&db);
+
+    let hour = chrono::Local::now().hour();
+    log::info!("Life loop: 晚安 ritual firing (hour={})", hour);
+    let _ = app.emit(
+        "ritual-bubble",
+        serde_json::json!({ "kind": "goodnight" }),
+    );
+    crate::lifecycle::scheduler::record(
+        "ritual_goodnight",
+        true,
+        "ok",
+        Some(format!("hour={}", hour)),
     );
 }
 

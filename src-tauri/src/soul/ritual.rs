@@ -49,6 +49,32 @@ pub fn mark_goodmorning_done(conn: &rusqlite::Connection) -> Result<(), String> 
     onboarding::save(conn, LAST_GOODMORNING_KEY, &today_local())
 }
 
+/// app_config key holding the last 晚安 date (YYYY-MM-DD, local).
+const LAST_GOODNIGHT_KEY: &str = "last_goodnight_date";
+
+/// Whether 晚安 should fire: no 晚安 recorded for today's local date.
+/// Same gate shape as 早安; the 21:00-23:59 window is enforced by the caller
+/// (loop_runner) so this stays a pure DB read.
+pub fn should_run_goodnight(conn: &rusqlite::Connection) -> bool {
+    match onboarding::get(conn, LAST_GOODNIGHT_KEY) {
+        Ok(Some(last)) => last != today_local(),
+        _ => true,
+    }
+}
+
+/// Record that today's 晚安 has fired (BEFORE emitting, same crash-safety
+/// contract as mark_goodmorning_done).
+pub fn mark_goodnight_done(conn: &rusqlite::Connection) -> Result<(), String> {
+    onboarding::save(conn, LAST_GOODNIGHT_KEY, &today_local())
+}
+
+/// Whether today's 晚安 already fired — exposed for the frontend "该睡了"
+/// nudge dedup: once she has said goodnight, the frontend late-night nudge
+/// stays quiet for the rest of the day (one voice, not two).
+pub fn goodnight_done_today(conn: &rusqlite::Connection) -> bool {
+    !should_run_goodnight(conn)
+}
+
 /// Canned 早安 fallback when the LLM is unconfigured or returns empty.
 /// Mood-scaled + time-of-day-aware, mirroring `welcome_back_canned`.
 pub fn goodmorning_canned(mood: f64, tod: TimeOfDay) -> &'static str {
@@ -62,6 +88,16 @@ pub fn goodmorning_canned(mood: f64, tod: TimeOfDay) -> &'static str {
         // Outside Morning/Afternoon the loop never fires 早安, but keep a sane
         // default so the canned fn is total (defensive, mirrors react::*).
         _ => "你来啦。",
+    }
+}
+
+/// Canned 晚安 fallback when the LLM is unconfigured or returns empty.
+/// The late-night voice: caring, not nagging (design: 深夜催你早点睡).
+pub fn goodnight_canned(mood: f64) -> &'static str {
+    if mood >= 0.65 {
+        "再不睡我明天可要生气的哦，晚安～"
+    } else {
+        "别熬太晚呀，晚安。"
     }
 }
 
@@ -201,6 +237,135 @@ pub async fn generate_goodmorning(
     }
 }
 
+/// Generates a 晚安 bubble — the day's closing ritual (fires 21:00-23:59,
+/// user present, at most once per local day). Mirrors generate_goodmorning;
+/// the framing is a caring goodnight / gentle bedtime nudge, NOT nagging.
+/// Once fired, the frontend "该睡了" nudge yields for the rest of the day
+/// (ritual_done_today), so there is exactly one bedtime voice per day.
+pub async fn generate_goodnight(
+    db: &DbState,
+    llm: &LlmClient,
+    embedding: Option<&crate::embedding::EmbeddingService>,
+    wm_context: &[ChatMessage],
+) -> Result<Option<crate::pending::proactive::BubbleOutcome>, String> {
+    let db_emotion = db.with_conn(crate::db::emotion::get)?;
+    let emotion = crate::emotion::state::EmotionState {
+        mood: db_emotion.mood,
+        physical_energy: db_emotion.physical_energy,
+        social_battery: db_emotion.social_battery,
+        stress: db_emotion.stress,
+        loneliness: db_emotion.loneliness,
+        rest_need: db_emotion.rest_need,
+    };
+
+    let retrieval = crate::mind::retrieval::retrieve(
+        "user's life recent events preferences",
+        &emotion,
+        embedding,
+        db,
+        8,
+    )?;
+    // Optional anchor (~25%), fresh pool only — same governance as 早安.
+    let (memory_anchor, has_anchor): (String, bool) = {
+        use rand::Rng;
+        let now_utc = chrono::Utc::now();
+        let mut rng = rand::thread_rng();
+        if rng.gen_range(0..100) >= crate::pending::proactive::ANCHOR_PROB_PERCENT {
+            (String::new(), false)
+        } else {
+            let fact =
+                crate::pending::proactive::sample_anchorable_fact(&retrieval.facts, &now_utc);
+            let episode = if fact.is_none() {
+                crate::mind::retrieval::sample_surface_anchor(&retrieval.episodes, &now_utc, &mut rng)
+                    .map(|i| &retrieval.episodes[i].episode)
+            } else {
+                None
+            };
+            match (fact, episode) {
+                (Some(f), _) => {
+                    crate::pending::proactive::record_anchor_surfaced(
+                        db, Some(f), None, &now_utc.to_rfc3339(),
+                    );
+                    (
+                        crate::pending::proactive::present_anchor(
+                            &format!("{}: {}", f.key, f.value),
+                            Some(&f.created_at),
+                        ),
+                        true,
+                    )
+                }
+                (None, Some(ep)) => {
+                    crate::pending::proactive::record_anchor_surfaced(
+                        db, None, Some(ep), &now_utc.to_rfc3339(),
+                    );
+                    (crate::pending::proactive::present_anchor(&ep.summary, Some(&ep.time)), true)
+                }
+                (None, None) => (String::new(), false),
+            }
+        }
+    };
+
+    let tone: &str = if emotion.mood >= 0.65 { "playful" } else { "gentle" };
+    let intent = Intent {
+        goal: "care".to_string(),
+        memory_anchor: memory_anchor.clone(),
+        tone: tone.to_string(),
+        proactive: true,
+        action: "goodnight".to_string(),
+        capability: crate::tools::CapabilityMode::None,
+    };
+    let mut messages =
+        crate::mind::budget::allocate_and_compress(&retrieval, wm_context, &emotion, &intent);
+
+    // Bedtime framing. 21:00-22:59 = gentle wind-down; 23:00+ = it's really
+    // late, the caring gets a little more pointed (still not scolding).
+    let hour = chrono::Local::now().hour();
+    let time_clause = if hour < 23 {
+        "已经是晚上了，一天快结束了。你想跟对方道声晚安，顺便温柔地提醒该休息了——像很亲近的人那种自然的关心，不是唠叨。".to_string()
+    } else {
+        "都过了 11 点了，对方还没睡。你是真的有点心疼——嗔怪里带着关心地催 ta 去睡（可以稍微撒娇式地「生气」，但绝不是说教）。".to_string()
+    };
+    let anchor_clause = if has_anchor {
+        format!("你想起 ta 之前跟你提过的事：{memory_anchor}。可以顺着轻轻带一句收尾，但只能围绕这件事的原意，别换话题、别编没提过的细节。")
+    } else {
+        String::new()
+    };
+    messages.push(ChatMessage::user(format!(
+        "（{time_clause}{anchor_clause}这条不一定要问问题——一句带着温度的晚安陈述就好。简短自然，1-2 句。称呼对方用「你」，不要用「用户」。按规则回复。）"
+    )));
+
+    log::info!(
+        "[goodnight] tod_hour={} has_anchor={} tone={} facts={} episodes={} msgs={}",
+        hour,
+        has_anchor,
+        tone,
+        retrieval.facts.len(),
+        retrieval.episodes.len(),
+        messages.len(),
+    );
+
+    let chat_result = llm
+        .chat(&messages, Some(0.8), Some(4096), None)
+        .await
+        .map_err(|e| format!("LLM error: {:?}", e))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = db.with_conn(|conn| {
+        crate::db::relationship::record_interaction(conn, "goodnight", &now)
+    });
+
+    let reply = chat_result.content.trim().to_string();
+    let reply = crate::pending::proactive::grounding_guard(reply, &retrieval, &messages, llm).await;
+    match reply {
+        Some(reply) => Ok(Some(crate::pending::proactive::BubbleOutcome {
+            reply,
+            anchor: memory_anchor,
+            anchor_reason: None,
+        })),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +433,47 @@ mod tests {
         let t = today_local();
         assert_eq!(t.len(), 10, "YYYY-MM-DD is 10 chars");
         assert_eq!(t.chars().nth(4), Some('-'));
+    }
+
+    #[test]
+    fn goodnight_runs_when_never_fired_or_yesterday() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            assert!(should_run_goodnight(conn), "never fired => due");
+            Ok(())
+        })
+        .unwrap();
+        let yesterday = (chrono::Local::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        db.with_conn(|conn| onboarding::save(conn, LAST_GOODNIGHT_KEY, &yesterday))
+            .unwrap();
+        db.with_conn(|conn| {
+            assert!(should_run_goodnight(conn), "yesterday => due today");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn goodnight_not_due_after_marking_done() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            mark_goodnight_done(conn)?;
+            assert!(!should_run_goodnight(conn));
+            assert!(goodnight_done_today(conn), "done_today mirrors the gate");
+            Ok::<_, String>(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn goodnight_canned_is_mood_aware() {
+        let playful = goodnight_canned(0.8);
+        let quiet = goodnight_canned(0.3);
+        assert!(!playful.is_empty() && !quiet.is_empty());
+        assert_ne!(playful, quiet, "mood should change the line");
+        assert!(playful.contains("晚安") || quiet.contains("晚安"));
     }
 
     // keep Timelike import used in case future tests need hour arithmetic

@@ -907,18 +907,24 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // P12: DeepNight/LateNight proactive nudge. Extracted into a callback so the
   // dev verify hook (window.__pet.probeNudge) can fire one on demand instead of
-  // waiting the full 10-min interval.
+  // waiting the full 10-min interval. Yields for the rest of the day once the
+  // 晚安 ritual has been said — one bedtime voice per day, not two.
   const runNudge = useCallback(() => {
     if (awayMode) return;
     // She's asleep — don't sleep-talk the "go to bed" nudge (#10).
     if (fsmRef.current?.state === BehaviorState.Sleeping) return;
-    const circ = getCircadianState();
-    if (circ.period === TimeOfDay.DeepNight && Math.random() < 0.4) {
-      const msgs = deepNightMessages();
-      showBubble(msgs[Math.floor(Math.random() * msgs.length)], 8000, "bubble-worried");
-    } else if (circ.period === TimeOfDay.LateNight && Math.random() < 0.2) {
-      showBubble("还不睡呀…", 6000, "bubble-sad");
-    }
+    invoke<boolean>("ritual_done_today", { kind: "goodnight" })
+      .then((done) => {
+        if (done) return;
+        const circ = getCircadianState();
+        if (circ.period === TimeOfDay.DeepNight && Math.random() < 0.4) {
+          const msgs = deepNightMessages();
+          showBubble(msgs[Math.floor(Math.random() * msgs.length)], 8000, "bubble-worried");
+        } else if (circ.period === TimeOfDay.LateNight && Math.random() < 0.2) {
+          showBubble("还不睡呀…", 6000, "bubble-sad");
+        }
+      })
+      .catch(() => {/* backend unavailable → keep the legacy behavior */});
   }, [showBubble, awayMode]);
 
   // Nudge check every 10 min (fires once per period, probabilistically).

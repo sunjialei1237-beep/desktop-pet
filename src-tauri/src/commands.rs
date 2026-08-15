@@ -658,10 +658,6 @@ pub async fn ritual_bubble(
     state: State<'_, AppState>,
     db: State<'_, DbState>,
 ) -> Result<Option<String>, String> {
-    if kind != "goodmorning" {
-        log::warn!("[ritual] unknown kind: {}", kind);
-        return Ok(None);
-    }
     let wm_context = {
         let wm = state
             .working_memory
@@ -677,28 +673,69 @@ pub async fn ritual_bubble(
         .map_err(|e| format!("LLM lock error: {}", e))?
         .as_ref()
         .cloned();
-    if let Some(llm) = llm {
-        let outcome = crate::soul::ritual::generate_goodmorning(
-            &db,
-            &llm,
-            Some(&state.embedding),
-            &wm_context,
-        )
-        .await?;
-        if let Some(o) = outcome {
-            return Ok(Some(o.reply));
+    match kind.as_str() {
+        "goodmorning" => {
+            if let Some(llm) = llm {
+                let outcome = crate::soul::ritual::generate_goodmorning(
+                    &db,
+                    &llm,
+                    Some(&state.embedding),
+                    &wm_context,
+                )
+                .await?;
+                if let Some(o) = outcome {
+                    return Ok(Some(o.reply));
+                }
+                // LLM returned nothing → fall through to canned.
+            }
+            let mood = db
+                .with_conn(crate::db::emotion::get)
+                .map(|e| e.mood)
+                .unwrap_or(0.5);
+            let tod = crate::perception::time::current_time_of_day();
+            Ok(Some(
+                crate::soul::ritual::goodmorning_canned(mood, tod).to_string(),
+            ))
         }
-        // LLM returned nothing → fall through to canned.
+        "goodnight" => {
+            if let Some(llm) = llm {
+                let outcome = crate::soul::ritual::generate_goodnight(
+                    &db,
+                    &llm,
+                    Some(&state.embedding),
+                    &wm_context,
+                )
+                .await?;
+                if let Some(o) = outcome {
+                    return Ok(Some(o.reply));
+                }
+            }
+            let mood = db
+                .with_conn(crate::db::emotion::get)
+                .map(|e| e.mood)
+                .unwrap_or(0.5);
+            Ok(Some(
+                crate::soul::ritual::goodnight_canned(mood).to_string(),
+            ))
+        }
+        other => {
+            log::warn!("[ritual] unknown kind: {}", other);
+            Ok(None)
+        }
     }
-    // Fallback: mood + time-of-day canned line. Never fails.
-    let mood = db
-        .with_conn(crate::db::emotion::get)
-        .map(|e| e.mood)
-        .unwrap_or(0.5);
-    let tod = crate::perception::time::current_time_of_day();
-    Ok(Some(
-        crate::soul::ritual::goodmorning_canned(mood, tod).to_string(),
-    ))
+}
+
+/// Whether a daily ritual (kind: "goodnight") already fired today. The
+/// frontend bedtime nudge consults this so the "该睡了" voice stays quiet
+/// after 晚安 has been said — one bedtime voice per day, not two.
+#[tauri::command]
+pub fn ritual_done_today(kind: String, db: State<'_, DbState>) -> Result<bool, String> {
+    match kind.as_str() {
+        "goodnight" => Ok(db
+            .with_conn(|conn| Ok(crate::soul::ritual::goodnight_done_today(conn)))
+            .unwrap_or(false)),
+        _ => Ok(false),
+    }
 }
 
 /// Generates a loneliness-driven "想你了" bubble when the user has been idle at
