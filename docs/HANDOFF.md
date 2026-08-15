@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-15（续³⁵·Soul v2 灵魂工程全链路落地✅：P1 身份补全+P2 system.txt v2+P2b 文风+P3 近端指令通道+v2.1 定向手术；评测闭环 M1-M10 全跑 A/B 双臂+150 条复测+缓存实测+回归三件套全绿，报告 docs/review/soul-upgrade-report-2026-08-15.md，已 rebuild）。上轮 续³⁴（二期第一梯队三连落地✅：晚安+周日总结+里程碑+Serendipity，lib 406 绿+真LLM harness 3 绿+release rebuild）。上轮 （续³³·搜索源级联+rebuild）。上轮 2026-08-14（续³²·主动冒泡治理全部落地 ✅ commit b9055a9：全局预算 60min/记忆 15%/轮转 7 天硬排除/时间词中和，lib 384 绿。b6bef1a 中间坏点编译错已解除，并行会话可继续情感锚点）。上轮 2026-08-14（续³¹·承诺追踪落地 ✅，情感锚点+recall_reason ⏸ 等 governance 提交）。上轮 2026-08-14（续³⁰·工具层收尾：头条搜索实跑✅ + release rebuild✅）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
+> 最后更新：**2026-08-15（续³⁶·拖拽剧烈晃动根治✅：根因=落体 setPosition 与 OS 拖拽互抢（300ms 静默推断误判拖拽结束）；修法=GetAsyncKeyState 左键真值门控物理循环；A/B 实跑复现+验证，lib 414 绿，已 rebuild+重启）。上轮 续³⁵（Soul v2 灵魂工程全链路落地✅：P1 身份补全+P2 system.txt v2+P2b 文风+P3 近端指令通道+v2.1 定向手术；评测闭环 M1-M10 全跑 A/B 双臂+150 条复测+缓存实测+回归三件套全绿，报告 docs/review/soul-upgrade-report-2026-08-15.md，已 rebuild）。上轮 续³⁴（二期第一梯队三连落地✅：晚安+周日总结+里程碑+Serendipity，lib 406 绿+真LLM harness 3 绿+release rebuild）。上轮 2026-08-14（续³²·主动冒泡治理全部落地 ✅ commit b9055a9：全局预算 60min/记忆 15%/轮转 7 天硬排除/时间词中和，lib 384 绿。b6bef1a 中间坏点编译错已解除，并行会话可继续情感锚点）。上轮 2026-08-14（续³¹·承诺追踪落地 ✅，情感锚点+recall_reason ⏸ 等 governance 提交）。上轮 2026-08-14（续³⁰·工具层收尾：头条搜索实跑✅ + release rebuild✅）。上轮 2026-08-14（续²⁹·工具层实跑三连修✅ + 项目迁移 D 盘✅。⚠️ 项目新地址 `D:\桌宠`）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -28,6 +28,8 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+
+> **2026-08-15（续³⁶）更新 · 拖拽剧烈晃动根治 ✅（用户报告"拖动时偶尔剧烈晃动，多见于刚重启后"；核心改动随并行会话 commit `7f07f2b` 入库，诊断+复现脚本+本文档随后补 commit；lib 414 绿 / tsc 0 / vitest 34 绿 / release 已 rebuild + 重启）**。**根因**：窗口位置有双写入者——OS 原生拖拽循环（`startDragging` 后系统驱动）与 rAF 物理循环的自由落体分支（每帧 `win.setPosition`）。原生拖拽吞掉所有 webview 鼠标事件（无 mouseup），旧代码用"窗口 300ms 没动"**推断**拖拽结束——但用户**拖到一半停顿 ≥300ms（手未松）**也会命中该推断 → 悬空时落体被误武装 → 再一动鼠标，落体 setPosition 与 OS 拖拽每帧互抢 = 剧烈晃动；且拖拽结束信号被中途消耗，真松手后反而不下落。**为何"刚重启后"高发**：重启后她待在右下角，用户第一动作就是长距离拖拽到常用位——长拖天然含 ≥300ms 停顿；另有"松手飘落中再抓取"路径（`isBeingDraggedRef` 在首个 onMoved 即复位，落体循环随即恢复）。**修法（拿 OS 真值取代猜测）**：① Rust `cursor.rs` 轮询线程（60Hz 已有）加 `GetAsyncKeyState(VK_LBUTTON)`，`global-cursor` 载荷加 `lbutton`，**位置或按键任一变化即 emit**（保证"松手但鼠标没动"也发事件）；② 前端 `lbuttonRef`：物理循环按住期间整体冻结（不积分不 setPosition）、拖拽结束检测加 `!lbutton` 门、onMoved 在按住期间也同步 petPos（恢复下落不从过期位置起跳）；③ `handleDragStart` 加 mouseup 清理（纯点击后悬停误触发 startDragging 的隐患：拖拽音效乱响+isBeingDragged 卡 true 不再穿透）；④ `window.__dragDiag` 诊断句柄（同 __ctDiag 模式）。**A/B 实跑证据**（`scripts/drag_shake_test.ps1` + CDP `scripts/cdp_probe*.cjs`，DPI-aware PS + WebView2 9222 端口）：旧代码 pause 800ms 后 resume，y 以重力加速度下沉 29→95 物理px 精确停在 1/3 弧线理论值、然后 OS 拖拽猛弹回 95→60（=用户所见晃动）、释放后不落体；修复后 resume **精确逐帧跟随光标**（x+10/步 y+4/步零偏差）、__dragDiag 实录握手全程（按住期间 grounded 恒 true → 松手 ~100ms lbutton=false → ~350ms 落体武装 → 落到 limit 844=理论 844.7）。**踩坑（本次新增）**：PowerShell 默认 DPI-unaware，GetWindowRect/SetCursorPos 坐标被系统虚拟化（150% 屏上返回逻辑值），UI 自动化必须先 `SetProcessDPIAware()` 否则点不到窗口。📋 用户日常观察：重启后拖拽（含中途停顿）应全程平滑，松手悬空照常飘落 1/3。
 
 > **2026-08-15（续³⁵）更新 · Soul v2 灵魂工程全链路落地 ✅（方案 `docs/plans/2026-08-15-soul-engineering-upgrade.md`，commits ed09b19→151b601 共 8 个；lib 411 绿 / golden 29 绿 / tsc 0 / 真 LLM：冒烟 10 对 + A/B 双臂（soul M1-M10 + 150 条）+ v2.1 定向复测 + 回归三件套（closed_loop2 2 + soul_ritual 3 + memory_recall 1）全绿 / release 已 rebuild）**。四层改造：**P1 L2b** lively/QA 最小身份 retrieval（修 85% 气泡空身份）+ days_known 读时回填（landmark::first_met_readonly）+ trust 死列隐藏 + "被期望"措辞去面具；**P2 L1** system.txt v2（正面引导/认知透镜+防导师化/称谓动态/温和推回/身份自指/14 示例 Core-State-Edge 分层）+ SYSTEM_SCAFFOLD 300→900；**P2b L2c** lively_prompt v2 声部改写（黑名单→身份理由）；**P3 L2a** 静态/近端消息拆分（时间+情绪+Intent 移到历史之后的末位 system=@depth 0，冒烟实验先证 API 接受）+ tone_hint 表达许可措辞+distress 让位 + `[prompt] near_end_directive` 开关（false=v1 布局免 rebuild 回滚）+ near_end_tokens 观测 + B14 缓存字段。**评测结论**（报告 §1-§8）：M1 盲认 3.87→4.43（GLM 异源）/克隆 20%→14%/糯米 40%→29%；M10 擅自建议 4/10→2/10；M6 气泡 10/10；M7 CV 0.23→0.32；150 条提问结尾 20%→15%、human_like 4.07→4.14、模板词 10→7；**缓存实测 239 次调用 80-90% 前缀命中**。**v2.1 三处手术**（决策规则触发）：危机守则（M8 实验"翻记忆摆理由"劣化→复测 2/2 safe）/"对不上号的上次宁可不说"（实验组硬编造 1→4 条触红线→复测硬型清零，软假设残留 ~3/150 观察项）/面试示例去"过了？"吸引子（M2 4/10→指标修正后 8-9/10 达标——原指标用示例原文测属 few-shot 最坏压测）。**踩坑记录**：①评测报告文件名不含臂标记，子集复测覆写实验组 150 全量报告（数据已转录报告 §3，日志在 experiment-run.log）——后续 harness 报告名加 arm+filter；②judge 输出 JSON 布尔值时解析只认整数（v_bool 已修双态）；③judge prompt 必须双极显式定义（M8 只定义 0 极导致照字面输出 0）；④评测中途改源码会撞正在编译的 cargo（实验组首跑因此重跑）。
 >
@@ -325,6 +327,42 @@
 | P5 | B8 二期 Shared World 等 | 二期愿景 | ⏳ 未来 |
 
 **Scope 边界**：本轮只做 B4b + B4-MVP（三分区）。B4 余三项各有独立 plumbing 成本（AnimFSM 需前端 fsm 状态上抛、Cost 需 LlmClient 插桩、Prompt 动态 token 需记 last usage），单独立 follow-up 避免 scope 膨胀（原则 #9 刚够用）。
+
+---
+
+## §最近一轮 (2026-08-15 续³⁶)：拖拽剧烈晃动根治 —— OS 按键真值门控物理循环
+
+用户报告：拖动桌宠时偶尔剧烈晃动，一般出现在刚重启桌宠之后。
+
+### 根因（双写入者互抢）
+
+拖拽期间窗口位置有**两个写入者**：OS 原生拖拽循环（`startDragging()` 后由系统驱动，跟随鼠标）与 rAF 物理循环的自由落体分支（`App.tsx` 每帧 `win.setPosition`）。落体分支的执行条件只是 `!gravity.grounded`，而原生拖拽吞掉所有 webview 鼠标事件（**永远收不到 mouseup**，B2/P12.1 已验证），旧代码用"窗口 300ms 没动"**推断**拖拽结束——该推断无法区分"真松手"与"拖到一半停顿"：
+
+1. **拖拽中途停顿 ≥300ms（手未松）**：推断命中 → 悬空时 `grounded=false` 落体被误武装 → 用户再一动鼠标，落体 setPosition 与 OS 拖拽每帧互抢窗口位置 = **剧烈晃动**（窗口在重力下沉线与光标线之间来回跳）。且 `wasDraggedRef` 被中途消耗，真松手后反而不下落。
+2. **飘落中再抓取**：松手后她在飘落（grounded=false），再抓住拖动——`isBeingDraggedRef` 在首个 onMoved 即被复位为 false，落体循环随即在拖拽进行中恢复 → 同样互抢。
+
+**为何"刚重启后"高发**：重启后她待在右下角，用户第一动作就是长距离拖拽到常用位置——长拖天然包含 ≥300ms 中途停顿；且重启后常"拖起-放下-再抓"微调，命中路径 2。日常她已在位，短拖不易触发 → "偶尔"。
+
+### 修法（拿 OS 真值取代猜测）
+
+1. **Rust `perception/cursor.rs`**：已有 60Hz 轮询线程加 `GetAsyncKeyState(VK_LBUTTON)`，`global-cursor` 载荷加 `lbutton: bool`；emit 条件从"位置变化"扩为"**位置或按键任一变化**"（保证"松手但鼠标完全没动"也发出按键变化事件，否则前端永远等不到释放）。
+2. **前端 `lbuttonRef`（App.tsx）**：物理循环外层门加 `!lbuttonRef.current`（按住期间整体冻结——不积分、不 setPosition，涵盖抓取瞬间到 OS 拖拽接管的窗口期与纯点击）；拖拽结束检测加 `!lbutton` 门（中途停顿不再误武装）；onMoved 同步条件改 `grounded || lbutton`（下落中被按住拖动时 petPos 仍同步，恢复下落不从过期位置起跳）。
+3. **`handleDragStart` 加 mouseup 清理**：纯点击（未过 5px 阈值）后 mousemove 监听器原先永不移除，下次悬停移动会误触发 `startDragging()`（无按键的拖拽音效 + isBeingDragged 卡 true → 永不穿透）。真拖拽路径 mouseup 被原生拖拽吞掉，行为不变。
+4. **`window.__dragDiag` 诊断句柄**（同 __ctDiag 模式，只读 refs）：暴露 lbutton/wasDragged/grounded/vy/petPos/fallLimitBottom 等，CDP 可在真拖拽中实时观察握手。
+
+### A/B 实跑验证（复现 → 修复）
+
+工具：`scripts/drag_shake_test.ps1`（DPI-aware PS，模拟"抓取→右上拖→按住停顿 800ms→再动→释放"，全程采样窗口矩形）+ `scripts/cdp_probe*.cjs`（WebView2 `--remote-debugging-port=9222`，读取应用自身几何与 __dragDiag）。dev 跑旧代码（git stash 修复）复现：
+
+- **旧代码**：pause 期间误武装 → resume 阶段 y 以重力加速度下沉 29→95 物理px（**精确停在 1/3 弧线理论值 95**=63.3 逻辑×1.5），x 却钉死不动（光标在 +10/步右移）→ OS 拖拽猛弹回 (95→60)——即用户所见的"剧烈晃动"；释放后不落体（信号被消耗）。
+- **修复后**：resume 阶段 x 每步 +10、y 每步 +4——**精确逐帧跟随光标，零下沉零弹跳**；__dragDiag 实录：按住期间 grounded 恒 true → 松手 ~100ms 内 lbutton=false（按键变化事件即达）→ ~350ms 落体武装（vy 33→86）→ 落到 limit 844（理论 844.7）后 grounded——**设计行为（1/3 飘落）完整回归**。
+
+验证链：`tsc 0` / `vitest 34 绿` / `cargo test --lib 414 绿` / release rebuild exit 0（1m07s）。
+
+### 踩坑（新增）
+
+- **PowerShell UI 自动化的 DPI 虚拟化陷阱**：PS 默认 DPI-unaware，150% 屏上 GetWindowRect 返回**逻辑值**（1931,228 物理 → 报 1287,152）、SetCursorPos 入参也被虚拟化——首次实验完全点不到窗口。必须先 P/Invoke `SetProcessDPIAware()` 再做任何坐标操作。
+- **并行会话提交捎带**：本修复核心改动（cursor.rs + App.tsx 大部分）被并行会话的 `git add`+commit（`7f07f2b` 边界框光晕样式）一并入库——commit message 未提及拖拽修复，本条目即权威记录。stash pop 时与其新增的边界框冷却代码冲突（两处注释措辞差异），已合并保留双方功能。
 
 ---
 

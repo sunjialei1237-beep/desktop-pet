@@ -939,6 +939,26 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
    return () => cancelAnimationFrame(raf);
   }, [awayMode]);
 
+  // Drag/fall diagnostics (same dev-aid pattern as __ctDiag / __pet): reads
+  // refs only, never mutates — lets CDP observe the handshake gates live
+  // while a real OS drag is in progress (webview mouse events are swallowed
+  // then, so this is the only window into the physics state).
+  useEffect(() => {
+    (window as any).__dragDiag = () => ({
+      lbutton: lbuttonRef.current,
+      wasDragged: wasDraggedRef.current,
+      isBeingDragged: isBeingDraggedRef.current,
+      grounded: gravityRef.current.grounded,
+      vy: Math.round(gravityRef.current.vy),
+      petPos: petPosRef.current,
+      lastMovedAgoMs: Math.round(performance.now() - lastMovedRef.current),
+      fallLimitBottom: Math.round(fallLimitBottomRef.current),
+      floorY: Math.round(floorYRef.current),
+      winH: Math.round(winSizeRef.current.h),
+    });
+    return () => { delete (window as any).__dragDiag; };
+  }, []);
+
   // P12: DeepNight/LateNight proactive nudge. Extracted into a callback so the
   // dev verify hook (window.__pet.probeNudge) can fire one on demand instead of
   // waiting the full 10-min interval. Yields for the rest of the day once the
