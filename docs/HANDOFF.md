@@ -37,7 +37,9 @@
 > **④ Memory Serendipity（`4b4fd95`）**：generate 记忆分支（~15%）内 1/3 概率走弱相关带（score ∈ [0.15,0.45]——低于地板是噪声、高于天花板只是强记忆，都不是"惊喜"），带内 1/(1+recall_count) 加权（从未想起过的旧事优先），reason="不知道为什么突然想到这个"；due 分支在其前不受影响；**零新增 LLM 调用零签名变更**，不加开关（零成本判例）。
 > **测试轮（用户要求自证可用）**：纯函数 19 新单测（晚安三态/周键 ISO/空周/first_met 双源回填/里程碑覆盖幂等/serendipity 带过滤 30 seeds+空带）+ **soul_ritual_harness 真 LLM 三闭环**（晚安 mark 静默 / 周总结提真事+**硬检查零编造** / 里程碑庆祝+一次性）——亮点输出：里程碑「还记得你刚深夜赶完大作业那天，我还没怎么敢跟你说话。今天正好满30天了」、周总结「面试完了，大作业也熬过来了，还带糯米去猫咖撸了个爽」。JobStat +3（ritual_goodnight/ritual_weekly/landmark_celebration）进 Debug Panel。
 >
-> 📋 **实跑 D-check（下一会话/日常观察）**：① 21 点后开 dev → 晚安气泡 + 当晚"该睡了"nudge 消失 + 次日不重发；② Debug Panel scheduler 页看三个新 JobStat；③ 里程碑可临时改 app_config first_met_date 为 30 天前实测庆祝；④ 周日总结等本周日或临时调窗；⑤ serendipity 长跑观察日志 reason="突然想到" 的锚是否自然。**剩余 backlog**（第二梯队起）：感知型 Episode（"连续工作8小时"入记忆）、喂食/拖文件礼物、Shared History 翻历史 UI、番茄钟/跨显示器/全屏降级、告别动画（等美术）、VITS。
+> 📋 **实跑 D-check（下一会话/日常观察）**：① 21 点后开 dev → 晚安气泡 + 当晚"该睡了"nudge 消失 + 次日不重发；② Debug Panel scheduler 页看三个新 JobStat；③ 里程碑可临时改 app_config first_met_date 为 30 天前实测庆祝；④ 周日总结等本周日或临时调窗；⑤ serendipity 长跑观察日志 reason="突然想到" 的锚是否自然。**踩坑补记（2026-08-15）**：桌面快捷方式图标变白纸——IconLocation 还指着 C 盘旧项目的 icon.ico（续²⁹ 迁移时只对了 TargetPath 漏了图标路径，C 盘删除后即失效）。已改指 `desktop-pet.exe,0`（内嵌图标，与目标同体、零额外路径依赖）+ ie4uinit 刷新缓存。**教训：动快捷方式/迁移时 TargetPath 和 IconLocation 都要查**。
+>
+> **剩余 backlog**（第二梯队起）：感知型 Episode（"连续工作8小时"入记忆）、喂食/拖文件礼物、Shared History 翻历史 UI、番茄钟/跨显示器/全屏降级、告别动画（等美术）、VITS。
 
 > **2026-08-13（续²⁴）更新 · 全面测试验收 + 多轮修复 + 记忆卫生 ✅ 已收尾（release 已 rebuild）**。用户"继续测试"驱动——按 verify-checklist 全量验收 + 实测反馈逐项修复。**六条主线**：
 >
