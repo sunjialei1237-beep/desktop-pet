@@ -267,9 +267,29 @@ pub async fn generate(
             // concurrent path can't re-pick it (conservative: 宁少勿突兀).
             let anchor = {
                 let now_utc = Utc::now();
-                let fact = sample_anchorable_fact(&retrieval.facts, &now_utc);
-                let episode = if fact.is_none() {
-                    let mut rng = rand::thread_rng();
+                let mut rng = rand::thread_rng();
+                // Memory Serendipity (design §7.4): ~1/3 of memory bubbles
+                // (~5% of all bubbles, the design's target ratio) anchor a
+                // WEAKLY-related memory instead of the strongest match —
+                // "天啊，她怎么突然想到这个". Surprise from an unexpected
+                // association, never random noise (the band floor filters
+                // unrelated). Empty band / miss ⇒ normal anchor selection.
+                let serendipity_idx = if rng.gen_range(0..3) == 0 {
+                    crate::mind::retrieval::sample_serendipity_anchor(
+                        &retrieval.episodes,
+                        &mut rng,
+                    )
+                } else {
+                    None
+                };
+                let fact = if serendipity_idx.is_none() {
+                    sample_anchorable_fact(&retrieval.facts, &now_utc)
+                } else {
+                    None
+                };
+                let episode = if let Some(i) = serendipity_idx {
+                    Some(&retrieval.episodes[i].episode)
+                } else if fact.is_none() {
                     crate::mind::retrieval::sample_surface_anchor(
                         &retrieval.episodes,
                         &now_utc,
@@ -286,12 +306,19 @@ pub async fn generate(
                         "playful",
                         fact_surface_reason(f),
                     )),
-                    (None, Some(ep)) => Some((
-                        with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep),
-                        "accompany",
-                        "gentle",
-                        episode_surface_reason(ep, &now_utc),
-                    )),
+                    (None, Some(ep)) => {
+                        let reason = if serendipity_idx.is_some() {
+                            "不知道为什么突然想到这个".to_string()
+                        } else {
+                            episode_surface_reason(ep, &now_utc)
+                        };
+                        Some((
+                            with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep),
+                            "accompany",
+                            "gentle",
+                            reason,
+                        ))
+                    }
                     (None, None) => None,
                 };
                 if anchor.is_some() {

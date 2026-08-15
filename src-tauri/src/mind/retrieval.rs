@@ -281,6 +281,51 @@ pub fn sample_surface_anchor(
     Some(*idxs.last().unwrap())
 }
 
+/// Memory Serendipity weak-relevance band: related enough to be a genuine
+/// memory of the user, not so strongly related it's the obvious top-of-mind
+/// topic. Below the floor it's noise; above the ceiling it's just the usual
+/// strong memory (design §7.4: "惊喜来自意外的记忆关联").
+const SERENDIPITY_MIN_SCORE: f64 = 0.15;
+const SERENDIPITY_MAX_SCORE: f64 = 0.45;
+
+/// Samples a WEAKLY-related episode from the scored pool — the serendipity
+/// channel (design §7.4: ~5% of bubbles anchor an unexpected association
+/// instead of the strongest match). Prefers the least-recalled inside the
+/// band (novelty spirit). Returns None when the band is empty — the caller
+/// falls through to the normal anchor selection.
+pub fn sample_serendipity_anchor(
+    scored: &[ScoredEpisode],
+    rng: &mut impl rand::Rng,
+) -> Option<usize> {
+    let idxs: Vec<usize> = scored
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.score >= SERENDIPITY_MIN_SCORE && s.score <= SERENDIPITY_MAX_SCORE)
+        .map(|(i, _)| i)
+        .collect();
+    if idxs.is_empty() {
+        return None;
+    }
+    // Weight 1/(1+recall_count): the never-recalled members of the band win
+    // more often — an old thing she never got to mention is the best surprise.
+    let weights: Vec<f64> = idxs
+        .iter()
+        .map(|&i| 1.0 / (1.0 + scored[i].episode.recall_count as f64))
+        .collect();
+    let total: f64 = weights.iter().sum();
+    if total <= 0.0 || !total.is_finite() {
+        return Some(idxs[0]);
+    }
+    let mut roll = rng.gen::<f64>() * total;
+    for (pos, &i) in idxs.iter().enumerate() {
+        roll -= weights[pos];
+        if roll <= 0.0 {
+            return Some(i);
+        }
+    }
+    Some(*idxs.last().unwrap())
+}
+
 /// Gets candidate episodes with their stored vectors (if available).
 /// Fallback candidate selection by memory strength (used when no query embedding).
 fn get_candidate_episodes(
@@ -620,6 +665,98 @@ mod tests {
             let idx = sample_surface_anchor(&scored, &now, &mut rng).unwrap();
             assert_eq!(idx, 1, "cooldown episode must not be sampled (seed {})", seed);
         }
+    }
+
+    #[test]
+    fn test_sample_serendipity_anchor_band_filtering() {
+        // Only the weak-relevance band (0.15..=0.45) is eligible — the strong
+        // match and the noise are both excluded. Any seed must land in-band.
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+        let make = |id: &str, score: f64| {
+            let mut s = ScoredEpisode {
+                episode: db_episodes::Episode {
+                    id: id.to_string(),
+                    time: "2026-07-13T10:00:00+00:00".to_string(),
+                    summary: format!("ep {}", id),
+                    emotion: None,
+                    emotion_anchor: None,
+                    importance: 0.5,
+                    is_landmark: false,
+                    subject: "user".to_string(),
+                    participants: None,
+                    topics: None,
+                    source_type: "conversation".to_string(),
+                    source_conversation_id: None,
+                    source_turn: None,
+                    memory_strength: 0.5,
+                    recall_count: 0,
+                    last_recalled_at: None,
+                    consolidated: false,
+                    created_at: "2026-07-13T10:00:00+00:00".to_string(),
+                },
+                score,
+                score_breakdown: ScoreBreakdown { semantic: 0.0, strength: 0.0, novelty: 0.0, recency: 0.0, emotion: 0.0 },
+            };
+            s.episode.recall_count = 0;
+            s
+        };
+        let scored = vec![
+            make("strong", 0.9), // above the ceiling — normal anchor territory
+            make("band_lo", 0.2),
+            make("band_hi", 0.4),
+            make("noise", 0.02), // below the floor — unrelated
+        ];
+        for seed in 0..30u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let idx = sample_serendipity_anchor(&scored, &mut rng)
+                .unwrap_or_else(|| panic!("band is non-empty, seed {}", seed));
+            let picked = &scored[idx];
+            assert!(
+                (picked.score - 0.15) >= 0.0 && (picked.score - 0.45) <= 0.0,
+                "seed {}: picked {} (score {}) is out of band",
+                seed,
+                picked.episode.id,
+                picked.score
+            );
+            assert!(picked.episode.id != "strong" && picked.episode.id != "noise");
+        }
+    }
+
+    #[test]
+    fn test_sample_serendipity_anchor_empty_band_is_none() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+        let make = |score: f64| ScoredEpisode {
+            episode: db_episodes::Episode {
+                id: "x".to_string(),
+                time: "2026-07-13T10:00:00+00:00".to_string(),
+                summary: "s".to_string(),
+                emotion: None,
+                emotion_anchor: None,
+                importance: 0.5,
+                is_landmark: false,
+                subject: "user".to_string(),
+                participants: None,
+                topics: None,
+                source_type: "conversation".to_string(),
+                source_conversation_id: None,
+                source_turn: None,
+                memory_strength: 0.5,
+                recall_count: 0,
+                last_recalled_at: None,
+                consolidated: false,
+                created_at: "2026-07-13T10:00:00+00:00".to_string(),
+            },
+            score,
+            score_breakdown: ScoreBreakdown { semantic: 0.0, strength: 0.0, novelty: 0.0, recency: 0.0, emotion: 0.0 },
+        };
+        // All-strong or all-noise pools have an empty band => None (caller
+        // falls back to the normal anchor).
+        let mut rng = StdRng::seed_from_u64(1);
+        assert_eq!(sample_serendipity_anchor(&[make(0.9), make(0.8)], &mut rng), None);
+        assert_eq!(sample_serendipity_anchor(&[make(0.01)], &mut rng), None);
+        assert_eq!(sample_serendipity_anchor(&[], &mut rng), None);
     }
 
     #[test]
