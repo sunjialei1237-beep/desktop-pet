@@ -31,7 +31,11 @@ mod budget {
     pub const FACTS: usize = 300;
     pub const EPISODES: usize = 1200;
     pub const INTENT: usize = 100;
-    pub const SYSTEM_SCAFFOLD: usize = 300;
+    /// System.txt v2 (Soul 升级 P2)：14 示例 + 认知透镜把模板撑到 ~2300
+    /// 内部估算 token（v1 ~1700）。增幅 ≤600 在方案成本上限内；预算不跟上
+    /// 会让 compress_system_prompt 误裁 [Memories]（test_system_prompt_with
+    /// _memories 曾因此 fail）。
+    pub const SYSTEM_SCAFFOLD: usize = 900;
     /// Latest relationship-review summary slot (always-on [Relationship]).
     pub const RELATIONSHIP: usize = 80;
 }
@@ -527,7 +531,7 @@ mod tests {
         let qa = qa_system_prompt_budget();
         let normal = system_prompt_budget();
         assert!(qa < normal, "QA budget {} should be < normal {}", qa, normal);
-        assert_eq!(qa, 80 + 25 + 100 + 300); // PERSONA + EMOTION + INTENT + SCAFFOLD
+        assert_eq!(qa, 80 + 25 + 100 + 900); // PERSONA + EMOTION + INTENT + SCAFFOLD(v2)
     }
 
     #[test]
