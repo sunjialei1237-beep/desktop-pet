@@ -692,18 +692,30 @@ html, body, #root {
      Fixed positioning escapes all ancestor clipping. */
   position: fixed;
   pointer-events: none;
-  outline: 3px solid rgba(123, 95, 199, 0.5); /* 璃紫, softened */
+  outline: 3px solid rgba(123, 95, 199, 0.32); /* 璃紫, translucent */
   outline-offset: 1px;
   border-radius: 16px;
-  box-shadow: 0 0 10px rgba(123, 95, 199, 0.22);
+  /* Layered glow (user 2026-08-15): a bright inner ring, a soft mid halo,
+     and a wide faint outer aura — the border breathes light instead of
+     drawing a hard frame. The inset wash lets the model's edge pick up a
+     little of the same light. */
+  box-shadow:
+    0 0 10px rgba(123, 95, 199, 0.20),
+    0 0 28px rgba(123, 95, 199, 0.14),
+    0 0 56px rgba(123, 95, 199, 0.08),
+    inset 0 0 14px rgba(123, 95, 199, 0.10);
   box-sizing: border-box;
   opacity: 0;
-  transition: opacity 250ms ease-in-out;
+  /* Fade OUT is slow and soft (1s, user 2026-08-15); fade IN stays quick for
+     immediate feedback — the visible state declares its own faster transition,
+     this base rule governs the hide direction. */
+  transition: opacity 1s ease-out;
   z-index: 999;
 }
 
 .bounds-overlay.bounds-visible {
   opacity: 1;
+  transition: opacity 250ms ease-out;
   animation: bounds-flash 3s ease-in-out infinite;
 }
 

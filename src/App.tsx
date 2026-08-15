@@ -137,6 +137,13 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // mid-air, free-fall starts.
   const wasDraggedRef = useRef(false);
   const lastMovedRef = useRef(0);
+  // Physical left-button state from the backend's global-cursor events (OS
+  // truth via GetAsyncKeyState). Native drags swallow webview mouseup, so the
+  // page alone can't tell "user paused mid-drag" from "user released" — this
+  // ref can. The fall physics freezes while it's true (the user is holding
+  // her), which stops the rAF setPosition loop from fighting the OS drag loop
+  // (the "violent shake while dragging" bug).
+  const lbuttonRef = useRef(false);
   // The physics loop reads/writes position via refs (not state) so moved events
   // and setPosition calls never re-create the loop mid-motion — the previous
   // state-driven deps re-created it every frame, resetting `lastTime` and
@@ -672,8 +679,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       const logical = { x: pos.x / f, y: pos.y / f };
       // While free-falling the rAF loop owns the position (it already writes
       // the rounded value it setPosition'd), so skip the echo to avoid
-      // fighting the loop; when grounded, keep petPosRef in sync.
-      if (gravityRef.current.grounded) {
+      // fighting the loop; when grounded, keep petPosRef in sync. A held
+      // left button ALSO syncs: a re-grab mid-fall freezes the fall (see
+      // physics loop), and without this sync the resumed fall would start
+      // from the stale pre-drag position and teleport her.
+      if (gravityRef.current.grounded || lbuttonRef.current) {
         petPosRef.current = logical;
       }
       lastMovedRef.current = performance.now();
@@ -706,8 +716,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
         }
       }, 10_000);
     };
-    listen<{ x: number; y: number }>("global-cursor", (e) => {
+    listen<{ x: number; y: number; lbutton: boolean }>("global-cursor", (e) => {
       resetWatchdog();
+      // OS-level button truth (see lbuttonRef declaration) — refresh it before
+      // anything below so the physics loop always reads the freshest state.
+      lbuttonRef.current = e.payload.lbutton === true;
       const { x: sx, y: sy } = e.payload; // physical screen px
       const origin = windowOriginRef.current;
       const scale = scaleFactorRef.current;
@@ -865,7 +878,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       const gravity = gravityRef.current;
       const pos = petPosRef.current;
 
-      if (pos && !isBeingDraggedRef.current && !awayMode) {
+      // lbuttonRef gates BOTH phases of the drag/fall handshake: while the
+      // button is held the user owns the window (OS drag loop), so a running
+      // fall must not integrate and a new fall must not arm — otherwise the
+      // rAF setPosition here fights the OS drag every frame (violent shake).
+      if (pos && !isBeingDraggedRef.current && !lbuttonRef.current && !awayMode) {
         // B2 (P12.1): free-fall toward a hover point (1/3 of the way to the
         // taskbar). Runs until grounded.
         if (!gravity.grounded) {
@@ -890,8 +907,12 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
         } else {
           // B2 (P12.1): drag-end detection. After a native drag the window
           // goes still once the user releases; if she was left above the
-          // work-area bottom, start free-fall.
-          if (wasDraggedRef.current && now - lastMovedRef.current > 300) {
+          // work-area bottom, start free-fall. The !lbuttonRef gate is the
+          // fix for the shake bug: movement quiescence alone can't tell a
+          // mid-drag pause (button still held) from a real release, and
+          // arming the fall during a pause makes the physics loop fight the
+          // OS drag the moment the user moves again.
+          if (wasDraggedRef.current && !lbuttonRef.current && now - lastMovedRef.current > 300) {
             wasDraggedRef.current = false;
             if (pos.y + winSizeRef.current.h < floorYRef.current - 2) {
               gravity.grounded = false;
@@ -1016,10 +1037,20 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const startClientY = e.clientY;
     let dragStarted = false;
     let onMove: ((ev: MouseEvent) => void) | null = null;
+    let onUp: ((ev: MouseEvent) => void) | null = null;
 
     const cleanup = () => {
       if (onMove) window.removeEventListener("mousemove", onMove);
+      if (onUp) window.removeEventListener("mouseup", onUp);
     };
+
+    // Pure click (press+release under the threshold): mouseup DOES reach the
+    // page (no OS drag engaged), so detach here. Without this the mousemove
+    // watcher stayed armed with the stale press point and a later hover-move
+    // past it could spuriously call startDragging() with no button held —
+    // stray drag sound + isBeingDragged stuck true (never click-through again
+    // until the next real drag).
+    onUp = () => cleanup();
 
     onMove = (_ev: MouseEvent) => {
       if (dragStarted) return; // OS now owns the drag
@@ -1035,12 +1066,13 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       const win = getCurrentWindow();
       win.startDragging().catch((err) => console.warn("[drag] startDragging failed", err));
       cleanup(); // stop watching; compositor drives movement from here.
-      // NOTE: no mouseup listener — native dragging swallows webview mouse
+      // NOTE: no mouseup path here — native dragging swallows webview mouse
       // events entirely, so drag-end is detected via onMoved + quiet period
-      // (see the gravity effect below).
+      // plus the OS button state in lbuttonRef (see the gravity loop).
     };
 
     window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   }, []);
 
   // overrideText lets Escape submit an empty answer during onboarding (see onKeyDown).

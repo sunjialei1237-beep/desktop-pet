@@ -13,13 +13,19 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 /// Emitted cursor payload (physical screen pixels).
+/// `lbutton` is the physical left-button state — the OS truth the frontend uses
+/// to distinguish "user paused mid-drag (button held)" from "user released",
+/// which movement-quiescence alone cannot (native drags swallow webview
+/// mouseup, so the page never sees the release).
 #[derive(Debug, Clone, Serialize)]
 pub struct CursorPos {
     pub x: i32,
     pub y: i32,
+    pub lbutton: bool,
 }
 
 const POLL_INTERVAL_MS: u64 = 16; // ~60Hz
@@ -34,6 +40,7 @@ pub fn start(app: AppHandle) -> Arc<AtomicBool> {
         log::info!("cursor poll thread started");
         let mut last_x: i32 = i32::MIN;
         let mut last_y: i32 = i32::MIN;
+        let mut last_lbutton = false;
         while !stop_clone.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
             let mut pt = windows::Win32::Foundation::POINT { x: 0, y: 0 };
@@ -42,14 +49,21 @@ pub fn start(app: AppHandle) -> Arc<AtomicBool> {
             if !ok {
                 continue; // rare failure, skip this tick
             }
+            // SAFETY: GetAsyncKeyState reads physical button state regardless of
+            // focus/mouse-capture — correct even mid native-drag modal loop.
+            let lbutton = (unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } as u16 & 0x8000) != 0;
             let dx = (pt.x as i64 - last_x as i64).abs();
             let dy = (pt.y as i64 - last_y as i64).abs();
-            if dx <= MIN_DELTA_PX as i64 && dy <= MIN_DELTA_PX as i64 {
-                continue; // not enough movement, skip emit
+            // Emit on position change OR button-state change: a release with the
+            // mouse held perfectly still still changes `lbutton`, and without
+            // that event the frontend would never un-freeze the fall physics.
+            if dx <= MIN_DELTA_PX as i64 && dy <= MIN_DELTA_PX as i64 && lbutton == last_lbutton {
+                continue;
             }
             last_x = pt.x;
             last_y = pt.y;
-            let _ = app.emit("global-cursor", CursorPos { x: pt.x, y: pt.y });
+            last_lbutton = lbutton;
+            let _ = app.emit("global-cursor", CursorPos { x: pt.x, y: pt.y, lbutton });
         }
         log::info!("cursor poll thread stopped");
     });
