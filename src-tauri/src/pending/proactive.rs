@@ -480,7 +480,8 @@ fn due_bubble_prompt(anchor: &str, is_pet_promise: bool, anchor_reason: &str) ->
 /// user's past — she may voice her own feelings / the time / her surroundings,
 /// but not fabricate "你之前说过的X". Principle 1 (Rust assembles the
 /// moment-driven prompt; LLM only voices), Principle 8 (one LLM call).
-async fn generate_lively(
+/// Pub for the soul-style harness (M6 bubble-persona blind test).
+pub async fn generate_lively(
     db: &DbState,
     llm: &LlmClient,
     wm_context: &[ChatMessage],
