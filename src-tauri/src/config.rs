@@ -74,6 +74,7 @@ pub struct SchedulerConfig {
     pub enable_relationship_review: bool,
     pub enable_lifecycle_cleanup: bool,
     pub enable_rituals: bool,
+    pub enable_landmarks: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -84,6 +85,7 @@ impl Default for SchedulerConfig {
             enable_relationship_review: true,
             enable_lifecycle_cleanup: true,
             enable_rituals: true,
+            enable_landmarks: true,
         }
     }
 }

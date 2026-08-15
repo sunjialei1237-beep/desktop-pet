@@ -51,7 +51,7 @@ pub struct ScoredEpisode {
 }
 
 /// Individual score components for explainability (architecture principle #11).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct ScoreBreakdown {
     pub semantic: f64,
     pub strength: f64,

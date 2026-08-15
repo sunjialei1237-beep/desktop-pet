@@ -718,6 +718,45 @@ pub async fn ritual_bubble(
                 crate::soul::ritual::goodnight_canned(mood).to_string(),
             ))
         }
+        "weekly" => {
+            // The check layer only emits when the week had content; here the
+            // LLM path grounds the recap in the week's own memories.
+            if let Some(llm) = llm {
+                let outcome =
+                    crate::soul::weekly::generate_weekly_summary(&db, &llm, &wm_context).await?;
+                if let Some(o) = outcome {
+                    return Ok(Some(o.reply));
+                }
+            }
+            Ok(Some(crate::soul::weekly::weekly_canned().to_string()))
+        }
+        "landmark" => {
+            if let Some(llm) = llm {
+                // Re-derive what is (or was just) due — the check layer marks
+                // it BEFORE emitting, so fall back to the last marked one via
+                // due_landmark's None case: build from celebrated state.
+                let landmark = db
+                    .with_conn(|conn| Ok(crate::soul::landmark::due_landmark(conn)))
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| crate::soul::landmark::Landmark {
+                        id: "recent".to_string(),
+                        description: "一个特别的日子".to_string(),
+                    });
+                let outcome = crate::soul::landmark::generate_landmark(
+                    &db,
+                    &llm,
+                    Some(&state.embedding),
+                    &wm_context,
+                    &landmark,
+                )
+                .await?;
+                if let Some(o) = outcome {
+                    return Ok(Some(o.reply));
+                }
+            }
+            Ok(Some(crate::soul::landmark::landmark_canned().to_string()))
+        }
         other => {
             log::warn!("[ritual] unknown kind: {}", other);
             Ok(None)

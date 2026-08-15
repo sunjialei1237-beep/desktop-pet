@@ -3,6 +3,7 @@
 
 use crate::commands::AppState;
 use crate::db::DbState;
+use chrono::Datelike;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -38,6 +39,8 @@ pub fn start_life_loop(app: AppHandle) {
             // vs 21:00+). Once 晚安 fires, the frontend "该睡了" nudge also
             // yields for the rest of the day via ritual_done_today.
             check_goodnight(&app);
+            check_weekly_summary(&app);
+            check_landmark(&app);
             check_presence_transition(&app, &mut last_presence, &mut away_since);
             check_lonely_nudge(&app, &mut last_lonely_nudge);
         });
@@ -479,6 +482,128 @@ fn check_goodnight(app: &AppHandle) {
         true,
         "ok",
         Some(format!("hour={}", hour)),
+    );
+}
+
+/// Weekly summary ritual: Sunday evening (Evening window, user present), at
+/// most once per week-key. An EMPTY week is marked done but stays silent
+/// (Architecture #12 — nothing happened, nothing to recap).
+fn check_weekly_summary(app: &AppHandle) {
+    use crate::perception::time::{current_time_of_day, TimeOfDay};
+
+    let enabled = app
+        .try_state::<AppState>()
+        .map(|s| s.config.scheduler.enable_rituals)
+        .unwrap_or(true);
+    if !crate::lifecycle::scheduler::should_run(enabled) {
+        crate::lifecycle::scheduler::record("ritual_weekly", false, "skipped", None);
+        return;
+    }
+
+    // Sunday evening only (design §7.2: 每周日总结; Evening = 17-22 local).
+    let now = chrono::Local::now();
+    if now.weekday() != chrono::Weekday::Sun {
+        return;
+    }
+    if current_time_of_day() != TimeOfDay::Evening {
+        return;
+    }
+    if crate::perception::presence::current_presence()
+        != crate::perception::presence::PresenceState::Active
+    {
+        return;
+    }
+
+    let db = match get_db(app) {
+        Some(s) => s,
+        None => return,
+    };
+    let due = db
+        .with_conn(|conn| Ok(crate::soul::weekly::should_run_weekly(conn, &now)))
+        .unwrap_or(false);
+    if !due {
+        return;
+    }
+
+    // Mark done BEFORE the content check so even an empty week consumes this
+    // week's slot (silence is a valid outcome, and it must not retry all
+    // Sunday evening).
+    let _ = db.with_conn(|conn| crate::soul::weekly::mark_weekly_done(conn, &now));
+
+    if !crate::soul::weekly::week_has_content(&db) {
+        log::info!("Life loop: weekly summary due but the week was empty — staying quiet");
+        crate::lifecycle::scheduler::record(
+            "ritual_weekly",
+            true,
+            "ok",
+            Some("empty week, silent".to_string()),
+        );
+        return;
+    }
+
+    // Date-driven ritual: exempt from the interval gate, occupies the budget.
+    crate::pending::budget::occupy_budget_always(&db);
+
+    log::info!("Life loop: 周日总结 ritual firing");
+    let _ = app.emit("ritual-bubble", serde_json::json!({ "kind": "weekly" }));
+    crate::lifecycle::scheduler::record("ritual_weekly", true, "ok", None);
+}
+
+/// Relationship landmark celebration: a one-off milestone (认识 7/30/100/365
+/// 天, 第 100/1000 次对话) is detected and celebrated once, ever. Windowed to
+/// the awake hours (Morning..Evening) — a 3am landmark waits for breakfast.
+fn check_landmark(app: &AppHandle) {
+    use crate::perception::time::{current_time_of_day, TimeOfDay};
+
+    let enabled = app
+        .try_state::<AppState>()
+        .map(|s| s.config.scheduler.enable_landmarks)
+        .unwrap_or(true);
+    if !crate::lifecycle::scheduler::should_run(enabled) {
+        crate::lifecycle::scheduler::record("landmark_celebration", false, "skipped", None);
+        return;
+    }
+
+    if !matches!(
+        current_time_of_day(),
+        TimeOfDay::Morning | TimeOfDay::Afternoon | TimeOfDay::Evening
+    ) {
+        return;
+    }
+    if crate::perception::presence::current_presence()
+        != crate::perception::presence::PresenceState::Active
+    {
+        return;
+    }
+
+    let db = match get_db(app) {
+        Some(s) => s,
+        None => return,
+    };
+    let due = db
+        .with_conn(|conn| Ok(crate::soul::landmark::due_landmark(conn)))
+        .ok()
+        .flatten();
+    let Some(landmark) = due else {
+        return;
+    };
+
+    // Mark BEFORE emitting — a milestone fires exactly once, ever.
+    let _ = db.with_conn(|conn| crate::soul::landmark::mark_landmark_celebrated(conn, &landmark.id));
+
+    // One-off celebration: exempt from the interval gate, occupies the budget.
+    crate::pending::budget::occupy_budget_always(&db);
+
+    log::info!("Life loop: landmark ritual firing ({})", landmark.id);
+    let _ = app.emit(
+        "ritual-bubble",
+        serde_json::json!({ "kind": "landmark", "id": landmark.id }),
+    );
+    crate::lifecycle::scheduler::record(
+        "landmark_celebration",
+        true,
+        "ok",
+        Some(landmark.id),
     );
 }
 

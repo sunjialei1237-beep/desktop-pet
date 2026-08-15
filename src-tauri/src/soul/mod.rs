@@ -7,13 +7,22 @@
 //! - Principle 11: Every reflection records trigger + reason + thought for explainability.
 
 pub mod consolidation;
+pub mod landmark;
 pub mod monologue;
 pub mod reflection;
 pub mod review;
 pub mod ritual;
+pub mod weekly;
 
 pub use consolidation::{consolidate, lifecycle_cleanup};
+pub use landmark::{
+    due_landmark, generate_landmark, landmark_canned, mark_landmark_celebrated,
+    resolve_first_met, Landmark,
+};
 pub use monologue::surface_thoughts;
 pub use reflection::{run_reflection, ReflectionResult, ReflectionTrigger};
 pub use review::{maybe_run_review_if_due, run_review, ReviewResult};
 pub use ritual::{generate_goodmorning, goodmorning_canned, mark_goodmorning_done, should_run_goodmorning};
+pub use weekly::{
+    generate_weekly_summary, mark_weekly_done, should_run_weekly, week_has_content, weekly_canned,
+};

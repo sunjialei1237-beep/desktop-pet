@@ -232,6 +232,53 @@ pub fn get_all(conn: &Connection) -> Result<Vec<Episode>, String> {
     rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
 }
 
+/// Returns episodes created at or after `since` (RFC3339), oldest first —
+/// the weekly summary's windowed view. Includes consolidated rows (a week's
+/// recap must see everything); capped at the MOST RECENT `limit` rows so a
+/// dense week can't blow up the summary prompt.
+pub fn get_since(conn: &Connection, since: &str, limit: i64) -> Result<Vec<Episode>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, time, summary, emotion, importance, is_landmark,
+                    subject, participants, topics, source_type,
+                    source_conversation_id, source_turn,
+                    memory_strength, recall_count, last_recalled_at,
+                    consolidated, created_at, emotion_anchor
+             FROM (
+                 SELECT * FROM episodes WHERE created_at >= ?1
+                 ORDER BY created_at DESC LIMIT ?2
+             ) ORDER BY created_at ASC",
+        )
+        .map_err(|e| format!("Failed to prepare since query: {}", e))?;
+
+    let rows = stmt
+        .query_map(params![since, limit], |row| {
+            Ok(Episode {
+                id: row.get(0)?,
+                time: row.get(1)?,
+                summary: row.get(2)?,
+                emotion: row.get(3)?,
+                importance: row.get(4)?,
+                is_landmark: row.get::<_, i32>(5)? != 0,
+                subject: row.get(6)?,
+                participants: row.get(7)?,
+                topics: row.get(8)?,
+                source_type: row.get(9)?,
+                source_conversation_id: row.get(10)?,
+                source_turn: row.get(11)?,
+                memory_strength: row.get(12)?,
+                recall_count: row.get(13)?,
+                last_recalled_at: row.get(14)?,
+                consolidated: row.get::<_, i32>(15)? != 0,
+                created_at: row.get(16)?,
+                emotion_anchor: row.get(17)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query episodes since: {}", e))?;
+
+    rows.filter_map(|r| r.ok()).collect::<Vec<_>>().pipe(Ok)
+}
+
 // Helper trait for piping
 trait Pipe: Sized {
     fn pipe<F, R>(self, f: F) -> R where F: FnOnce(Self) -> R { f(self) }
