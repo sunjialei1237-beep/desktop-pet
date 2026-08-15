@@ -253,6 +253,7 @@ mod tests {
            relationship_review: None,
            persona_traits: vec![],
            user_profile: UserProfile::default(),
+           first_met: None,
        }
    }
 
@@ -293,6 +294,7 @@ mod tests {
            relationship_review: None,
            persona_traits: vec![],
            user_profile: UserProfile::default(),
+           first_met: None,
        }
    }
 

@@ -39,6 +39,7 @@ fn empty_retrieval() -> RetrievalResult {
         relationship_review: None,
         persona_traits: vec![],
         user_profile: UserProfile::default(),
+        first_met: None,
     }
 }
 

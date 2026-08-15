@@ -51,6 +51,19 @@ pub fn resolve_first_met(conn: &rusqlite::Connection) -> String {
     first_met
 }
 
+/// Calendar days between `t` and now, counted in LOCAL dates — the way humans
+/// count "认识多少天" (a July-16 evening first-met is a full day older on Aug 15
+/// even though only 29.x UTC hours-periods elapsed). Shared by the landmark
+/// due-check and retrieval's days_known backfill (was UTC `.num_days()`, which
+/// undercounted by one for evening-first-met UTC+8 users — she confidently
+/// answered "29天" when the calendar said 30).
+pub fn calendar_days_since(t: chrono::DateTime<chrono::Utc>) -> i64 {
+    use chrono::Datelike;
+    let now_local = chrono::Local::now().date_naive();
+    let then_local = t.with_timezone(&chrono::Local).date_naive();
+    (now_local - then_local).num_days()
+}
+
 /// Read-only resolution of the first-met moment: cached app_config key, else
 /// the earliest change_log write. Does NOT persist (unlike `resolve_first_met`),
 /// so read paths (retrieval's days_known backfill) can derive the real
@@ -102,7 +115,7 @@ pub fn due_landmark(conn: &rusqlite::Connection) -> Option<Landmark> {
 
     let first_met = resolve_first_met(conn);
     let days_known = chrono::DateTime::parse_from_rfc3339(&first_met)
-        .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_days())
+        .map(|t| calendar_days_since(t.with_timezone(&chrono::Utc)))
         .unwrap_or(0);
     for m in DAYS_MILESTONES.iter().rev() {
         let m = *m;
@@ -242,6 +255,24 @@ pub async fn generate_landmark(
 }
 
 #[cfg(test)]
+mod calendar_days_tests {
+    use super::calendar_days_since;
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn counts_local_calendar_days_not_utc_periods() {
+        // 26h ago is 1 local calendar day (and could be only 1.x UTC periods
+        // or cross a date line — the point is: date diff, not floor(hours/24)).
+        let t = Utc::now() - Duration::hours(26);
+        assert_eq!(calendar_days_since(t), 1);
+    }
+
+    #[test]
+    fn same_instant_is_zero() {
+        assert_eq!(calendar_days_since(Utc::now()), 0);
+    }
+}
+
 mod tests {
     use super::*;
     use crate::db::test_utils::test_db;

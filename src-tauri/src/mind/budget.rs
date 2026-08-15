@@ -245,6 +245,7 @@ fn compress_system_prompt(
        relationship_review: retrieval.relationship_review.clone(),
        persona_traits: retrieval.persona_traits.clone(),
        user_profile: retrieval.user_profile.clone(),
+       first_met: retrieval.first_met.clone(),
    };
 
     crate::mind::grounding::build_system_prompt(&truncated_retrieval, emotion, intent)
@@ -327,6 +328,7 @@ mod tests {
            relationship_review: None,
            persona_traits: vec![],
            user_profile: UserProfile::default(),
+           first_met: None,
        }
    }
 
@@ -371,6 +373,7 @@ mod tests {
            relationship_review: None,
            persona_traits: vec![],
            user_profile: UserProfile::default(),
+           first_met: None,
        }
    }
 
@@ -533,6 +536,7 @@ mod tests {
                updated_at: "2026-07-14T10:00:00+00:00".to_string(),
            }],
            user_profile: UserProfile::default(),
+           first_met: None,
        };
 
        let messages = allocate_and_compress(

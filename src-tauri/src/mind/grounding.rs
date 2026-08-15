@@ -3,8 +3,6 @@
 //! Design doc 5.10: LLM may only reference retrieved memories; must say
 //! "not sure" rather than fabricate when relevant memory is absent.
 
-use crate::db::persona as db_persona;
-use crate::db::onboarding::UserProfile;
 use crate::db::relationship as db_relationship;
 use crate::emotion::state::EmotionState;
 use crate::mind::retrieval::RetrievalResult;
@@ -64,11 +62,7 @@ pub fn build_system_prompt(
     let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
 
     // 1. Persona + relationship
-    sections.push(format_persona(
-        &retrieval.persona_traits,
-        &retrieval.relationship,
-        &retrieval.user_profile,
-    ));
+    sections.push(format_persona(retrieval));
 
     // 2. Grounding constraint
     sections.push(MEMORY_CONSTRAINT.to_string());
@@ -126,11 +120,7 @@ pub fn build_qa_system_prompt(
     // moved to `build_qa_near_end` (mirrors the main-path split).
     let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
 
-    sections.push(format_persona(
-        &retrieval.persona_traits,
-        &retrieval.relationship,
-        &retrieval.user_profile,
-    ));
+    sections.push(format_persona(retrieval));
 
     sections.join("\n\n")
 }
@@ -161,11 +151,10 @@ with its confidence level and source date. Do not present information as \
 remembered unless it appears in the memories section below.";
 
 /// Formats the persona description from traits + relationship snapshot.
-fn format_persona(
-    traits: &[db_persona::PersonaTrait],
-    relationship: &Option<db_relationship::Relationship>,
-    user_profile: &UserProfile,
-) -> String {
+fn format_persona(retrieval: &RetrievalResult) -> String {
+    let traits = &retrieval.persona_traits;
+    let relationship = &retrieval.relationship;
+    let user_profile = &retrieval.user_profile;
     let mut lines = vec!["[Persona]".to_string()];
 
     // Core traits
@@ -198,11 +187,18 @@ fn format_persona(
         } else {
             String::new()
         };
+        // days_known rides with the first-met DATE so she never has to do
+        // date arithmetic herself — asked "我们认识多久了" she mis-derived
+        // "7月18号" from a bare day count (true anchor: 7月16号).
+        let known_part = match &retrieval.first_met {
+            Some(date) => format!("known each other since {} ({} days)", date, rel.days_known),
+            None => format!("known {} days", rel.days_known),
+        };
         lines.push(format!(
-            "Relationship: closeness {}/100{}, known {} days, {} conversations",
+            "Relationship: closeness {}/100{}, {}, {} conversations",
             rel.closeness as i32,
             trust_part,
-            rel.days_known,
+            known_part,
             rel.total_conversations,
        ));
    }
@@ -550,6 +546,7 @@ fn ceil_char_boundary(s: &str, target: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::onboarding::UserProfile;
     use crate::db::episodes::Episode;
     use crate::db::facts::Fact;
     use crate::db::persona::PersonaTrait;
@@ -564,6 +561,7 @@ mod tests {
             relationship_review: None,
            persona_traits: vec![],
            user_profile: UserProfile::default(),
+           first_met: None,
        }
    }
 
@@ -636,6 +634,7 @@ mod tests {
                updated_at: "2026-07-14T10:00:00+00:00".to_string(),
            }],
            user_profile: UserProfile::default(),
+           first_met: None,
        }
    }
 
@@ -887,6 +886,32 @@ mod tests {
         r.relationship = Some(rel(40.0));
         let p2 = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
         assert!(p2.contains("trust 40"), "maintained trust stays injected");
+    }
+
+    #[test]
+    fn first_met_date_rides_with_days_known() {
+        // She mis-derived "7月18号" when asked 我们认识多久了 — the fix pairs
+        // the day count with the anchor date so no date arithmetic is needed.
+        let rel = || Relationship {
+            closeness: 100.0,
+            trust: 0.0,
+            days_known: 30,
+            total_conversations: 759,
+            shared_events: 0,
+            last_interaction_at: None,
+            last_interaction_type: None,
+            closeness_log: None,
+            updated_at: "t".to_string(),
+        };
+        let mut r = empty_retrieval();
+        r.relationship = Some(rel());
+        r.first_met = Some("2026-07-16".to_string());
+        let p = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
+        assert!(
+            p.contains("known each other since 2026-07-16 (30 days)"),
+            "date must ride with the day count, got: {}",
+            p.lines().find(|l| l.starts_with("Relationship:")).unwrap_or("")
+        );
     }
 
     #[test]

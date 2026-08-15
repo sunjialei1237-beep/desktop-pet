@@ -22,6 +22,7 @@ fn empty_retrieval() -> retrieval::RetrievalResult {
     retrieval::RetrievalResult {
         episodes: vec![], facts: vec![], relationship: None, relationship_review: None,
         persona_traits: vec![], user_profile: desktop_pet_lib::db::onboarding::UserProfile::default(),
+        first_met: None,
     }
 }
 

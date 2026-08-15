@@ -138,7 +138,7 @@ fn gc_002_pending_event_tracking() {
         closeness_log: None, updated_at: "2026-07-14".to_string(),
     };
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
+        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(), first_met: None,
     };
     let intent = planner::plan(&BrainState::new("hi", &emotion, Some(&rel), &due, &retrieval_result));
     assert_eq!(intent.action, "proactive_check", "GC_002 FAIL: planner should choose proactive_check");
@@ -162,7 +162,7 @@ fn gc_003_emotion_consistency() {
     };
 
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
+        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(), first_met: None,
     };
 
     // User is anxious → comfort them (NOT silence). Silence was deliberately
@@ -465,7 +465,7 @@ fn gc_011_budget_token_limit() {
     use desktop_pet_lib::mind::retrieval::RetrievalResult;
 
     let retrieval = RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
+        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(), first_met: None,
     };
 
     let mut wm = vec![];
@@ -535,6 +535,7 @@ fn gc_013_planner_celebration() {
         relationship_review: None,
         persona_traits: vec![],
         user_profile: UserProfile::default(),
+        first_met: None,
     };
     let intent = planner::plan(&BrainState::new("I passed the exam! So happy!", &happy, None, &[], &retrieval_result));
     assert_eq!(intent.goal, "celebrate",
@@ -564,7 +565,7 @@ fn gc_014_planner_loneliness_proactive() {
         closeness_log: None, updated_at: "2026-07-14".to_string(),
     };
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
+        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(), first_met: None,
     };
     let intent = planner::plan(&BrainState::new("hi", &lonely, Some(&rel), &[], &retrieval_result));
     assert_eq!(intent.goal, "accompany",
@@ -589,7 +590,7 @@ fn gc_015_planner_low_closeness_boundary() {
         closeness_log: None, updated_at: "2026-07-14".to_string(),
     };
     let retrieval_result = retrieval::RetrievalResult {
-        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(),
+        episodes: vec![], facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![], user_profile: UserProfile::default(), first_met: None,
     };
     let intent = planner::plan(&BrainState::new("hi", &lonely, Some(&rel), &[], &retrieval_result));
     assert_eq!(intent.goal, "converse",
@@ -633,6 +634,7 @@ fn gc_016_planner_memory_anchor() {
         }],
         facts: vec![], relationship: None, relationship_review: None, persona_traits: vec![],
         user_profile: UserProfile::default(),
+        first_met: None,
     };
     let emotion = EmotionState::default();
     let intent = planner::plan(&BrainState::new("what should I drink", &emotion, None, &[], &retrieval_result));

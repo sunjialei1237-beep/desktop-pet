@@ -71,6 +71,11 @@ pub struct RetrievalResult {
     pub relationship_review: Option<String>,
     pub persona_traits: Vec<db_persona::PersonaTrait>,
     pub user_profile: UserProfile,
+    /// First-met date as a local YYYY-MM-DD string, when known. Injected next
+    /// to days_known so the model never has to do date arithmetic itself
+    /// ("since 2026-07-16 (30 days)" — she used to mis-derive "7月18号" from
+    /// a bare day count).
+    pub first_met: Option<String>,
 }
 
 /// Performs hybrid retrieval: semantic + strength + recency + emotion scoring.
@@ -160,7 +165,15 @@ pub fn retrieve(
 
     // Retrieve persona snapshot (with the dead `days_known` column fixed at
     // read time — see `load_relationship_with_days`).
-    let relationship = db.with_conn(|conn| load_relationship_with_days(conn)).ok().flatten();
+    let (relationship, first_met) = db
+        .with_conn(|conn| {
+            let rel = load_relationship_with_days(conn)?;
+            let fm = crate::soul::landmark::first_met_readonly(conn)
+                .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string());
+            Ok((rel, fm))
+        })
+        .ok()
+        .unwrap_or((None, None));
     let persona_traits = db.with_conn(|conn| {
         Ok(db_persona::get_all_traits(conn)
             .unwrap_or_default())
@@ -184,6 +197,7 @@ pub fn retrieve(
         relationship_review,
         persona_traits,
         user_profile,
+        first_met,
     })
 }
 
@@ -199,7 +213,10 @@ fn load_relationship_with_days(
         return Ok(None);
     };
     if let Some(first_met) = crate::soul::landmark::first_met_readonly(conn) {
-        let days = (Utc::now() - first_met).num_days().max(0);
+        // Calendar days in LOCAL dates (landmark::calendar_days_since) — a
+        // UTC `.num_days()` diff undercounts by one for evening-first-met
+        // UTC+8 users ("29天" when the calendar says 30).
+        let days = crate::soul::landmark::calendar_days_since(first_met).max(0);
         if days > rel.days_known {
             rel.days_known = days;
         }
@@ -225,6 +242,8 @@ pub fn load_identity(db: &DbState) -> RetrievalResult {
                 .map(|r| r.summary),
             persona_traits: crate::db::persona::get_all_traits(conn).unwrap_or_default(),
             user_profile: crate::db::onboarding::load(conn).unwrap_or_default(),
+            first_met: crate::soul::landmark::first_met_readonly(conn)
+                .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string()),
         })
     })
     .unwrap_or_default()
@@ -610,6 +629,10 @@ mod tests {
             rel.days_known >= 40,
             "days_known backfilled from change_log (got {})",
             rel.days_known
+        );
+        assert!(
+            r.first_met.is_some(),
+            "first_met date must ride along for the [Persona] since-date line"
         );
     }
 
