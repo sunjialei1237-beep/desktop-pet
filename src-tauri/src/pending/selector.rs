@@ -41,17 +41,18 @@ pub enum SelectorTask {
     Garnish,
 }
 
-/// Dynamic context the judgment needs: when it is, how she feels, and what she
-/// last said unprompted (cross-bubble continuity — the thing the old
-/// code-driven path structurally lacked).
+/// Dynamic context the judgment needs: when it is and what she last said
+/// unprompted (cross-bubble continuity — the thing the old code-driven path
+/// structurally lacked). NOTE: mood is deliberately NOT fed here — the smoke
+/// runs showed the selector turning "她此刻平静/犯困" into an atmosphere veto
+/// ("氛围不配提起记忆"), which is the wrong question; worthiness is about the
+/// USER hearing it, not her current vibe matching it.
 pub struct SelectorContext {
     pub task: SelectorTask,
     /// e.g. "2026-08-16（周日）14:32".
     pub now_local: String,
     /// e.g. "下午".
     pub tod: String,
-    pub mood: f64,
-    pub loneliness: f64,
     /// Her recent unprompted bubbles, newest first (already formatted lines).
     pub last_bubbles: Vec<String>,
 }
@@ -140,17 +141,7 @@ fn build_messages(candidates: &[AnchorCandidate], ctx: &SelectorContext) -> Vec<
         }
         user.push('\n');
     }
-    user.push_str(&format!(
-        "［她此刻的状态］心情 {:.2}，{}。\n\n［候选记忆］\n",
-        ctx.mood,
-        if ctx.loneliness > 0.6 {
-            "有点想找人说话"
-        } else if ctx.mood >= 0.6 {
-            "轻快"
-        } else {
-            "平静"
-        }
-    ));
+    user.push_str("［候选记忆］\n");
     for c in candidates {
         user.push_str(&format!("- [{}] {}｜{}\n", c.id, c.text, c.hint));
     }
@@ -168,11 +159,13 @@ fn selector_prompt(task: SelectorTask) -> String {
         }
     };
     let worthiness = "判断标准：\n\
-        - 值得提起的：正在进行的事（目标、计划、面试、项目）、重要节点、有情感分量的经历、和当前时段或她此刻状态有呼应的事。\n\
+        - 值得提起的：正在进行的事——目标、计划、项目、备考、在读的书、健身进度。例：ta 正在准备找实习，你心里惦记着，路过似的带一句「实习准备得怎么样啦」——这就是值得提起。重要节点、有情感分量的经历同理。\n\
+        - 好的判断问的是「ta 听到这句会不会觉得温暖、自然」，不是「她此刻的氛围配不配」——她刚说了句犯困的闲话，不代表她不能突然想起一件惦记的事，真人就是这样。\n\
         - 不值得单独提起的：琐碎的日常细节——某次吃了什么喝了什么、随口一提的小偏好。这些单独提起会显得奇怪甚至惊悚（反例：「你喝雪碧的时候我都在看着」），除非有特别由头（正好临近相关日子、和眼下的事直接相关）。\n\
-        - 候选都平庸就输出 null。";
+        - 敏感的负面经历（失败、失去、焦虑）要谨慎：只有和眼下直接相关才碰，不要凭空翻旧伤。\n\
+        - 候选确实都平庸才输出 null——null 是一个判断结果，不是安全答案。";
     let null_meaning = match task {
-        SelectorTask::Spontaneous => "anchor_id 为 null 表示这次不开口——沉默也是她的表达，宁可不说不说突兀的。",
+        SelectorTask::Spontaneous => "anchor_id 为 null 表示这次不开口（沉默也是一种表达）——但只在候选确实都不值得提起时才用它。",
         SelectorTask::Garnish => "anchor_id 为 null 表示不带记忆，纯情感招呼就好——大多数招呼本来就不需要捎带记忆。",
     };
     let anti_repeat = "别选她最近刚主动提起过的内容（见［她最近主动说过的话］）。";
@@ -257,6 +250,15 @@ mod tests {
             assert!(p.contains("null"));
             assert!(p.contains("anchor_id"));
             assert!(p.contains("只输出"));
+            // Positive few-shot anchors the judgment (smoke run3 fix): a
+            // passing "how's the internship going" IS worth it, and her lazy
+            // chatter is not an atmosphere veto; null is a verdict, not a
+            // safety default.
+            assert!(p.contains("实习准备得怎么样啦"));
+            assert!(p.contains("不是「她此刻的氛围配不配」"));
+            assert!(p.contains("不是安全答案"));
+            // Sensitive negatives need direct relevance, never dredged cold.
+            assert!(p.contains("不要凭空翻旧伤"));
         }
         // Task-specific null semantics.
         assert!(selector_prompt(SelectorTask::Spontaneous).contains("沉默"));
@@ -269,12 +271,10 @@ mod tests {
             task: SelectorTask::Spontaneous,
             now_local: "2026-08-16（周日）14:32".into(),
             tod: "下午".into(),
-            mood: 0.62,
-            loneliness: 0.3,
             last_bubbles: vec!["2 小时前（12:05）：「面试加油呀…」（锚定：在准备找实习）".into()],
         };
         let candidates = vec![AnchorCandidate {
-            id: "fact:f12".into(),
+            id: "F1".into(),
             kind: "fact",
             text: "偏好：喝雪碧（ta 7月30日 提到的事）".into(),
             hint: "从未主动提起过，用户提过 1 次".into(),
@@ -282,7 +282,7 @@ mod tests {
         let msgs = build_messages(&candidates, &ctx);
         assert_eq!(msgs.len(), 2);
         let user = msgs[1].content.as_deref().unwrap_or("");
-        assert!(user.contains("[fact:f12]"));
+        assert!(user.contains("[F1]"));
         assert!(user.contains("喝雪碧"));
         assert!(user.contains("2 小时前"));
         assert!(user.contains("14:32"));

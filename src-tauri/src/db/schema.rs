@@ -5,7 +5,12 @@ use rusqlite::Connection;
 pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     let current_version = get_schema_version(conn)?;
 
-    if current_version >= 5 {
+    // NOTE: this guard must match the LATEST version — an early-return pinned
+    // to an older version silently skips every migration added after it (the
+    // v6 bubble_log migration was unreachable on real v5 DBs; caught by the
+    // 2026-08-16 selector smoke, lib tests never saw it because fresh test
+    // DBs run the full chain from version 0).
+    if current_version >= 6 {
         log::info!("Database schema at version {}, no migration needed", current_version);
         return Ok(());
     }
@@ -105,6 +110,29 @@ mod tests {
         // Running again should be a no-op
         run_migrations(&conn).unwrap();
         assert_eq!(get_schema_version(&conn).unwrap(), 6);
+    }
+
+    #[test]
+    fn test_v5_database_migrates_to_v6() {
+        // Regression: a real DB stamped at version 5 (no bubble_log table) must
+        // run the v6 migration — the early-return guard used to be pinned to 5
+        // and skipped it entirely.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+             INSERT INTO schema_migrations (version, applied_at) VALUES (5, datetime('now'));",
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(get_schema_version(&conn).unwrap(), 6);
+        let has_table: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='bubble_log'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_table, 1, "bubble_log must exist after v5→v6 migration");
     }
 
     #[test]

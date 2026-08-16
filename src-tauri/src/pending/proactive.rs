@@ -131,24 +131,22 @@ pub struct BubbleOutcome {
     pub anchor_reason: Option<String>,
 }
 
-/// A resolved anchor pick shared by the selector and mechanical paths.
-/// `fact`/`episode` refs let the caller record the surfacing ledger entry.
-struct AnchorPick<'a> {
+/// A resolved anchor pick shared by the selector and mechanical paths
+/// (fully owned — the ledger entry is recorded inside the pick functions).
+struct AnchorPick {
     anchor: String,
     goal: &'static str,
     tone: &'static str,
     reason: String,
-    fact: Option<&'a Fact>,
-    episode: Option<&'a crate::db::episodes::Episode>,
 }
 
 /// Outcome of the LLM selector pass. `Declined` (pool non-empty, nothing worth
 /// saying) is a judgment to stay silent; `Empty` is no pool at all (callers
 /// keep their existing fallbacks: lively bubble / anchorless greeting).
-enum SelectorOutcome<'a> {
+enum SelectorOutcome {
     Declined,
     Empty,
-    Picked(AnchorPick<'a>),
+    Picked(AnchorPick),
 }
 
 /// Chinese label for a time-of-day (selector context display).
@@ -253,11 +251,17 @@ enum PoolRef<'a> {
     Episode(&'a crate::db::episodes::Episode),
 }
 
-/// Builds the candidate pool the LLM chooses from: up to 4 fresh anchorable
-/// facts (round-robin order), up to 3 fresh episodes (retrieval-score order),
-/// plus — on the same 1/3 roll the mechanical path uses — one weak-relevance
-/// serendipity candidate, so "意外想起" stays offerable as a choice rather
-/// than a forced pick. The pool respects every hard exclusion the mechanical
+/// Builds the candidate pool the LLM chooses from: a salience × novelty mix —
+/// up to 3 high-mention facts (her main talked-about topics, top of mind) +
+/// up to 2 rotation-tail facts (never surfaced, dusty corners), up to 3 fresh
+/// episodes (retrieval-score order), plus — on the same 1/3 roll the
+/// mechanical path uses — one weak-relevance serendipity candidate, so
+/// "意外想起" stays offerable as a choice rather than a forced pick.
+///
+/// Salience mix rationale (selector smoke 2026-08-16 Phase B): a
+/// rotation-ONLY pool (mention-ascending) systematically starved the selector
+/// of important facts — it was handed a table of trivia (雪碧/深蹲 class) and
+/// rightly declined 8/8. The pool respects every hard exclusion the mechanical
 /// path enforces; the selector only chooses AMONG pre-vetted candidates.
 fn build_candidate_pool<'a>(
     facts: &'a [Fact],
@@ -265,10 +269,34 @@ fn build_candidate_pool<'a>(
     now: &DateTime<Utc>,
 ) -> Vec<(AnchorCandidate, PoolRef<'a>)> {
     let mut pool: Vec<(AnchorCandidate, PoolRef)> = Vec::new();
-    for f in fresh_anchorable_facts(facts, now).into_iter().take(4) {
+
+    // Facts: the FULL fresh pool (salience-ordered, capped 14) — no lossy
+    // pre-selection. Ongoing engagements (找实习/项目/在读的书) typically have
+    // mention_count=1 like trivia, so every mention/confidence-ordered narrow
+    // pool starved them and the selector correctly declined a table of static
+    // preferences (smoke run2/run3: 8/8 declines, "没有进行中的目标" while
+    // 找实习 sat outside the pool). Present the whole menu; the selector IS
+    // the prioritization layer now.
+    //
+    // Candidate ids are POSITIONAL (F1.., E1..): the flash model mangled
+    // "fact:<hex>" into "fact_<hex>" when echoing it back and the strict
+    // pool check rejected every decision (smoke run4: 7/8 selector calls
+    // degraded to the mechanical pick despite perfect judgments). Short
+    // copy-safe ids, dedup by source id.
+    let rotation = fresh_anchorable_facts(facts, now);
+    let mut salient: Vec<&Fact> = rotation.clone();
+    salient.sort_by(|a, b| {
+        b.mention_count.cmp(&a.mention_count).then_with(|| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+    let chosen: Vec<&Fact> = salient.iter().take(14).copied().collect();
+    for (i, f) in chosen.iter().enumerate() {
         pool.push((
             AnchorCandidate {
-                id: format!("fact:{}", f.id),
+                id: format!("F{}", i + 1),
                 kind: "fact",
                 text: present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)),
                 hint: format!(
@@ -289,9 +317,10 @@ fn build_candidate_pool<'a>(
         if episode_in_cooldown(&se.episode, now) {
             continue;
         }
+        episode_count += 1;
         pool.push((
             AnchorCandidate {
-                id: format!("ep:{}", se.episode.id),
+                id: format!("E{}", episode_count),
                 kind: "episode",
                 text: with_emotion_anchor(
                     present_anchor(&se.episode.summary, Some(&se.episode.time)),
@@ -305,24 +334,24 @@ fn build_candidate_pool<'a>(
             },
             PoolRef::Episode(&se.episode),
         ));
-        episode_count += 1;
     }
-    // Serendipity offer: one weak-band episode (1/3 roll, deduped) — the
-    // selector may take the surprise or leave it.
+    // Serendipity offer: one weak-band episode (1/3 roll, deduped by source
+    // id — pool ids are positional) — the selector may take or leave it.
     {
         let mut rng = rand::thread_rng();
         if rng.gen_range(0..3) == 0 {
             if let Some(i) = crate::mind::retrieval::sample_serendipity_anchor(episodes, &mut rng) {
                 let ep = &episodes[i].episode;
-                if !pool.iter().any(|(c, _)| c.id == format!("ep:{}", ep.id)) {
+                let already = pool
+                    .iter()
+                    .any(|(_, r)| matches!(r, PoolRef::Episode(e) if e.id == ep.id));
+                if !already {
+                    episode_count += 1;
                     pool.push((
                         AnchorCandidate {
-                            id: format!("ep:{}", ep.id),
+                            id: format!("E{}", episode_count),
                             kind: "episode",
-                            text: with_emotion_anchor(
-                                present_anchor(&ep.summary, Some(&ep.time)),
-                                ep,
-                            ),
+                            text: with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep),
                             hint: format!(
                                 "经历｜弱相关联想（意外想起的那种）｜检索相关度 {:.2}",
                                 episodes[i].score
@@ -339,13 +368,13 @@ fn build_candidate_pool<'a>(
 
 /// Resolves a picked candidate back to an AnchorPick (with ledger entry
 /// recorded, preserving the "surfaced BEFORE the voicing call" ordering).
-fn pick_from_pool<'a>(
-    pool: &[(AnchorCandidate, PoolRef<'a>)],
+fn pick_from_pool(
+    pool: &[(AnchorCandidate, PoolRef)],
     id: &str,
     reason: String,
     db: &DbState,
     now: &DateTime<Utc>,
-) -> Option<AnchorPick<'a>> {
+) -> Option<AnchorPick> {
     // Copy the PoolRef out (it borrows the retrieval results, not the local
     // pool vec) so the returned pick outlives this call.
     let r = pool.iter().find(|(c, _)| c.id == id).map(|(_, r)| *r)?;
@@ -357,8 +386,6 @@ fn pick_from_pool<'a>(
                 goal: "accompany",
                 tone: "playful",
                 reason,
-                fact: Some(f),
-                episode: None,
             })
         }
         PoolRef::Episode(ep) => {
@@ -368,8 +395,6 @@ fn pick_from_pool<'a>(
                 goal: "accompany",
                 tone: "gentle",
                 reason,
-                fact: None,
-                episode: Some(ep),
             })
         }
     }
@@ -378,14 +403,13 @@ fn pick_from_pool<'a>(
 /// The LLM selector pass: presents the pre-vetted candidate pool + moment
 /// context (time, mood, her last bubbles) and lets the flash model choose or
 /// decline. Never fabricates — it can only pick ids from the pool.
-async fn selector_pick<'a>(
+async fn selector_pick(
     llm: &LlmClient,
     db: &DbState,
-    facts: &'a [Fact],
-    episodes: &'a [ScoredEpisode],
-    emotion: &EmotionState,
+    facts: &[Fact],
+    episodes: &[ScoredEpisode],
     task: SelectorTask,
-) -> Result<SelectorOutcome<'a>, String> {
+) -> Result<SelectorOutcome, String> {
     let now_utc = Utc::now();
     let pool = build_candidate_pool(facts, episodes, &now_utc);
     if pool.is_empty() {
@@ -398,8 +422,6 @@ async fn selector_pick<'a>(
         task,
         now_local: format!("{}（{}）{}", local.format("%Y-%m-%d"), weekday, local.format("%H:%M")),
         tod: tod_label(crate::perception::time::current_time_of_day()).to_string(),
-        mood: emotion.mood,
-        loneliness: emotion.loneliness,
         last_bubbles: last_bubble_lines(db, &now_utc, 2),
     };
     let decision = selector::run(llm, &pool.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>(), &ctx).await?;
@@ -415,12 +437,12 @@ async fn selector_pick<'a>(
 /// The mechanical round-robin pick (the pre-selector behavior, kept as the
 /// degradation fallback when the selector is disabled or fails). Records the
 /// pick as surfaced before returning, exactly as the inline code did.
-fn mechanical_pick<'a>(
+fn mechanical_pick(
     db: &DbState,
-    facts: &'a [Fact],
-    episodes: &'a [ScoredEpisode],
+    facts: &[Fact],
+    episodes: &[ScoredEpisode],
     now_utc: &DateTime<Utc>,
-) -> Option<AnchorPick<'a>> {
+) -> Option<AnchorPick> {
     let mut rng = rand::thread_rng();
     // Memory Serendipity (design §7.4): ~1/3 of memory bubbles anchor a
     // WEAKLY-related memory instead of the strongest match.
@@ -450,8 +472,6 @@ fn mechanical_pick<'a>(
                 goal: "accompany",
                 tone: "playful",
                 reason: fact_surface_reason(f),
-                fact: Some(f),
-                episode: None,
             })
         }
         (None, Some(ep)) => {
@@ -466,8 +486,6 @@ fn mechanical_pick<'a>(
                 goal: "accompany",
                 tone: "gentle",
                 reason,
-                fact: None,
-                episode: Some(ep),
             })
         }
         (None, None) => None,
@@ -644,7 +662,6 @@ pub async fn generate(
                     db,
                     &retrieval.facts,
                     &retrieval.episodes,
-                    &emotion,
                     SelectorTask::Spontaneous,
                 )
                 .await
@@ -1000,7 +1017,6 @@ pub async fn generate_welcome_back(
                 db,
                 &retrieval.facts,
                 &retrieval.episodes,
-                &emotion,
                 SelectorTask::Garnish,
             )
             .await
@@ -1154,7 +1170,6 @@ pub async fn generate_lonely_bubble(
                 db,
                 &retrieval.facts,
                 &retrieval.episodes,
-                &emotion,
                 SelectorTask::Garnish,
             )
             .await
@@ -1699,14 +1714,18 @@ mod tests {
     }
 
     #[test]
-    fn test_build_candidate_pool_filters_caps_and_ids() {
+    fn test_build_candidate_pool_salience_mix_and_filters() {
         let now = Utc::now();
         let in_window = (now - chrono::Duration::days(1)).to_rfc3339();
-        // 6 fresh anchorable facts → capped at 4; plus one windowed and one
-        // low-confidence fact → both hard-excluded.
-        let mut facts: Vec<Fact> = (0..6)
-            .map(|i| make_fact(&format!("f{i}"), &format!("k{i}"), 0.9, 0, None))
-            .collect();
+        // Salient (high-mention) facts must lead the pool; rotation tail fills
+        // to 5; windowed + low-confidence facts are hard-excluded.
+        let mut facts: Vec<Fact> = Vec::new();
+        let mut salient = make_fact("salient", "ks", 0.9, 0, None); // mention 9 → must be in
+        salient.mention_count = 9;
+        facts.push(salient);
+        for i in 0..6 {
+            facts.push(make_fact(&format!("f{i}"), &format!("k{i}"), 0.9, 0, None));
+        }
         facts.push(make_fact("windowed", "kw", 0.9, 1, Some(&in_window)));
         facts.push(make_fact("lowconf", "kl", 0.5, 0, None));
         // One fresh episode, one in-cooldown episode. Scores stay above the
@@ -1718,14 +1737,21 @@ mod tests {
         ];
         let pool = build_candidate_pool(&facts, &episodes, &now);
         let fact_ids: Vec<&str> = pool.iter().map(|(c, _)| c.id.as_str()).collect();
-        assert_eq!(fact_ids.iter().filter(|i| i.starts_with("fact:")).count(), 4, "facts capped at 4");
-        assert!(fact_ids.contains(&"fact:f0"), "fresh fact in pool: {:?}", fact_ids);
+        // 7 fresh facts exist (salient + f0..f5) — the ≤14 cap holds them all:
+        // salience leads, nothing dropped; ids are positional F1..F7.
+        assert_eq!(
+            fact_ids.iter().filter(|i| i.starts_with("F")).count(),
+            7,
+            "all 7 fresh facts pooled: {:?}",
+            fact_ids
+        );
+        assert!(fact_ids.contains(&"F1"), "high-mention fact leads the pool (F1): {:?}", fact_ids);
         assert!(!fact_ids.iter().any(|i| i.contains("windowed")), "repeat-window fact excluded");
         assert!(!fact_ids.iter().any(|i| i.contains("lowconf")), "low-confidence fact excluded");
-        assert!(fact_ids.contains(&"ep:ep_fresh"), "fresh episode in pool: {:?}", fact_ids);
+        assert!(fact_ids.contains(&"E1"), "fresh episode in pool (E1): {:?}", fact_ids);
         assert!(!fact_ids.iter().any(|i| i.contains("ep_cool")), "cooldown episode excluded");
         // Candidate text carries the deictic-neutralized anchor + date ref.
-        let (fresh_fact_candidate, _) = pool.iter().find(|(c, _)| c.id == "fact:f0").unwrap();
+        let (fresh_fact_candidate, _) = pool.iter().find(|(c, _)| c.text.contains("k0: value")).unwrap();
         assert!(fresh_fact_candidate.text.contains("k0: value"));
         assert!(fresh_fact_candidate.text.contains("7月1日"), "date reference attached");
     }
@@ -1741,23 +1767,21 @@ mod tests {
         let episodes = vec![make_scored_episode("ep_real", "和糯米去猫咖", 0.7, None)];
         let pool = build_candidate_pool(&facts, &episodes, &now);
 
-        let pick = pick_from_pool(&pool, "fact:f_real", "她一直惦记".to_string(), &db, &now).unwrap();
+        let pick = pick_from_pool(&pool, "F1", "她一直惦记".to_string(), &db, &now).unwrap();
         assert_eq!(pick.goal, "accompany");
         assert_eq!(pick.tone, "playful");
         assert_eq!(pick.reason, "她一直惦记");
-        assert!(pick.fact.is_some());
 
         // The ledger was written BEFORE the voicing call would run.
         let after: Vec<Fact> = db.with_conn(|conn| crate::db::facts::get_all(conn)).unwrap();
         assert_eq!(after[0].surfaced_count, 1, "surfaced_count bumped on pick");
 
         // Episode resolution takes the gentle voice.
-        let pick_ep = pick_from_pool(&pool, "ep:ep_real", "带着当时的氛围".to_string(), &db, &now).unwrap();
+        let pick_ep = pick_from_pool(&pool, "E1", "带着当时的氛围".to_string(), &db, &now).unwrap();
         assert_eq!(pick_ep.tone, "gentle");
-        assert!(pick_ep.episode.is_some());
 
         // Unknown id → None (never guess).
-        assert!(pick_from_pool(&pool, "fact:zz", String::new(), &db, &now).is_none());
+        assert!(pick_from_pool(&pool, "F99", String::new(), &db, &now).is_none());
     }
 
     #[test]
