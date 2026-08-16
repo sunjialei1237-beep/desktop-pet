@@ -172,6 +172,14 @@ html, body, #root {
   z-index: 10;
 }
 
+/* Below mode (same trigger as the speech bubble — window top off-screen):
+   the default spot above her head is above the visible screen, so the orb
+   drops to her chest instead. */
+.thinking-orb--below {
+  bottom: auto;
+  top: 345px;
+}
+
 .settings-overlay {
   position: fixed;
   top: 0;
@@ -826,6 +834,25 @@ html, body, #root {
   /* Decorative only — never captures clicks (inherits none from the anchor
      anyway; explicit for robustness). */
   pointer-events: none;
+}
+
+/* Below mode (parked with the window top off-screen — head at the screen
+   top): the bubble hangs from her chin and grows downward, so the tail sits
+   at the bubble's TOP edge pointing up at her head. Mirrors the default
+   seam-overlap trick (tail bottom tucked 2px INTO the bubble body below it).
+   scaleY(-1) flips the clip-path tip upward; the rotate sign flips with it
+   so the organic tilt keeps the same handedness. */
+.pet-bubble-anchor--below .pet-bubble-tail {
+  top: -10px;
+  bottom: auto;
+  transform: scaleX(calc(var(--pet-bubble-tail-direction, 1))) scaleY(-1) rotate(5deg);
+  transform-origin: center bottom;
+}
+
+/* Enter/exit animation grows from the tail edge — in below mode that's the
+   bubble's top edge instead of its bottom edge. */
+.pet-bubble-anchor--below .pet-bubble-motion {
+  transform-origin: 50% 0%;
 }
 
 /* Streaming-friendly content block — no fixed height, grows with text. */

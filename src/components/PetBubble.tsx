@@ -33,6 +33,11 @@ export interface PetBubbleProps {
   tail?: "left-bottom" | "right-bottom";
   /** Max width in px. Desktop pet should stay small — 180~210 recommended. */
   maxWidth?: number;
+  /** Flip the bubble BELOW her chin. Used when the window is parked with its
+      top edge off-screen (head at the screen top) — the default above-head
+      position would render entirely above the visible screen, muting her.
+      The tail mirrors upward so it still points at her head. */
+  below?: boolean;
   className?: string;
   /** Reports the bubble's viewport rect (CSS px) so App keeps the window
       non-transparent over it — under OS-level click-through (setIgnoreCursorEvents)
@@ -115,6 +120,7 @@ export function PetBubble({
   mode,
   tail = "left-bottom",
   maxWidth = 200,
+  below = false,
   className = "",
   onBubbleBounds,
 }: PetBubbleProps) {
@@ -179,6 +185,7 @@ export function PetBubble({
           key={bubbleId}
           className={[
             "pet-bubble-anchor",
+            below ? "pet-bubble-anchor--below" : "",
             isGlyph ? "pet-bubble-anchor--glyph" : "",
             className,
           ]
@@ -210,8 +217,15 @@ export function PetBubble({
               // anchor compensated each time so the tip stays put.) Long
               // text grows upward/rightward, the tail stays put — that's the
               // "tail as anchor" contract.
+              //
+              // below=true (window parked with its top off-screen — head at
+              // the screen top): the above position would be entirely above
+              // the visible screen. The bubble hangs from her chin instead
+              // (top:335 ≈ head bottom y330 + 5px), tail mirrored upward at
+              // the bubble's top edge, text growing downward over her body —
+              // face stays visible, text stays on-screen.
               position: "absolute",
-              bottom: "535px",
+              ...((below ? { top: "335px" } : { bottom: "535px" }) as React.CSSProperties),
               left: "188px",
               zIndex: 50,
               pointerEvents: "none",

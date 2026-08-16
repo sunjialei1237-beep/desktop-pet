@@ -91,9 +91,12 @@ export interface SpineCanvasProps {
   onModelBounds?: (b: Rect) => void;
   // Tight bounding rect for click hit testing.
   onModelHitBounds?: (b: Rect) => void;
+  // Visual body rect WITHOUT padding (the rendered pixels). Drives the drag
+  // screen walls so the head/feet can touch the screen edges exactly.
+  onVisualBounds?: (b: Rect) => void;
 }
 
-export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds }: SpineCanvasProps) {
+export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onVisualBounds }: SpineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const spineRef = useRef<any>(null);
@@ -190,6 +193,8 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
 
         // Report bounding rects for click-through (loose + tight).
         try {
+          // Visual rect first (no padding) — the drag walls hug the body.
+          onVisualBounds?.(b);
           const w = b.width;
           const h = b.height;
           const INSET = 0.10;

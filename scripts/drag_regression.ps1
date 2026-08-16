@@ -1,12 +1,14 @@
 # Full drag regression suite for the manual-drag + screen-wall fix.
+# 2026-08-16 (续⁴²): walls hug the VISUAL body (no padding) — head can touch
+# the screen TOP (window top goes off-screen, T<0) and the feet the taskbar.
 # Fresh pet required. Tests:
-#   T1  up-drag 600px -> top wall pins T=0 (window never off-screen; no OS snap, no bounce)
+#   T1  up-drag 600px -> top wall T=-360 (HEAD at screen y=0; no OS snap)
 #   T2  click-through press + cursor move + release (NO real drag) -> nothing happens
 #   T3  on-screen up-drag 100px -> stays at release point
 #   T4  on-screen down-drag 300px -> stays at release point
-#   T5  left-drag 2100px -> left wall pins L=-163 (model left at screen left)
-#   T6  right-drag 2300px -> right wall pins L=2123 (model right at screen right)
-#   T7  down-drag 900px -> bottom wall pins T=315 (feet on taskbar top)
+#   T5  left-drag 2100px -> left wall L=-186 (visual left edge at screen left)
+#   T6  right-drag 2300px -> right wall L=2146 (visual right edge at screen right)
+#   T7  down-drag 900px -> bottom wall T=378 (FEET on taskbar top 1368)
 # IMPORTANT: SetWindowPos resets MUST pass SWP_NOSIZE (0x0001) or the window
 # shrinks to 0x0 (this accidentally broke a previous run).
 Add-Type @"
@@ -53,9 +55,9 @@ function ResetPos {
 # --- T1: up-drag -> top wall ---
 $r = GetRect; Write-Output "T1 pre: L=$($r.L) T=$($r.T) W=$($r.R-$r.L) H=$($r.B-$r.T) (expect 600x1140)"
 DragRel -dx 0 -dy -600
-$r = GetRect; Write-Output "T1 post: T=$($r.T) (expect 0, top wall, full size)"
+$r = GetRect; Write-Output "T1 post: T=$($r.T) (expect -360, head at screen top)"
 Start-Sleep -Milliseconds 1200
-$r = GetRect; Write-Output "T1 hold: T=$($r.T) (expect 0, no bounce)"
+$r = GetRect; Write-Output "T1 hold: T=$($r.T) (expect -360, no snap to 0)"
 # --- T2: click-through press + move, no real drag ---
 Start-Sleep -Milliseconds 2500  # let the arm clear wasDragged
 $r0 = GetRect
@@ -66,7 +68,7 @@ Start-Sleep -Milliseconds 80
 for ($i = 1; $i -le 15; $i++) { [W32reg2]::SetCursorPos($r0.L + 300, $r0.T + 100 - 20 * $i) | Out-Null; Start-Sleep -Milliseconds 30 }
 [W32reg2]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
 Start-Sleep -Milliseconds 900
-$r = GetRect; Write-Output "T2 post: T=$($r.T) (expect 0, NO restore/move)"
+$r = GetRect; Write-Output "T2 post: T=$($r.T) (expect -360, NO restore/move)"
 # --- T3: on-screen up-drag ---
 ResetPos 1931 228
 DragRel -dx 0 -dy -100
@@ -81,17 +83,17 @@ $r = GetRect; Write-Output "T4 hold: T=$($r.T) (expect ~437)"
 # --- T5: left-drag -> left wall ---
 ResetPos 1931 228
 DragRel -dx -2100 -dy 0
-$r = GetRect; Write-Output "T5 post: L=$($r.L) T=$($r.T) (expect L=-163, left wall)"
+$r = GetRect; Write-Output "T5 post: L=$($r.L) T=$($r.T) (expect L=-186, left wall)"
 Start-Sleep -Milliseconds 1500
-$r = GetRect; Write-Output "T5 hold: L=$($r.L) (expect -163)"
+$r = GetRect; Write-Output "T5 hold: L=$($r.L) (expect -186)"
 # --- T6: right-drag -> right wall ---
 DragRel -dx 2300 -dy 0
-$r = GetRect; Write-Output "T6 post: L=$($r.L) (expect 2123, right wall)"
+$r = GetRect; Write-Output "T6 post: L=$($r.L) (expect 2146, right wall)"
 Start-Sleep -Milliseconds 1500
-$r = GetRect; Write-Output "T6 hold: L=$($r.L) (expect 2123)"
+$r = GetRect; Write-Output "T6 hold: L=$($r.L) (expect 2146)"
 # --- T7: down-drag -> bottom wall (floorY) ---
 DragRel -dx 0 -dy 900
-$r = GetRect; Write-Output "T7 post: T=$($r.T) (expect 315, feet on taskbar)"
+$r = GetRect; Write-Output "T7 post: T=$($r.T) (expect 378, feet on taskbar)"
 Start-Sleep -Milliseconds 1500
-$r = GetRect; Write-Output "T7 hold: T=$($r.T) (expect 315)"
+$r = GetRect; Write-Output "T7 hold: T=$($r.T) (expect 378)"
 Write-Output "SUITE DONE"
