@@ -540,10 +540,13 @@ fn check_goodnight(app: &AppHandle) {
 fn check_weekly_summary(app: &AppHandle) {
     use crate::perception::time::{current_time_of_day, TimeOfDay};
 
+    // Weekly recap is OFF by default (user decision 2026-08-16: 两个朋友聊天
+    // 不会每周复盘 — a scheduled recap reads as a tool, not a friend). Kept
+    // behind its own switch, separate from enable_rituals (早安/晚安 stay).
     let enabled = app
         .try_state::<AppState>()
-        .map(|s| s.config.scheduler.enable_rituals)
-        .unwrap_or(true);
+        .map(|s| s.config.scheduler.enable_rituals && s.config.scheduler.enable_weekly_summary)
+        .unwrap_or(false);
     if !crate::lifecycle::scheduler::should_run(enabled) {
         crate::lifecycle::scheduler::record("ritual_weekly", false, "skipped", None);
         return;

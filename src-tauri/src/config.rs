@@ -77,6 +77,16 @@ pub struct SchedulerConfig {
     pub enable_lifecycle_cleanup: bool,
     pub enable_rituals: bool,
     pub enable_landmarks: bool,
+    /// Sunday weekly recap. OFF by default (user decision 2026-08-16: 两个
+    /// 朋友聊天不会每周复盘 — a scheduled recap reads as a tool, not a
+    /// friend). Independent of `enable_rituals` (早安/晚安 unaffected); set
+    /// true to restore it.
+    #[serde(default = "default_false")]
+    pub enable_weekly_summary: bool,
+}
+
+fn default_false() -> bool {
+    false
 }
 
 impl Default for SchedulerConfig {
@@ -88,6 +98,7 @@ impl Default for SchedulerConfig {
             enable_lifecycle_cleanup: true,
             enable_rituals: true,
             enable_landmarks: true,
+            enable_weekly_summary: default_false(),
         }
     }
 }
