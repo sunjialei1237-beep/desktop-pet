@@ -255,8 +255,13 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
  // Ref mirrors of bubble/thinking visibility, so the long-lived emotionTimer
  // setInterval reads fresh values instead of a stale mount-time closure
  // (used by the idle-sigh guard below).
- const bubbleVisibleRef = useRef(false);
- const isThinkingRef = useRef(false);
+  const bubbleVisibleRef = useRef(false);
+  const isThinkingRef = useRef(false);
+  // Timestamp of the last bubble shown via showBubble (Date.now). Lets
+  // low-priority bubble sources (Soul startup thought) wait for a quiet
+  // moment instead of stacking on top of a greeting (2026-08-15: three
+  // bubbles in a row after relaunch).
+  const lastBubbleShownAtRef = useRef(0);
  // Idle-sigh cooldown (2026-08-14): a "呼…" at most every 5 minutes — it was
  // 8% per 5s tick with no cooldown, i.e. potentially several sighs a minute.
  const lastSighRef = useRef(0);
@@ -317,6 +322,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
    // stale timer from bubble A can't fire and hide bubble B while B is still
    // showing. Then mint a new identity, set state, start the new timer.
    if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current);
+   lastBubbleShownAtRef.current = Date.now();
    const id = beginBubble();
    setBubbleText(text);
    setBubbleStyle(style);
@@ -714,9 +720,24 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
         // Surface pending thoughts (marks them surfaced, returns contents).
         const thoughts = await invoke<string[]>("get_pending_thoughts");
         if (thoughts.length > 0) {
-          // Delay so the thought bubble doesn't collide with the welcome bubble.
+          // Single-greeting coordination (2026-08-15): the thought is the
+          // LOWEST-priority startup voice — 早安/welcome-back canned own the
+          // first moment. Wait for a quiet window (no bubble visible, none in
+          // the last 45s) with a few retries; if it never gets quiet, drop
+          // (reflections regenerate; spam is worse than silence — Arch #12).
           setTimeout(() => {
-            showBubble(thoughts[0], 12000, "bubble-calm");
+            const tryShow = (attempt: number) => {
+              if (onboardingActiveRef.current) return;
+              const busy =
+                bubbleVisibleRef.current ||
+                Date.now() - lastBubbleShownAtRef.current < 45_000;
+              if (busy) {
+                if (attempt < 3) window.setTimeout(() => tryShow(attempt + 1), 30_000);
+                return;
+              }
+              showBubble(thoughts[0], 12000, "bubble-calm");
+            };
+            tryShow(0);
           }, 6000);
         }
       } catch (e) {

@@ -103,18 +103,53 @@ fn medium_tick(app: &AppHandle) {
     crate::lifecycle::scheduler::record("homeostasis", true, "ok", None);
 
     if elapsed > crate::db::emotion::SUSPEND_THRESHOLD_SECS {
-        log::info!(
-            "Life loop: suspend/resume detected ({:.0}s elapsed), catching up",
-            elapsed
+        // Single-greeting coordination on restart/suspend-resume (2026-08-15,
+        // user: three bubbles in a row after relaunch). This canned "slept N
+        // hours" used to fire unconditionally — stacking with the 早安 ritual
+        // (which runs later in this same tick) and the Soul startup thought.
+        // Yield rules, mirroring check_presence_transition's welcome-back:
+        // 1. Morning/Afternoon + rituals enabled → 早安 owns the greeting
+        //    (more specific, date-driven). Skip the canned.
+        // 2. Otherwise pass the shared bubble budget like every proactive
+        //    emit (previously missing entirely on this path).
+        let tod = crate::perception::time::current_time_of_day();
+        let morning_window = matches!(
+            tod,
+            crate::perception::time::TimeOfDay::Morning
+                | crate::perception::time::TimeOfDay::Afternoon
         );
-        // Signal frontend that the pet woke up after a long absence.
-        let _ = app.emit(
-            "app-status",
-            serde_json::json!({
-                "status": "resumed",
-                "elapsed_secs": elapsed,
-            }),
-        );
+        // When rituals are enabled and we're in the greeting window, 早安 owns
+        // today's greeting whether it is due (fires later in this same tick) or
+        // already done — either way the canned would stack on top of it.
+        let rituals_enabled = app
+            .try_state::<AppState>()
+            .map(|s| s.config.scheduler.enable_rituals)
+            .unwrap_or(true);
+        let goodmorning_owns = morning_window && rituals_enabled;
+        if goodmorning_owns {
+            log::info!(
+                "Life loop: suspend/resume ({:.0}s), 早安 owns today's greeting — skipping canned resume bubble",
+                elapsed
+            );
+        } else if !bubble_budget_ok(app) {
+            log::info!(
+                "Life loop: suspend/resume ({:.0}s), bubble budget held — skipping canned resume bubble",
+                elapsed
+            );
+        } else {
+            log::info!(
+                "Life loop: suspend/resume detected ({:.0}s elapsed), catching up",
+                elapsed
+            );
+            // Signal frontend that the pet woke up after a long absence.
+            let _ = app.emit(
+                "app-status",
+                serde_json::json!({
+                    "status": "resumed",
+                    "elapsed_secs": elapsed,
+                }),
+            );
+        }
     }
 
     // 2. Pending event check.
