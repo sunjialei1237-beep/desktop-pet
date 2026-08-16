@@ -85,7 +85,7 @@ async fn proactive_recall_meets_standards() {
     // reply. The production default is 15 (85% lively 碎碎念) — this harness
     // is about recall standards, not the lively/memory mix (bubble_content_check
     // reports that; proactive-bubble governance 2026-08-14).
-    let outcome = proactive::generate(&db, &llm, None, &[], 100)
+    let outcome = proactive::generate(&db, &llm, None, &[], 100, false)
         .await
         .expect("proactive::generate errored")
         .expect("no memory to anchor on — run a conversation first so facts/episodes exist");

@@ -12,6 +12,7 @@ pub mod relationship_reviews;
 pub mod vectors;
 pub mod changelog;
 pub mod onboarding;
+pub mod bubble_log;
 
 use rusqlite::Connection;
 use std::sync::Mutex;

@@ -75,7 +75,7 @@ async fn bubble_content_diversity() {
     let mut multi_question = 0usize;
 
     for i in 1..=N {
-        match proactive::generate(&db, &llm, emb_ref, &[], proactive::DEFAULT_MEMORY_RATIO).await {
+        match proactive::generate(&db, &llm, emb_ref, &[], proactive::DEFAULT_MEMORY_RATIO, false).await {
             Ok(Some(o)) => {
                 let is_lively = o.anchor.is_empty();
                 if is_lively {

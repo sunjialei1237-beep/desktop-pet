@@ -131,6 +131,16 @@ pub struct ProactiveConfig {
     /// the rest are lively, anchorless chatter (default 15: 85% 碎碎念).
     /// User feedback 2026-08-14: 不需要那么多消息带记忆.
     pub memory_bubble_ratio: i64,
+    /// Route anchor selection through the LLM selector (flash tier): it sees
+    /// the pre-vetted candidate pool + her last bubbles and may decline —
+    /// silence instead of a forced trivial memory (2026-08-16 续⁴¹).
+    /// false = the mechanical round-robin pick (pre-selector behavior).
+    #[serde(default = "default_enable_llm_selector")]
+    pub enable_llm_selector: bool,
+}
+
+fn default_enable_llm_selector() -> bool {
+    true
 }
 
 impl Default for ProactiveConfig {
@@ -138,6 +148,7 @@ impl Default for ProactiveConfig {
         ProactiveConfig {
             min_interval_secs: 60 * 60,
             memory_bubble_ratio: 15,
+            enable_llm_selector: default_enable_llm_selector(),
         }
     }
 }

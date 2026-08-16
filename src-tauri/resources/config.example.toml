@@ -58,3 +58,8 @@ enable_open_application = true
 # steering slot, CCv2 post_history_instructions). false = v1 layout (rollback
 # without rebuild).
 near_end_directive = true
+
+[proactive]
+# min_interval_secs = 3600      # proactive bubble minimum interval (seconds)
+# memory_bubble_ratio = 15       # % of no-pending bubbles anchoring a memory
+# enable_llm_selector = true     # LLM (flash) judges whether/which memory surfaces; false = mechanical round-robin

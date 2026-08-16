@@ -2,6 +2,7 @@
 //! Design doc 9.2: the core mechanism for "she remembers me".
 
 pub mod proactive;
+pub mod selector;
 pub mod tracker;
 pub mod budget;
 

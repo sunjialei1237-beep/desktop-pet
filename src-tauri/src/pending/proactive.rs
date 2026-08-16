@@ -7,7 +7,9 @@ use crate::db::DbState;
 use crate::embedding::EmbeddingService;
 use crate::emotion::state::EmotionState;
 use crate::llm::client::{ChatMessage, LlmClient};
-use chrono::{DateTime, Local, Utc};
+use crate::mind::retrieval::ScoredEpisode;
+use crate::pending::selector::{self, AnchorCandidate, SelectorContext, SelectorTask};
+use chrono::{DateTime, Datelike, Local, Utc};
 use rand::Rng;
 use serde::Serialize;
 
@@ -129,6 +131,370 @@ pub struct BubbleOutcome {
     pub anchor_reason: Option<String>,
 }
 
+/// A resolved anchor pick shared by the selector and mechanical paths.
+/// `fact`/`episode` refs let the caller record the surfacing ledger entry.
+struct AnchorPick<'a> {
+    anchor: String,
+    goal: &'static str,
+    tone: &'static str,
+    reason: String,
+    fact: Option<&'a Fact>,
+    episode: Option<&'a crate::db::episodes::Episode>,
+}
+
+/// Outcome of the LLM selector pass. `Declined` (pool non-empty, nothing worth
+/// saying) is a judgment to stay silent; `Empty` is no pool at all (callers
+/// keep their existing fallbacks: lively bubble / anchorless greeting).
+enum SelectorOutcome<'a> {
+    Declined,
+    Empty,
+    Picked(AnchorPick<'a>),
+}
+
+/// Chinese label for a time-of-day (selector context display).
+fn tod_label(tod: crate::perception::time::TimeOfDay) -> &'static str {
+    use crate::perception::time::TimeOfDay;
+    match tod {
+        TimeOfDay::Morning => "上午",
+        TimeOfDay::Afternoon => "下午",
+        TimeOfDay::Evening => "傍晚",
+        TimeOfDay::LateNight => "深夜",
+        TimeOfDay::DeepNight => "凌晨",
+    }
+}
+
+/// Formats her recent unprompted bubbles as context lines, newest first.
+/// The cross-bubble continuity source: both the selector (judgment) and the
+/// voicing prompts consume it, so she never repeats her own last words.
+fn last_bubble_lines(db: &DbState, now: &DateTime<Utc>, n: usize) -> Vec<String> {
+    db.with_conn(|conn| crate::db::bubble_log::get_recent(conn, n))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| {
+            let dt = chrono::DateTime::parse_from_rfc3339(&e.time)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or(*now);
+            let text: String = e.text.chars().take(40).collect();
+            let anchor = if e.anchor.is_empty() {
+                String::new()
+            } else {
+                let a: String = e.anchor.chars().take(30).collect();
+                format!("（锚定：{a}）")
+            };
+            format!(
+                "{}（{}）：「{}」{}",
+                selector::relative_ago(now, &dt),
+                selector::local_clock(&dt),
+                text,
+                anchor
+            )
+        })
+        .collect()
+}
+
+/// The voicing-prompt injection: "here is what you last said unprompted —
+/// don't repeat it". Empty when she has never bubbled.
+fn last_bubbles_clause(db: &DbState, now: &DateTime<Utc>) -> String {
+    let lines = last_bubble_lines(db, now, 2);
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "（你自己最近主动开口说的是：{}。别重复它们的内容和句式，也别接着上一条的话头往下说。）\n",
+        lines.join("；")
+    )
+}
+
+/// Appends a successful bubble outcome to the log (best-effort — logging must
+/// never break bubbling).
+fn log_bubble(db: &DbState, kind: &str, reply: &str, anchor: &str, anchor_reason: Option<&str>) {
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) =
+        db.with_conn(|conn| crate::db::bubble_log::insert(conn, kind, reply, anchor, anchor_reason, &now))
+    {
+        log::warn!("[bubble_log] insert failed: {}", e);
+    }
+}
+
+/// Fresh anchorable facts in round-robin order (fewest-surfaced first) — the
+/// ordered pool behind both `sample_anchorable_fact` and the selector pool.
+fn fresh_anchorable_facts<'a>(facts: &'a [Fact], now: &DateTime<Utc>) -> Vec<&'a Fact> {
+    let mut fresh: Vec<&Fact> = facts
+        .iter()
+        .filter(|f| is_anchorable_fact(f))
+        .filter(|f| !surfaced_recently(f, now))
+        .collect();
+    fresh.sort_by(|a, b| {
+        a.surfaced_count
+            .cmp(&b.surfaced_count)
+            .then_with(|| a.last_surfaced_at.cmp(&b.last_surfaced_at))
+            .then_with(|| a.mention_count.cmp(&b.mention_count))
+    });
+    fresh
+}
+
+/// Whether an episode is inside the surfacing cooldown window (mirror of
+/// `sample_surface_anchor`'s filter, exposed for candidate-pool building).
+fn episode_in_cooldown(ep: &crate::db::episodes::Episode, now: &DateTime<Utc>) -> bool {
+    ep.last_recalled_at
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| {
+            now.signed_duration_since(dt.with_timezone(&Utc))
+                < chrono::Duration::hours(crate::mind::retrieval::SURFACE_COOLDOWN_HOURS)
+        })
+        .unwrap_or(false)
+}
+
+/// Reference back into the retrieval results for a pool candidate.
+#[derive(Clone, Copy)]
+enum PoolRef<'a> {
+    Fact(&'a Fact),
+    Episode(&'a crate::db::episodes::Episode),
+}
+
+/// Builds the candidate pool the LLM chooses from: up to 4 fresh anchorable
+/// facts (round-robin order), up to 3 fresh episodes (retrieval-score order),
+/// plus — on the same 1/3 roll the mechanical path uses — one weak-relevance
+/// serendipity candidate, so "意外想起" stays offerable as a choice rather
+/// than a forced pick. The pool respects every hard exclusion the mechanical
+/// path enforces; the selector only chooses AMONG pre-vetted candidates.
+fn build_candidate_pool<'a>(
+    facts: &'a [Fact],
+    episodes: &'a [ScoredEpisode],
+    now: &DateTime<Utc>,
+) -> Vec<(AnchorCandidate, PoolRef<'a>)> {
+    let mut pool: Vec<(AnchorCandidate, PoolRef)> = Vec::new();
+    for f in fresh_anchorable_facts(facts, now).into_iter().take(4) {
+        pool.push((
+            AnchorCandidate {
+                id: format!("fact:{}", f.id),
+                kind: "fact",
+                text: present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)),
+                hint: format!(
+                    "事实｜{}｜用户提过 {} 次，她主动提起过 {} 次",
+                    fact_surface_reason(f),
+                    f.mention_count,
+                    f.surfaced_count
+                ),
+            },
+            PoolRef::Fact(f),
+        ));
+    }
+    let mut episode_count = 0;
+    for se in episodes {
+        if episode_count >= 3 {
+            break;
+        }
+        if episode_in_cooldown(&se.episode, now) {
+            continue;
+        }
+        pool.push((
+            AnchorCandidate {
+                id: format!("ep:{}", se.episode.id),
+                kind: "episode",
+                text: with_emotion_anchor(
+                    present_anchor(&se.episode.summary, Some(&se.episode.time)),
+                    &se.episode,
+                ),
+                hint: format!(
+                    "经历｜{}｜检索相关度 {:.2}",
+                    episode_surface_reason(&se.episode, now),
+                    se.score
+                ),
+            },
+            PoolRef::Episode(&se.episode),
+        ));
+        episode_count += 1;
+    }
+    // Serendipity offer: one weak-band episode (1/3 roll, deduped) — the
+    // selector may take the surprise or leave it.
+    {
+        let mut rng = rand::thread_rng();
+        if rng.gen_range(0..3) == 0 {
+            if let Some(i) = crate::mind::retrieval::sample_serendipity_anchor(episodes, &mut rng) {
+                let ep = &episodes[i].episode;
+                if !pool.iter().any(|(c, _)| c.id == format!("ep:{}", ep.id)) {
+                    pool.push((
+                        AnchorCandidate {
+                            id: format!("ep:{}", ep.id),
+                            kind: "episode",
+                            text: with_emotion_anchor(
+                                present_anchor(&ep.summary, Some(&ep.time)),
+                                ep,
+                            ),
+                            hint: format!(
+                                "经历｜弱相关联想（意外想起的那种）｜检索相关度 {:.2}",
+                                episodes[i].score
+                            ),
+                        },
+                        PoolRef::Episode(ep),
+                    ));
+                }
+            }
+        }
+    }
+    pool
+}
+
+/// Resolves a picked candidate back to an AnchorPick (with ledger entry
+/// recorded, preserving the "surfaced BEFORE the voicing call" ordering).
+fn pick_from_pool<'a>(
+    pool: &[(AnchorCandidate, PoolRef<'a>)],
+    id: &str,
+    reason: String,
+    db: &DbState,
+    now: &DateTime<Utc>,
+) -> Option<AnchorPick<'a>> {
+    // Copy the PoolRef out (it borrows the retrieval results, not the local
+    // pool vec) so the returned pick outlives this call.
+    let r = pool.iter().find(|(c, _)| c.id == id).map(|(_, r)| *r)?;
+    match r {
+        PoolRef::Fact(f) => {
+            record_anchor_surfaced(db, Some(f), None, &now.to_rfc3339());
+            Some(AnchorPick {
+                anchor: present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)),
+                goal: "accompany",
+                tone: "playful",
+                reason,
+                fact: Some(f),
+                episode: None,
+            })
+        }
+        PoolRef::Episode(ep) => {
+            record_anchor_surfaced(db, None, Some(ep), &now.to_rfc3339());
+            Some(AnchorPick {
+                anchor: with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep),
+                goal: "accompany",
+                tone: "gentle",
+                reason,
+                fact: None,
+                episode: Some(ep),
+            })
+        }
+    }
+}
+
+/// The LLM selector pass: presents the pre-vetted candidate pool + moment
+/// context (time, mood, her last bubbles) and lets the flash model choose or
+/// decline. Never fabricates — it can only pick ids from the pool.
+async fn selector_pick<'a>(
+    llm: &LlmClient,
+    db: &DbState,
+    facts: &'a [Fact],
+    episodes: &'a [ScoredEpisode],
+    emotion: &EmotionState,
+    task: SelectorTask,
+) -> Result<SelectorOutcome<'a>, String> {
+    let now_utc = Utc::now();
+    let pool = build_candidate_pool(facts, episodes, &now_utc);
+    if pool.is_empty() {
+        return Ok(SelectorOutcome::Empty);
+    }
+    let local = Local::now();
+    let weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        [local.weekday().num_days_from_monday() as usize];
+    let ctx = SelectorContext {
+        task,
+        now_local: format!("{}（{}）{}", local.format("%Y-%m-%d"), weekday, local.format("%H:%M")),
+        tod: tod_label(crate::perception::time::current_time_of_day()).to_string(),
+        mood: emotion.mood,
+        loneliness: emotion.loneliness,
+        last_bubbles: last_bubble_lines(db, &now_utc, 2),
+    };
+    let decision = selector::run(llm, &pool.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>(), &ctx).await?;
+    match decision.anchor_id {
+        Some(id) => Ok(SelectorOutcome::Picked(pick_from_pool(&pool, &id, decision.reason, db, &now_utc).ok_or("selector picked an id missing from the pool")?)),
+        None => {
+            log::info!("[selector] declined: {}", decision.reason);
+            Ok(SelectorOutcome::Declined)
+        }
+    }
+}
+
+/// The mechanical round-robin pick (the pre-selector behavior, kept as the
+/// degradation fallback when the selector is disabled or fails). Records the
+/// pick as surfaced before returning, exactly as the inline code did.
+fn mechanical_pick<'a>(
+    db: &DbState,
+    facts: &'a [Fact],
+    episodes: &'a [ScoredEpisode],
+    now_utc: &DateTime<Utc>,
+) -> Option<AnchorPick<'a>> {
+    let mut rng = rand::thread_rng();
+    // Memory Serendipity (design §7.4): ~1/3 of memory bubbles anchor a
+    // WEAKLY-related memory instead of the strongest match.
+    let serendipity_idx = if rng.gen_range(0..3) == 0 {
+        crate::mind::retrieval::sample_serendipity_anchor(episodes, &mut rng)
+    } else {
+        None
+    };
+    let fact = if serendipity_idx.is_none() {
+        sample_anchorable_fact(facts, now_utc)
+    } else {
+        None
+    };
+    let episode = if let Some(i) = serendipity_idx {
+        Some(&episodes[i].episode)
+    } else if fact.is_none() {
+        crate::mind::retrieval::sample_surface_anchor(episodes, now_utc, &mut rng)
+            .map(|i| &episodes[i].episode)
+    } else {
+        None
+    };
+    match (fact, episode) {
+        (Some(f), _) => {
+            record_anchor_surfaced(db, Some(f), None, &now_utc.to_rfc3339());
+            Some(AnchorPick {
+                anchor: present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)),
+                goal: "accompany",
+                tone: "playful",
+                reason: fact_surface_reason(f),
+                fact: Some(f),
+                episode: None,
+            })
+        }
+        (None, Some(ep)) => {
+            record_anchor_surfaced(db, None, Some(ep), &now_utc.to_rfc3339());
+            let reason = if serendipity_idx.is_some() {
+                "不知道为什么突然想到这个".to_string()
+            } else {
+                episode_surface_reason(ep, now_utc)
+            };
+            Some(AnchorPick {
+                anchor: with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep),
+                goal: "accompany",
+                tone: "gentle",
+                reason,
+                fact: None,
+                episode: Some(ep),
+            })
+        }
+        (None, None) => None,
+    }
+}
+
+/// The pre-selector optional-anchor dice for welcome-back / lonely nudges:
+/// ANCHOR_PROB_PERCENT chance to attach a mechanical pick, else anchorless.
+/// Fallback path when the selector is disabled or fails. (Unification note:
+/// the mechanical pick includes the serendipity 1/3 roll, which the old
+/// inline welcome/lonely code did not — acceptable widening of a 25%×1/3
+/// corner, one picker instead of two near-duplicates.)
+fn anchor_dice(
+    retrieval: &crate::mind::retrieval::RetrievalResult,
+    db: &DbState,
+    now_utc: &DateTime<Utc>,
+) -> (String, bool, Option<String>) {
+    let mut rng = rand::thread_rng();
+    if rng.gen_range(0..100) >= ANCHOR_PROB_PERCENT {
+        return (String::new(), false, None);
+    }
+    match mechanical_pick(db, &retrieval.facts, &retrieval.episodes, now_utc) {
+        Some(p) => (p.anchor, true, Some(p.reason)),
+        None => (String::new(), false, None),
+    }
+}
+
 /// B-tier runtime grounding guard (plan B1b / Architecture #3 "memory may
 /// forget, never fabricate"). The proactive prompts already carry the rule-8
 /// "严禁编造" soft constraint (the A-tier fix); this is the runtime backstop.
@@ -191,19 +557,25 @@ pub async fn grounding_guard(
 /// path ("she brings up your past plan the next day") is testable without
 /// constructing AppState / Tauri State.
 ///
-/// Principle 1 (LLM expresses, Rust maintains state): Rust picks the anchor and
-/// assembles the prompt; the LLM only voices it.
-/// Principle 8 (Cost): at most one LLM call per invocation.
+/// Principle 1 (LLM expresses, Rust maintains state): Rust vets the candidate
+/// pool and maintains every ledger/timestamp; the LLM selects or declines, and
+/// voices. Principle 8 (Cost): one flash selector call + one main voice call.
 ///
 /// `memory_ratio` (0-100, percent) is the share of *anchorless-pending* bubbles
 /// that take the memory-anchored branch; the rest go lively. Config-driven
 /// (`[proactive] memory_bubble_ratio`, default 15) — Architecture #6.
+///
+/// `selector_enabled` (`[proactive] enable_llm_selector`, default true) routes
+/// the memory branch through the LLM selector: it may decline everything (the
+/// window stays silent — Architecture #12), pick one candidate with a reason,
+/// or — on failure — degrade to the mechanical round-robin pick.
 pub async fn generate(
     db: &DbState,
     llm: &LlmClient,
     embedding: Option<&EmbeddingService>,
     wm_context: &[ChatMessage],
     memory_ratio: i64,
+    selector_enabled: bool,
 ) -> Result<Option<BubbleOutcome>, String> {
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -260,74 +632,39 @@ pub async fn generate(
                 pending_surface_reason(due_is_pet_promise).to_string(),
             )
         } else {
-            // Round-robin anchor selection (2026-08-14): fewest-surfaced facts
-            // first with a hard 7-day repeat exclusion, then episodes via
-            // sample_surface_anchor (7-day window + round-robin relax). The
-            // picked anchor is recorded as surfaced BEFORE the LLM call so a
-            // concurrent path can't re-pick it (conservative: 宁少勿突兀).
-            let anchor = {
-                let now_utc = Utc::now();
-                let mut rng = rand::thread_rng();
-                // Memory Serendipity (design §7.4): ~1/3 of memory bubbles
-                // (~5% of all bubbles, the design's target ratio) anchor a
-                // WEAKLY-related memory instead of the strongest match —
-                // "天啊，她怎么突然想到这个". Surprise from an unexpected
-                // association, never random noise (the band floor filters
-                // unrelated). Empty band / miss ⇒ normal anchor selection.
-                let serendipity_idx = if rng.gen_range(0..3) == 0 {
-                    crate::mind::retrieval::sample_serendipity_anchor(
-                        &retrieval.episodes,
-                        &mut rng,
-                    )
-                } else {
-                    None
-                };
-                let fact = if serendipity_idx.is_none() {
-                    sample_anchorable_fact(&retrieval.facts, &now_utc)
-                } else {
-                    None
-                };
-                let episode = if let Some(i) = serendipity_idx {
-                    Some(&retrieval.episodes[i].episode)
-                } else if fact.is_none() {
-                    crate::mind::retrieval::sample_surface_anchor(
-                        &retrieval.episodes,
-                        &now_utc,
-                        &mut rng,
-                    )
-                    .map(|i| &retrieval.episodes[i].episode)
-                } else {
-                    None
-                };
-                let anchor: Option<(String, &'static str, &'static str, String)> = match (fact, episode) {
-                    (Some(f), _) => Some((
-                        present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)),
-                        "accompany",
-                        "playful",
-                        fact_surface_reason(f),
-                    )),
-                    (None, Some(ep)) => {
-                        let reason = if serendipity_idx.is_some() {
-                            "不知道为什么突然想到这个".to_string()
-                        } else {
-                            episode_surface_reason(ep, &now_utc)
-                        };
-                        Some((
-                            with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep),
-                            "accompany",
-                            "gentle",
-                            reason,
-                        ))
+            // No due pending. The LLM selector (when enabled) judges whether
+            // ANY candidate is worth spontaneously surfacing — trivial memories
+            // like "喝雪碧" get declined instead of force-voiced (2026-08-16
+            // 续⁴¹: "你喝雪碧的时候我都在看着"). The mechanical round-robin
+            // pick stays as the disabled/failure fallback.
+            let now_utc = Utc::now();
+            let pick: Option<AnchorPick> = if selector_enabled {
+                match selector_pick(
+                    llm,
+                    db,
+                    &retrieval.facts,
+                    &retrieval.episodes,
+                    &emotion,
+                    SelectorTask::Spontaneous,
+                )
+                .await
+                {
+                    Ok(SelectorOutcome::Picked(p)) => Some(p),
+                    Ok(SelectorOutcome::Declined) => {
+                        log::info!("[proactive] selector declined — she stays silent this window");
+                        return Ok(None);
                     }
-                    (None, None) => None,
-                };
-                if anchor.is_some() {
-                    record_anchor_surfaced(db, fact, episode, &now_utc.to_rfc3339());
+                    Ok(SelectorOutcome::Empty) => None,
+                    Err(e) => {
+                        log::warn!("[proactive] selector failed ({}); mechanical pick", e);
+                        mechanical_pick(db, &retrieval.facts, &retrieval.episodes, &now_utc)
+                    }
                 }
-                anchor
+            } else {
+                mechanical_pick(db, &retrieval.facts, &retrieval.episodes, &now_utc)
             };
-            match anchor {
-                Some((a, g, t, r)) => (a, g, t, r),
+            match pick {
+                Some(p) => (p.anchor, p.goal, p.tone, p.reason),
                 None => {
                     // No anchor this turn: fall back to lively rather than staying silent
                     // (user feedback: bubbles should stay lively even without a memory).
@@ -348,10 +685,11 @@ pub async fn generate(
 
     let mut messages =
         crate::mind::budget::allocate_and_compress(&retrieval, wm_context, &emotion, &intent);
-    messages.push(ChatMessage::user(due_bubble_prompt(
-        &memory_anchor,
-        due_is_pet_promise,
-        &anchor_reason,
+    // Cross-bubble continuity: she sees what she last said unprompted.
+    let last_clause = last_bubbles_clause(db, &Utc::now());
+    messages.push(ChatMessage::user(format!(
+        "{last_clause}{}",
+        due_bubble_prompt(&memory_anchor, due_is_pet_promise, &anchor_reason)
     )));
 
     log::info!(
@@ -378,11 +716,20 @@ pub async fn generate(
     let reply = chat_result.content.trim().to_string();
     let reply = grounding_guard(reply, &retrieval, &messages, llm).await;
     match reply {
-        Some(reply) => Ok(Some(BubbleOutcome {
-            reply,
-            anchor: memory_anchor,
-            anchor_reason: Some(anchor_reason),
-        })),
+        Some(reply) => {
+            // Log the outcome so the next window knows what she last said.
+            let kind = if pending_due.is_empty() {
+                "proactive_memory"
+            } else {
+                "due_pending"
+            };
+            log_bubble(db, kind, &reply, &memory_anchor, Some(&anchor_reason));
+            Ok(Some(BubbleOutcome {
+                reply,
+                anchor: memory_anchor,
+                anchor_reason: Some(anchor_reason),
+            }))
+        }
         None => Ok(None),
     }
 }
@@ -508,7 +855,14 @@ pub async fn generate_lively(
 
     let mut messages =
         crate::mind::budget::allocate_and_compress(&retrieval, wm_context, emotion, &intent);
-    messages.push(ChatMessage::user(lively_prompt(emotion, hour)));
+    // Cross-bubble continuity: she sees what she last said unprompted (the
+    // Soul v2 observation item "lively 别和上一条像" finally has its data
+    // source — a static cliché blacklist can't know what she actually said).
+    let last_clause = last_bubbles_clause(db, &Utc::now());
+    messages.push(ChatMessage::user(format!(
+        "{last_clause}{}",
+        lively_prompt(emotion, hour)
+    )));
 
     log::info!(
         "[lively] hour={} tone={} mood={:.2} loneliness={:.2} msgs={}",
@@ -531,6 +885,9 @@ pub async fn generate_lively(
 
     let reply = chat_result.content.trim().to_string();
     let reply = grounding_guard(reply, &retrieval, &messages, llm).await;
+    if let Some(reply) = &reply {
+        log_bubble(db, "lively", reply, "", None);
+    }
     Ok(reply.map(|reply| BubbleOutcome {
         reply,
         anchor: String::new(),
@@ -597,6 +954,13 @@ fn lively_prompt(emotion: &EmotionState, hour: u32) -> String {
 ///     `generate`, no anchor → still speak (a welcome is always worth saying).
 ///   - Never fabricates: the anchor comes only from retrieval (Principle 3).
 ///
+/// Like `generate`: the memory anchor is *optional* (no anchor → still speak,
+/// a welcome is always worth saying) and never fabricated (anchor comes only
+/// from retrieval, Principle #3). With `selector_enabled`, the anchor choice
+/// goes through the LLM selector in Garnish mode — it may attach one
+/// candidate with a reason or return none (pure emotional greeting) instead
+/// of the 25% dice.
+///
 /// `away_secs` scales the prompt ("gone for 2 hours" vs "5 minutes") so the
 /// tone fits the absence. Principle 1 (Rust picks anchor + assembles prompt;
 /// LLM only voices), Principle 8 (at most one LLM call).
@@ -606,6 +970,7 @@ pub async fn generate_welcome_back(
     embedding: Option<&EmbeddingService>,
     wm_context: &[ChatMessage],
     away_secs: u64,
+    selector_enabled: bool,
 ) -> Result<Option<BubbleOutcome>, String> {
     let db_emotion = db.with_conn(crate::db::emotion::get)?;
     let emotion = EmotionState {
@@ -624,42 +989,32 @@ pub async fn generate_welcome_back(
         db,
         8,
     )?;
-    // Optional anchor: only ~25% of welcomes attach a memory (user feedback
-    // 2026-08-14: 不用带那么多记忆) — and only from the fresh pool (never
-    // surfaced / outside the repeat window). No anchor → still a valid pure
-    // emotional greeting. The picked anchor is recorded as surfaced before the
-    // LLM call (round-robin rotation; only THIS anchor is reinforced, not the
-    // whole top-8 — fix for the recall_count/cooldown inflation).
-    let (memory_anchor, has_anchor, anchor_reason): (String, bool, Option<String>) = {
-        let now_utc = Utc::now();
-        let mut rng = rand::thread_rng();
-        if rng.gen_range(0..100) >= ANCHOR_PROB_PERCENT {
-            (String::new(), false, None)
-        } else {
-            let fact = sample_anchorable_fact(&retrieval.facts, &now_utc);
-            let episode = if fact.is_none() {
-                crate::mind::retrieval::sample_surface_anchor(
-                    &retrieval.episodes,
-                    &now_utc,
-                    &mut rng,
-                )
-                .map(|i| &retrieval.episodes[i].episode)
-            } else {
-                None
-            };
-            match (fact, episode) {
-                (Some(f), _) => {
-                    record_anchor_surfaced(db, Some(f), None, &now_utc.to_rfc3339());
-                    (present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)), true, Some(fact_surface_reason(f)))
+    // Optional anchor: the selector (Garnish) decides whether a memory rides
+    // along; decline / empty pool / dice-miss → anchorless pure greeting.
+    // Never fabricated (anchor comes only from retrieval, Principle #3).
+    let now_utc = Utc::now();
+    let (memory_anchor, has_anchor, anchor_reason): (String, bool, Option<String>) =
+        if selector_enabled {
+            match selector_pick(
+                llm,
+                db,
+                &retrieval.facts,
+                &retrieval.episodes,
+                &emotion,
+                SelectorTask::Garnish,
+            )
+            .await
+            {
+                Ok(SelectorOutcome::Picked(p)) => (p.anchor, true, Some(p.reason)),
+                Ok(_) => (String::new(), false, None),
+                Err(e) => {
+                    log::warn!("[welcome_back] selector failed ({}); anchor dice", e);
+                    anchor_dice(&retrieval, db, &now_utc)
                 }
-                (None, Some(ep)) => {
-                    record_anchor_surfaced(db, None, Some(ep), &now_utc.to_rfc3339());
-                    (with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep), true, Some(episode_surface_reason(ep, &now_utc)))
-                }
-                (None, None) => (String::new(), false, None),
             }
-        }
-    };
+        } else {
+            anchor_dice(&retrieval, db, &now_utc)
+        };
 
     // Tone tracks mood: a high-mood pet greets playfully, otherwise gentle.
     let tone: &str = if emotion.mood >= 0.65 { "playful" } else { "gentle" };
@@ -710,8 +1065,9 @@ pub async fn generate_welcome_back(
             String::new()
         }
     };
+    let last_clause = last_bubbles_clause(db, &Utc::now());
     messages.push(ChatMessage::user(format!(
-        "（对方离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}{thought_clause}这条不一定要问问题——大多数时候就是一句带着温度的陈述，真的好奇最多一个问句。简短自然，1-2 句，像个真的在等 ta 回来的人。称呼对方用「你」，不要用「用户」。按规则回复。）"
+        "{last_clause}（对方离开了 {absence_phrase}，刚刚回来。你注意到 ta 回来了，想自然地打个招呼。{anchor_clause}{thought_clause}这条不一定要问问题——大多数时候就是一句带着温度的陈述，真的好奇最多一个问句。简短自然，1-2 句，像个真的在等 ta 回来的人。称呼对方用「你」，不要用「用户」。按规则回复。）"
     )));
 
     log::info!(
@@ -738,11 +1094,14 @@ pub async fn generate_welcome_back(
     let reply = chat_result.content.trim().to_string();
     let reply = grounding_guard(reply, &retrieval, &messages, llm).await;
     match reply {
-        Some(reply) => Ok(Some(BubbleOutcome {
-            reply,
-            anchor: memory_anchor,
-            anchor_reason,
-        })),
+        Some(reply) => {
+            log_bubble(db, "welcome_back", &reply, &memory_anchor, anchor_reason.as_deref());
+            Ok(Some(BubbleOutcome {
+                reply,
+                anchor: memory_anchor,
+                anchor_reason,
+            }))
+        }
         None => Ok(None),
     }
 }
@@ -765,6 +1124,7 @@ pub async fn generate_lonely_bubble(
     llm: &LlmClient,
     embedding: Option<&EmbeddingService>,
     wm_context: &[ChatMessage],
+    selector_enabled: bool,
 ) -> Result<Option<BubbleOutcome>, String> {
     let db_emotion = db.with_conn(crate::db::emotion::get)?;
     let emotion = EmotionState {
@@ -783,41 +1143,32 @@ pub async fn generate_lonely_bubble(
         db,
         8,
     )?;
-    // Optional anchor: only ~25% of lonely nudges attach a memory (user
-    // feedback 2026-08-14: 不用带那么多记忆), and only from the fresh pool.
-    // No anchor → still a valid "just thinking of you". The picked anchor is
-    // recorded as surfaced before the LLM call; only THIS anchor is reinforced
-    // (not the whole top-8 — fix for recall_count/cooldown inflation).
-    let (memory_anchor, has_anchor, anchor_reason): (String, bool, Option<String>) = {
-        let now_utc = Utc::now();
-        let mut rng = rand::thread_rng();
-        if rng.gen_range(0..100) >= ANCHOR_PROB_PERCENT {
-            (String::new(), false, None)
-        } else {
-            let fact = sample_anchorable_fact(&retrieval.facts, &now_utc);
-            let episode = if fact.is_none() {
-                crate::mind::retrieval::sample_surface_anchor(
-                    &retrieval.episodes,
-                    &now_utc,
-                    &mut rng,
-                )
-                .map(|i| &retrieval.episodes[i].episode)
-            } else {
-                None
-            };
-            match (fact, episode) {
-                (Some(f), _) => {
-                    record_anchor_surfaced(db, Some(f), None, &now_utc.to_rfc3339());
-                    (present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)), true, Some(fact_surface_reason(f)))
+    // Optional anchor: the selector (Garnish) decides whether a memory rides
+    // along; decline / empty pool / dice-miss → pure "just thinking of you".
+    // No anchor → still a valid nudge. Never fabricated (retrieval-only).
+    let now_utc = Utc::now();
+    let (memory_anchor, has_anchor, anchor_reason): (String, bool, Option<String>) =
+        if selector_enabled {
+            match selector_pick(
+                llm,
+                db,
+                &retrieval.facts,
+                &retrieval.episodes,
+                &emotion,
+                SelectorTask::Garnish,
+            )
+            .await
+            {
+                Ok(SelectorOutcome::Picked(p)) => (p.anchor, true, Some(p.reason)),
+                Ok(_) => (String::new(), false, None),
+                Err(e) => {
+                    log::warn!("[lonely_nudge] selector failed ({}); anchor dice", e);
+                    anchor_dice(&retrieval, db, &now_utc)
                 }
-                (None, Some(ep)) => {
-                    record_anchor_surfaced(db, None, Some(ep), &now_utc.to_rfc3339());
-                    (with_emotion_anchor(present_anchor(&ep.summary, Some(&ep.time)), ep), true, Some(episode_surface_reason(ep, &now_utc)))
-                }
-                (None, None) => (String::new(), false, None),
             }
-        }
-    };
+        } else {
+            anchor_dice(&retrieval, db, &now_utc)
+        };
 
     // Tone tracks mood: a high-mood pet nudges playfully, otherwise gentle.
     let tone: &str = if emotion.mood >= 0.65 { "playful" } else { "gentle" };
@@ -844,8 +1195,9 @@ pub async fn generate_lonely_bubble(
         String::new()
     };
 
+    let last_clause = last_bubbles_clause(db, &Utc::now());
     messages.push(ChatMessage::user(format!(
-        "（你一个人待了一会儿，有点想 ta。ta 就在旁边但没说话，你想轻轻戳一下 ta——不是催 ta 回复，也不是有事要说，就是想让 ta 知道你在。{anchor_clause}只说 1 句，简短、自然、别黏人、这句最好连问句都别带，一句带温度的陈述就好。按规则回复，尤其规则 8 严禁编造。）"
+        "{last_clause}（你一个人待了一会儿，有点想 ta。ta 就在旁边但没说话，你想轻轻戳一下 ta——不是催 ta 回复，也不是有事要说，就是想让 ta 知道你在。{anchor_clause}只说 1 句，简短、自然、别黏人、这句最好连问句都别带，一句带温度的陈述就好。按规则回复，尤其规则 8 严禁编造。）"
     )));
 
     log::info!(
@@ -871,11 +1223,14 @@ pub async fn generate_lonely_bubble(
     let reply = chat_result.content.trim().to_string();
     let reply = grounding_guard(reply, &retrieval, &messages, llm).await;
     match reply {
-        Some(reply) => Ok(Some(BubbleOutcome {
-            reply,
-            anchor: memory_anchor,
-            anchor_reason,
-        })),
+        Some(reply) => {
+            log_bubble(db, "lonely_nudge", &reply, &memory_anchor, anchor_reason.as_deref());
+            Ok(Some(BubbleOutcome {
+                reply,
+                anchor: memory_anchor,
+                anchor_reason,
+            }))
+        }
         None => Ok(None),
     }
 }
@@ -891,20 +1246,7 @@ pub async fn generate_lonely_bubble(
 /// whole pool is inside the window, returns None (caller falls back to
 /// episodes → lively rather than repeat a memory).
 pub fn sample_anchorable_fact<'a>(facts: &'a [Fact], now: &DateTime<Utc>) -> Option<&'a Fact> {
-    let fresh: Vec<&Fact> = facts
-        .iter()
-        .filter(|f| is_anchorable_fact(f))
-        .filter(|f| !surfaced_recently(f, now))
-        .collect();
-    if fresh.is_empty() {
-        return None;
-    }
-    fresh.into_iter().min_by(|a, b| {
-        a.surfaced_count
-            .cmp(&b.surfaced_count)
-            .then_with(|| a.last_surfaced_at.cmp(&b.last_surfaced_at))
-            .then_with(|| a.mention_count.cmp(&b.mention_count))
-    })
+    fresh_anchorable_facts(facts, now).into_iter().next()
 }
 
 /// Whether a fact was surfaced within the hard repeat window (7 days).
@@ -1309,5 +1651,139 @@ mod tests {
             300,
         );
         assert!(result.is_some());
+    }
+
+    fn make_fact(id: &str, key: &str, confidence: f64, surfaced: i64, last: Option<&str>) -> Fact {
+        Fact {
+            id: id.to_string(),
+            category: "preference".to_string(),
+            key: key.to_string(),
+            value: "value".to_string(),
+            confidence,
+            valid_from: None,
+            valid_to: None,
+            source_episode: None,
+            mention_count: 1,
+            created_at: "2026-07-01T00:00:00+00:00".to_string(),
+            updated_at: "2026-07-01T00:00:00+00:00".to_string(),
+            surfaced_count: surfaced,
+            last_surfaced_at: last.map(|s| s.to_string()),
+        }
+    }
+
+    fn make_scored_episode(id: &str, summary: &str, score: f64, last_recalled: Option<&str>) -> ScoredEpisode {
+        ScoredEpisode {
+            episode: crate::db::episodes::Episode {
+                id: id.to_string(),
+                time: "2026-08-01T00:00:00+00:00".to_string(),
+                summary: summary.to_string(),
+                emotion: Some("开心".to_string()),
+                importance: 0.7,
+                is_landmark: false,
+                subject: "user".to_string(),
+                participants: None,
+                topics: None,
+                source_type: "conversation".to_string(),
+                source_conversation_id: None,
+                source_turn: None,
+                memory_strength: 0.7,
+                recall_count: 0,
+                last_recalled_at: last_recalled.map(|s| s.to_string()),
+                consolidated: false,
+                created_at: "2026-08-01T00:00:00+00:00".to_string(),
+                emotion_anchor: None,
+            },
+            score,
+            score_breakdown: Default::default(),
+        }
+    }
+
+    #[test]
+    fn test_build_candidate_pool_filters_caps_and_ids() {
+        let now = Utc::now();
+        let in_window = (now - chrono::Duration::days(1)).to_rfc3339();
+        // 6 fresh anchorable facts → capped at 4; plus one windowed and one
+        // low-confidence fact → both hard-excluded.
+        let mut facts: Vec<Fact> = (0..6)
+            .map(|i| make_fact(&format!("f{i}"), &format!("k{i}"), 0.9, 0, None))
+            .collect();
+        facts.push(make_fact("windowed", "kw", 0.9, 1, Some(&in_window)));
+        facts.push(make_fact("lowconf", "kl", 0.5, 0, None));
+        // One fresh episode, one in-cooldown episode. Scores stay above the
+        // serendipity band so the 1/3 roll can never add a surprise candidate
+        // (determinism).
+        let episodes = vec![
+            make_scored_episode("ep_fresh", "在准备找实习", 0.81, None),
+            make_scored_episode("ep_cool", "上周已提过", 0.7, Some(&in_window)),
+        ];
+        let pool = build_candidate_pool(&facts, &episodes, &now);
+        let fact_ids: Vec<&str> = pool.iter().map(|(c, _)| c.id.as_str()).collect();
+        assert_eq!(fact_ids.iter().filter(|i| i.starts_with("fact:")).count(), 4, "facts capped at 4");
+        assert!(fact_ids.contains(&"fact:f0"), "fresh fact in pool: {:?}", fact_ids);
+        assert!(!fact_ids.iter().any(|i| i.contains("windowed")), "repeat-window fact excluded");
+        assert!(!fact_ids.iter().any(|i| i.contains("lowconf")), "low-confidence fact excluded");
+        assert!(fact_ids.contains(&"ep:ep_fresh"), "fresh episode in pool: {:?}", fact_ids);
+        assert!(!fact_ids.iter().any(|i| i.contains("ep_cool")), "cooldown episode excluded");
+        // Candidate text carries the deictic-neutralized anchor + date ref.
+        let (fresh_fact_candidate, _) = pool.iter().find(|(c, _)| c.id == "fact:f0").unwrap();
+        assert!(fresh_fact_candidate.text.contains("k0: value"));
+        assert!(fresh_fact_candidate.text.contains("7月1日"), "date reference attached");
+    }
+
+    #[test]
+    fn test_pick_from_pool_resolves_and_records() {
+        let db = crate::db::test_utils::test_db();
+        let now = Utc::now();
+        // Seed a real fact row so the surfacing ledger bump lands.
+        let fact = make_fact("f_real", "goal", 0.9, 0, None);
+        db.with_conn(|conn| crate::db::facts::dedup_insert(conn, &fact)).unwrap();
+        let facts = vec![fact];
+        let episodes = vec![make_scored_episode("ep_real", "和糯米去猫咖", 0.7, None)];
+        let pool = build_candidate_pool(&facts, &episodes, &now);
+
+        let pick = pick_from_pool(&pool, "fact:f_real", "她一直惦记".to_string(), &db, &now).unwrap();
+        assert_eq!(pick.goal, "accompany");
+        assert_eq!(pick.tone, "playful");
+        assert_eq!(pick.reason, "她一直惦记");
+        assert!(pick.fact.is_some());
+
+        // The ledger was written BEFORE the voicing call would run.
+        let after: Vec<Fact> = db.with_conn(|conn| crate::db::facts::get_all(conn)).unwrap();
+        assert_eq!(after[0].surfaced_count, 1, "surfaced_count bumped on pick");
+
+        // Episode resolution takes the gentle voice.
+        let pick_ep = pick_from_pool(&pool, "ep:ep_real", "带着当时的氛围".to_string(), &db, &now).unwrap();
+        assert_eq!(pick_ep.tone, "gentle");
+        assert!(pick_ep.episode.is_some());
+
+        // Unknown id → None (never guess).
+        assert!(pick_from_pool(&pool, "fact:zz", String::new(), &db, &now).is_none());
+    }
+
+    #[test]
+    fn test_last_bubbles_clause_empty_then_formatted() {
+        let db = crate::db::test_utils::test_db();
+        let now = Utc::now();
+        assert_eq!(last_bubbles_clause(&db, &now), "", "no bubbles yet → no clause");
+        let earlier = (now - chrono::Duration::hours(3)).to_rfc3339();
+        db.with_conn(|conn| {
+            crate::db::bubble_log::insert(conn, "lively", "窗外好像下雨了", "", None, &earlier)?;
+            crate::db::bubble_log::insert(
+                conn,
+                "proactive_memory",
+                "面试加油呀，我一直惦记着",
+                "在准备找实习",
+                Some("她一直惦记"),
+                &(now - chrono::Duration::hours(1)).to_rfc3339(),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let clause = last_bubbles_clause(&db, &now);
+        assert!(clause.contains("面试加油呀"), "most recent bubble text present: {clause}");
+        assert!(clause.contains("窗外好像下雨了"), "second-most-recent present: {clause}");
+        assert!(clause.contains("1 小时前"), "relative time present: {clause}");
+        assert!(clause.contains("锚定"), "anchor label present: {clause}");
+        assert!(clause.contains("别重复"), "anti-repeat instruction present");
     }
 }

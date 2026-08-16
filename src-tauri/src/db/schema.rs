@@ -54,6 +54,15 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         log::info!("Migration v5 applied successfully");
     }
 
+    let current_version = get_schema_version(conn)?;
+    if current_version < 6 {
+        log::info!("Running migration v6 (proactive bubble log)...");
+        let sql = include_str!("../../migrations/006_bubble_log.sql");
+        conn.execute_batch(sql)
+            .map_err(|e| format!("Migration v6 failed: {}", e))?;
+        log::info!("Migration v6 applied successfully");
+    }
+
     Ok(())
 }
 
@@ -91,11 +100,11 @@ mod tests {
     fn test_migration_runs_once() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 5);
+        assert_eq!(get_schema_version(&conn).unwrap(), 6);
 
         // Running again should be a no-op
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 5);
+        assert_eq!(get_schema_version(&conn).unwrap(), 6);
     }
 
     #[test]
@@ -118,6 +127,7 @@ mod tests {
             "change_log",
             "episode_vectors",
             "relationship_reviews",
+            "bubble_log",
         ];
 
         for table in &expected {

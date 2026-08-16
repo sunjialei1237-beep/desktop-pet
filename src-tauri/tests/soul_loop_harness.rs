@@ -159,7 +159,7 @@ async fn welcome_back_consumes_surfaced_thought() {
     );
 
     // 330s away ≈ the welcome-back scenario (5.5min absence).
-    let outcome = proactive::generate_welcome_back(&db, &llm, None, &[], 330)
+    let outcome = proactive::generate_welcome_back(&db, &llm, None, &[], 330, false)
         .await
         .expect("generate_welcome_back errored");
 

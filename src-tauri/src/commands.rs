@@ -590,6 +590,7 @@ pub async fn proactive_bubble(
         Some(&state.embedding),
         &wm_context,
         state.config.proactive.memory_bubble_ratio,
+        state.config.proactive.enable_llm_selector,
     )
     .await?;
     Ok(outcome.map(|o| o.reply))
@@ -630,6 +631,7 @@ pub async fn welcome_back_bubble(
             Some(&state.embedding),
             &wm_context,
             away_secs,
+            state.config.proactive.enable_llm_selector,
         )
         .await?;
         if let Some(o) = outcome {
@@ -811,6 +813,7 @@ pub async fn lonely_bubble(
             &llm,
             Some(&state.embedding),
             &wm_context,
+            state.config.proactive.enable_llm_selector,
         )
         .await?;
         if let Some(o) = outcome {
