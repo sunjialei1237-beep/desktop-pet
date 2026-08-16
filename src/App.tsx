@@ -1426,7 +1426,8 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       // (win.startDragging) is deliberately NOT used — it moves the window in
       // lockstep with the pointer past the screen boundary (head off-screen =
       // 穿模) and cannot be clamped. Instead the global-cursor pipeline
-      // (60Hz, GetAsyncKeyState) drives the window to a clamped target below,
+      // (125Hz while the button is held, GetAsyncKeyState) drives the window
+      // to a clamped target below,
       // so the pet's body can never leave the monitor.
       dragStarted = true;
       wasDraggedRef.current = true;
