@@ -108,37 +108,51 @@ fn medium_tick(app: &AppHandle) {
         // hours" used to fire unconditionally — stacking with the 早安 ritual
         // (which runs later in this same tick) and the Soul startup thought.
         // Yield rules, mirroring check_presence_transition's welcome-back:
-        // 1. Morning/Afternoon + rituals enabled → 早安 owns the greeting
-        //    (more specific, date-driven). Skip the canned.
-        // 2. Otherwise pass the shared bubble budget like every proactive
-        //    emit (previously missing entirely on this path).
+        // 1. Morning/Afternoon + rituals enabled + 早安 due (fires later in
+        //    this same tick) → the ritual owns this restart's greeting.
+        // 2. Otherwise the canned fires (user-initiated restart, rate-limited
+        //    by the 5-min suspend threshold) and OCCUPIES the shared budget
+        //    so nothing proactive stacks after it.
         let tod = crate::perception::time::current_time_of_day();
         let morning_window = matches!(
             tod,
             crate::perception::time::TimeOfDay::Morning
                 | crate::perception::time::TimeOfDay::Afternoon
         );
-        // When rituals are enabled and we're in the greeting window, 早安 owns
-        // today's greeting whether it is due (fires later in this same tick) or
-        // already done — either way the canned would stack on top of it.
+        // Yield ONLY when 早安 is due (it fires later in this same tick and is
+        // the more specific, date-driven greeting). When 早安 already fired
+        // earlier today, a later relaunch still deserves a (diversified,
+        // local-pool) greeting — the shared bubble budget below keeps them
+        // spaced from the morning's 早安.
         let rituals_enabled = app
             .try_state::<AppState>()
             .map(|s| s.config.scheduler.enable_rituals)
             .unwrap_or(true);
-        let goodmorning_owns = morning_window && rituals_enabled;
-        if goodmorning_owns {
+        let goodmorning_due = morning_window
+            && rituals_enabled
+            && get_db(app)
+                .and_then(|db| {
+                    db.with_conn(|conn| Ok(crate::soul::ritual::should_run_goodmorning(conn)))
+                        .ok()
+                })
+                .unwrap_or(false);
+        if goodmorning_due {
             log::info!(
-                "Life loop: suspend/resume ({:.0}s), 早安 owns today's greeting — skipping canned resume bubble",
-                elapsed
-            );
-        } else if !bubble_budget_ok(app) {
-            log::info!(
-                "Life loop: suspend/resume ({:.0}s), bubble budget held — skipping canned resume bubble",
+                "Life loop: suspend/resume ({:.0}s), 早安 due this tick owns the greeting — skipping canned resume bubble",
                 elapsed
             );
         } else {
+            // A restart greeting is user-initiated (they relaunched the app)
+            // and rate-limited by the 5-min suspend threshold itself, so it
+            // bypasses the interval CHECK — but still OCCUPIES the budget
+            // (occupy_budget_always, same semantics as the rituals): any
+            // proactive bubble that would stack right after the restart gets
+            // pushed back instead (single-greeting coordination, 2026-08-16).
+            if let Some(db) = get_db(app) {
+                crate::pending::budget::occupy_budget_always(&db);
+            }
             log::info!(
-                "Life loop: suspend/resume detected ({:.0}s elapsed), catching up",
+                "Life loop: suspend/resume detected ({:.0}s elapsed), greeting from local pool",
                 elapsed
             );
             // Signal frontend that the pet woke up after a long absence.

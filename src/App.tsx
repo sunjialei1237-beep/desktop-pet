@@ -18,6 +18,7 @@ import { sound, INTIMATE_THRESHOLD } from "./audio/soundManager";
 import { PetBubble } from "./components/PetBubble";
 import { ThinkingOrb } from "thinking-orbs";
 import type { BubbleEmotion, GlyphKind } from "./animation/bubbleVariants";
+import { pickGreeting } from "./greetings";
 
 interface EmotionData {
   mood: number;
@@ -193,34 +194,39 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     }
     return lastHeldPosRef.current;
   };
-  // Keep the pet's BODY fully on-screen: screen edges act as walls. The Tauri
-  // window (400×760) is wider than the model, so the window's left/right edges
-  // may sit slightly off-screen — up to the point where the model itself would
-  // leave the monitor (model fully visible, head/feet/arms all grabbable).
-  // The TOP is clamped to y≥0 (window never off-screen at the top): releasing
-  // with the top edge above the screen makes Windows snap the window back to
-  // y=0 (a visible bounce), so the top "wall" stops her before that can ever
-  // happen. The BOTTOM wall is the work-area floor (taskbar top), so her feet
-  // rest on the taskbar instead of sliding behind it.
+  // Keep the pet's BODY on-screen: screen edges act as walls, and they hug the
+  // VISUAL body (visualBoundsRef, no padding) so the head can touch the screen
+  // top and the feet the taskbar top. The Tauri window (400×760) is taller and
+  // wider than the model, so its edges may sit off-screen — up to the point
+  // where the body itself would leave the monitor (body fully visible, head/
+  // feet/arms all grabbable). The TOP wall lets the window's top edge (bubble
+  // zone + canvas slack above her head) go off-screen so her HEAD reaches the
+  // screen top; the manual drag pipeline (draggingRef — no OS startDragging,
+  // hence no system move loop) makes this safe, and if a Windows release-time
+  // top-clamp ever does fire, the snap-undo paths restore immediately. The
+  // BOTTOM wall is the work-area floor (taskbar top), so her feet rest on the
+  // taskbar instead of sliding behind it.
   // Without all of this she can be parked half-off-screen where the head is
   // unreachable and the pet can't be dragged (用户: "上半身出去了,没法拖动,穿模").
   // Returns the input unchanged when geometry isn't ready yet.
   const clampModelToScreen = (pos: { x: number; y: number }): { x: number; y: number } => {
     const canvas = canvasRectRef.current;
-    const mb = modelBoundsRef.current;
+    // Prefer the visual rect; the padded click-through rect (fallback before
+    // SpineCanvas reports) keeps an air gap at every wall.
+    const mb = visualBoundsRef.current ?? modelBoundsRef.current;
     if (!canvas || !mb) return pos; // geometry not reported yet — no clamp
     const screen = screenSizeRef.current;
-    // Model rect inside the window (viewport coords, logical px).
+    // Body rect inside the window (viewport coords, logical px).
     const mLeft = canvas.left + mb.x;
     const mTop = canvas.top + mb.y;
     const mRight = mLeft + mb.width;
     const mBottom = mTop + mb.height;
-    // Window top-left (logical) that keeps the model within the monitor.
+    // Window top-left (logical) that keeps the body within the monitor.
     const minX = -mLeft;
     const maxX = screen.w - mRight;
-    const minY = 0; // top wall: never off-screen (no OS snap bounce)
+    const minY = -mTop; // top wall: HEAD at screen top (window top may be off-screen)
     const floor = floorYRef.current > 0 ? floorYRef.current : screen.h;
-    const maxY = floor - mBottom;
+    const maxY = floor - mBottom; // bottom wall: FEET on the taskbar top
     return {
       x: maxX >= minX ? Math.min(Math.max(pos.x, minX), maxX) : pos.x,
       y: maxY >= minY ? Math.min(Math.max(pos.y, minY), maxY) : pos.y,
@@ -377,6 +383,16 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // click hit testing (kept separate from the loose gaze/through rect).
   const handleModelHitBounds = useCallback((b: { x: number; y: number; width: number; height: number }) => {
     modelHitBoundsRef.current = b;
+  }, []);
+
+  // Visual body rect (NO padding), canvas-local CSS px — drives the drag
+  // screen walls. The padded click-through rect (modelBoundsRef) would keep an
+  // air gap: PAD+TOP_BIAS above the head and PAD below the feet, so the head
+  // could never touch the screen top nor the feet the taskbar (用户 2026-08-16:
+  // "头顶/脚底像有空气墙").
+  const visualBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  const handleVisualBounds = useCallback((b: { x: number; y: number; width: number; height: number }) => {
+    visualBoundsRef.current = b;
   }, []);
 
   // PetBubble reports its viewport rect here (CSS px) so the global-cursor
@@ -543,9 +559,14 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     listen<{ status: string; elapsed_secs: number }>("app-status", (event) => {
       if (event.payload.status === "resumed") {
-        const hours = Math.round(event.payload.elapsed_secs / 3600);
-        const msg = hours > 1 ? `我睡了${hours}个小时……你回来啦~` : "你回来啦~";
-        showBubble(msg, 8000, "bubble-calm");
+        // Diversified local greeting pool (zero LLM, cost control — replaces
+        // the old single hardcoded "我睡了N个小时" template). Bucketed by
+        // away duration + time-of-day flavor, no immediate repeats.
+        const line = pickGreeting({
+          awayHours: event.payload.elapsed_secs / 3600,
+          hourOfDay: new Date().getHours(),
+        });
+        showBubble(line, 8000, "bubble-calm");
       }
     }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
@@ -823,12 +844,19 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
         logical.y > held.y + SNAP_GAP
       ) {
         const restore = clampModelToScreen(held);
-        lastSnapRestoreRef.current = { held: restore, snapped: logical, at: Date.now() };
-        console.warn("[drag] OS top-clamp snap undone", { held: restore, snapped: logical });
-        petPosRef.current = restore;
-        win.setPosition(new LogicalPosition(restore.x, restore.y)).catch((err) =>
-          console.warn("[drag] snap-undo setPosition failed", err),
-        );
+        // Only act if it actually moves the window — otherwise this is the
+        // wall-clamp false positive (cursor kept going past the wall while she
+        // stayed pinned at the clamped target), not an OS snap. y<0 is a
+        // NORMAL parked position now (top wall = head at screen top), so this
+        // guard keeps the path quiet for ordinary top-edge releases.
+        if (Math.abs(restore.x - logical.x) > 0.5 || Math.abs(restore.y - logical.y) > 0.5) {
+          lastSnapRestoreRef.current = { held: restore, snapped: logical, at: Date.now() };
+          console.warn("[drag] OS top-clamp snap undone", { held: restore, snapped: logical });
+          petPosRef.current = restore;
+          win.setPosition(new LogicalPosition(restore.x, restore.y)).catch((err) =>
+            console.warn("[drag] snap-undo setPosition failed", err),
+          );
+        }
       }
       // Throttle the click-through origin refresh: it does an async
       // outerPosition IPC per move, which floods during fast motion
@@ -1245,6 +1273,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       dragging: draggingRef.current,
       canvas: canvasRectRef.current,
       modelBounds: modelBoundsRef.current,
+      visualBounds: visualBoundsRef.current,
       screenSize: screenSizeRef.current,
       fallLimitBottom: Math.round(fallLimitBottomRef.current),
       floorY: Math.round(floorYRef.current),
@@ -1721,10 +1750,19 @@ const handleBodyClick = useCallback(() => {
     setTimeout(() => { void invoke("quit_app"); }, 400);
   }, [showBubble]);
 
+  // Bubble/orb placement mode: when the window is parked with its top edge
+  // off-screen (head at the screen top — the top wall), the default above-head
+  // spots render entirely above the visible screen, so both flip below her
+  // head. Evaluated at render time from petPosRef — every bubble show and both
+  // drag boundaries (drag start/end setState) trigger renders, so it's fresh
+  // whenever placement can change. -6px grace: at borderline parks the tallest
+  // bubble loses ≤6 off-screen px, not worth flipping for.
+  const bubbleBelow = (petPosRef.current?.y ?? 0) < -6;
+
   return (
     <div className="pet-container" onContextMenu={handleContextMenu}>
       {isThinking && (
-        <div className="thinking-orb">
+        <div className={`thinking-orb${bubbleBelow ? " thinking-orb--below" : ""}`}>
           <ThinkingOrb state={THINKING_ORB_STATE} size={THINKING_ORB_SIZE} theme="auto" />
         </div>
       )}
@@ -1761,6 +1799,7 @@ const handleBodyClick = useCallback(() => {
         bubbleId={bubbleId}
         variant={bubbleStyle}
         mode={glyphKind !== undefined || bubbleStyle === "bubble-glyph" ? "glyph" : "speech"}
+        below={bubbleBelow}
         className={bubblePos}
         onBubbleBounds={handleBubbleBounds}
       />
@@ -1787,6 +1826,7 @@ const handleBodyClick = useCallback(() => {
       onBodyClick={handleBodyClick}
       onModelBounds={handleModelBounds}
       onModelHitBounds={handleModelHitBounds}
+      onVisualBounds={handleVisualBounds}
     />
     {/* Click-through boundary visualization (AIRI-style). Hidden by default;
         gains .bounds-visible when the cursor is near the model rect's outline
