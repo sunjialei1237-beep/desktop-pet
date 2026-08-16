@@ -136,11 +136,23 @@ pub fn run() {
                 }
             }
 
-            // Backfill embeddings for episodes stored before the model was
+            // Reconcile stored episode vectors with the active embedding model
+            // (fp32 -> int8 transition clears the table; see store.rs), then
+            // backfill embeddings for episodes stored before the model was
             // available (first time BGE-M3 is enabled on an existing DB). Runs
             // on a background thread so it never blocks startup.
             if let Some(app_state) = app.try_state::<crate::commands::AppState>() {
                 if app_state.embedding.is_ready() {
+                    if let Some(db_state) = app.try_state::<db::DbState>() {
+                        if let Some(model_key) = app_state.embedding.model_key() {
+                            if let Err(e) = crate::mind::store::reconcile_vectors_for_model(
+                                &db_state,
+                                &model_key,
+                            ) {
+                                log::warn!("[startup] embedding vector reconciliation failed: {}", e);
+                            }
+                        }
+                    }
                     let h = app.handle().clone();
                     std::thread::spawn(move || {
                         let state = h.state::<crate::commands::AppState>();

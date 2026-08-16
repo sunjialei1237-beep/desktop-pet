@@ -15,6 +15,10 @@ use std::sync::{Arc, Mutex};
 pub struct EmbeddingService {
     model: Mutex<Option<Arc<Mutex<EmbeddingModel>>>>,
     model_dir: PathBuf,
+    /// App-config key of the currently loaded model (fp32/int8). Used at
+    /// startup to reconcile stored episode vectors with the active vector
+    /// space (P1 memory reduction: switching fp32 -> int8 must re-embed).
+    model_key: Mutex<Option<String>>,
 }
 
 impl EmbeddingService {
@@ -24,6 +28,7 @@ impl EmbeddingService {
         EmbeddingService {
             model: Mutex::new(None),
             model_dir: model_dir.to_path_buf(),
+            model_key: Mutex::new(None),
         }
     }
 
@@ -31,9 +36,13 @@ impl EmbeddingService {
     /// Safe to call on a shared reference (uses interior mutability).
     pub fn load(&self) -> Result<()> {
         let model = EmbeddingModel::load(&self.model_dir)?;
+        let key = model.model_key();
         let mut guard = self.model.lock()
             .map_err(|e| EmbeddingError::Onnx(format!("Service lock: {}", e)))?;
         *guard = Some(Arc::new(Mutex::new(model)));
+        if let Ok(mut key_guard) = self.model_key.lock() {
+            *key_guard = Some(key);
+        }
         log::info!("EmbeddingService model loaded");
         Ok(())
     }
@@ -41,6 +50,11 @@ impl EmbeddingService {
     /// Returns true if the model is loaded and ready for inference.
     pub fn is_ready(&self) -> bool {
         self.model.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
+    /// Returns the app-config key of the loaded model, when ready.
+    pub fn model_key(&self) -> Option<String> {
+        self.model_key.lock().ok().and_then(|g| g.clone())
     }
 
     /// Embeds a single text. Returns an error if the model isn't loaded.

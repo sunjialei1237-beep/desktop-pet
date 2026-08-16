@@ -10,6 +10,48 @@ use crate::mind::memory_gate;
 use chrono::Utc;
 use uuid::Uuid;
 
+/// App-config key recording which embedding model produced the stored
+/// episode vectors (`bge-m3-fp32` / `bge-m3-int8`).
+pub const EMBEDDING_MODEL_KEY: &str = "embedding_model_key";
+
+/// Reconciles stored episode vectors with the active embedding model.
+///
+/// fp32 and int8 BGE-M3 produce slightly different vector spaces. Mixing them
+/// (query embedded by the int8 model, stored vectors produced by the fp32
+/// model) shifts the cosine distribution enough to silently perturb
+/// threshold-based behavior (serendipity band [0.15, 0.45], grounding checks).
+/// The fix is free for this corpus size: clear the vectors table, let the
+/// existing `backfill_missing_vectors` re-embed everything, and record which
+/// model produced them.
+///
+/// Returns true when vectors were cleared (caller should re-run backfill).
+pub fn reconcile_vectors_for_model(db: &DbState, model_key: &str) -> Result<bool, String> {
+    let current = db.with_conn(|conn| crate::db::onboarding::get(conn, EMBEDDING_MODEL_KEY))?;
+    if current.as_deref() == Some(model_key) {
+        log::info!(
+            "[embedding] vector space matches model key '{}', no re-embed needed",
+            model_key
+        );
+        return Ok(false);
+    }
+
+    let cleared = db.with_conn(|conn| {
+        let n = conn
+            .execute("DELETE FROM episode_vectors", [])
+            .map_err(|e| format!("clear episode_vectors: {}", e))?;
+        crate::db::onboarding::save(conn, EMBEDDING_MODEL_KEY, model_key)?;
+        Ok(n)
+    })?;
+
+    log::info!(
+        "[embedding] model key changed ({} -> '{}'); cleared {} vector(s) for re-embed",
+        current.as_deref().unwrap_or("<none>"),
+        model_key,
+        cleared
+    );
+    Ok(cleared > 0)
+}
+
 /// Backfills embeddings for episodes stored BEFORE the embedding model was
 /// available — i.e. the first time BGE-M3 is enabled on a DB that already has
 /// memories. Embeds the summary of every episode that has no vector yet and

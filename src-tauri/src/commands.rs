@@ -1005,8 +1005,8 @@ pub async fn download_embedding_model(
     let model_dir = state.embedding.model_dir().to_path_buf();
     let downloader = ModelDownloader::new(&model_dir);
 
-    if downloader.check_complete() {
-        log::info!("Embedding model already downloaded");
+    if downloader.quantized_complete() {
+        log::info!("Embedding model (quantized) already downloaded");
         if !state.embedding.is_ready() {
             state.embedding.load().map_err(|e| format!("{}", e))?;
         }
@@ -1038,6 +1038,24 @@ pub async fn download_embedding_model(
 
     log::info!("Embedding model downloaded, loading into memory");
     state.embedding.load().map_err(|e| format!("Load failed: {}", e))?;
+
+    // The active vector space may have changed (fp32 -> int8): reconcile
+    // stored vectors and re-embed on a background thread, same as startup.
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        let db = app2.state::<DbState>();
+        let app_state = app2.state::<AppState>();
+        if let Some(key) = app_state.embedding.model_key() {
+            if let Err(e) = crate::mind::store::reconcile_vectors_for_model(&db, &key) {
+                log::warn!("[embedding] vector reconciliation after download failed: {}", e);
+            }
+        }
+        match crate::mind::store::backfill_missing_vectors(&db, &app_state.embedding) {
+            Ok(n) if n > 0 => log::info!("[embedding] backfilled {} episode vector(s)", n),
+            Ok(_) => log::info!("[embedding] no episode vectors needed backfilling"),
+            Err(e) => log::warn!("[embedding] backfill after download failed: {}", e),
+        }
+    });
 
     let _ = app.emit("embedding-ready", serde_json::json!({ "ready": true }));
     Ok(true)

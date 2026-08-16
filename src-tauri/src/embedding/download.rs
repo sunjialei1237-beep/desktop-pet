@@ -28,14 +28,29 @@ impl DownloadProgress {
     }
 }
 
-/// The files BGE-M3 ONNX needs. The DLL is needed because we use ort's
+/// Quantized int8 model files (P1 memory reduction, 2026-08-16).
+/// `model_quantized.onnx` is Xenova's single-file uint8 export (~570 MB,
+/// weights embedded, no external data). Same tokenizer, same 1024-dim output,
+/// so no DB schema change is needed. The DLL is needed because we use ort's
 /// load-dynamic feature to avoid MSVC version conflicts with statically linked
-/// binaries. `model.onnx_data` is the external weight blob — Xenova's export
-/// splits graph (model.onnx) and weights (model.onnx_data); ort loads the
-/// weight file automatically from the same dir as model.onnx.
+/// binaries.
+pub const QUANTIZED_MODEL_FILE: &str = "model_quantized.onnx";
 pub const REQUIRED_FILES: &[&str] = &[
-    "model.onnx",
-    "model.onnx_data",
+    QUANTIZED_MODEL_FILE,
+    "tokenizer.json",
+    "config.json",
+    "onnxruntime.dll",
+];
+
+/// Legacy fp32 files. Kept as a fallback: existing installs already have
+/// `model.onnx` (graph) + `model.onnx_data` (external fp32 weight blob,
+/// ~2.1 GB). The app still loads them if the quantized model is absent, so
+/// upgrading never bricks an install that only has the fp32 files.
+pub const LEGACY_MODEL_FILE: &str = "model.onnx";
+pub const LEGACY_WEIGHTS_FILE: &str = "model.onnx_data";
+pub const LEGACY_FP32_FILES: &[&str] = &[
+    LEGACY_MODEL_FILE,
+    LEGACY_WEIGHTS_FILE,
     "tokenizer.json",
     "config.json",
     "onnxruntime.dll",
@@ -73,16 +88,33 @@ impl ModelDownloader {
         }
     }
 
-    /// Returns true if all required model files exist and are non-empty.
-    pub fn check_complete(&self) -> bool {
-        REQUIRED_FILES.iter().all(|f| {
+    /// Returns true if all files in `files` exist and are non-empty.
+    fn files_complete(&self, files: &[&str]) -> bool {
+        files.iter().all(|f| {
             let p = self.model_dir.join(f);
             p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false)
         })
     }
 
-    /// Returns a list of missing files (empty vector = all present).
+    /// Returns true if the model can be loaded: either the quantized int8 set
+    /// or the legacy fp32 set is complete.
+    pub fn check_complete(&self) -> bool {
+        self.files_complete(REQUIRED_FILES) || self.files_complete(LEGACY_FP32_FILES)
+    }
+
+    /// Returns true when the quantized model files are complete. The download
+    /// command uses this to force-upgrade legacy fp32 installs to int8.
+    pub fn quantized_complete(&self) -> bool {
+        self.files_complete(REQUIRED_FILES)
+    }
+
+    /// Returns a list of missing files for the PREFERRED quantized set, unless
+    /// the app can already load from the legacy fp32 set — then this returns
+    /// an empty list so `files_present` semantics in the status UI stay true.
     pub fn missing_files(&self) -> Vec<String> {
+        if self.check_complete() {
+            return Vec::new();
+        }
         REQUIRED_FILES
             .iter()
             .filter(|f| {
@@ -103,14 +135,13 @@ impl ModelDownloader {
         std::fs::create_dir_all(&self.model_dir)
             .map_err(|e| EmbeddingError::Download(format!("Failed to create model dir: {}", e)))?;
 
-        // Model files from HuggingFace. Xenova/bge-m3 uses external-data
-        // format: model.onnx (graph) + model.onnx_data (weights) live under
-        // onnx/, tokenizer.json + config.json at the repo root. We fetch each
-        // from its remote path but save flat into model_dir (ort finds
-        // model.onnx_data next to model.onnx automatically). (remote_path, local_name)
+        // Model files from HuggingFace. Xenova/bge-m3 publishes the int8
+        // quantized graph as a single file under onnx/ (weights embedded),
+        // tokenizer.json + config.json at the repo root. We fetch each from
+        // its remote path but save flat into model_dir. No model.onnx_data
+        // needed for the quantized export.
         let hf_files: &[(&str, &str)] = &[
-            ("onnx/model.onnx", "model.onnx"),
-            ("onnx/model.onnx_data", "model.onnx_data"),
+            ("onnx/model_quantized.onnx", QUANTIZED_MODEL_FILE),
             ("tokenizer.json", "tokenizer.json"),
             ("config.json", "config.json"),
         ];
@@ -281,6 +312,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let dl = ModelDownloader::new(&dir);
         assert!(!dl.check_complete());
+        assert!(!dl.quantized_complete());
         let missing = dl.missing_files();
         assert_eq!(missing.len(), REQUIRED_FILES.len());
     }
@@ -295,6 +327,24 @@ mod tests {
         }
         let dl = ModelDownloader::new(&dir);
         assert!(dl.check_complete());
+        assert!(dl.quantized_complete());
+        assert!(dl.missing_files().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_check_complete_with_legacy_fp32_files() {
+        // Existing installs with only the fp32 model still count as complete,
+        // and missing_files() reports empty so the status UI shows "present".
+        let dir = std::env::temp_dir().join("dpet_test_dl_legacy");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in LEGACY_FP32_FILES {
+            std::fs::write(dir.join(f), "placeholder").unwrap();
+        }
+        let dl = ModelDownloader::new(&dir);
+        assert!(dl.check_complete());
+        assert!(!dl.quantized_complete(), "fp32-only install is not quantized-complete");
         assert!(dl.missing_files().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -307,12 +357,12 @@ mod tests {
         for f in REQUIRED_FILES {
             std::fs::write(dir.join(f), "placeholder").unwrap();
         }
-        // Overwrite model.onnx with empty file
-        std::fs::write(dir.join("model.onnx"), "").unwrap();
+        // Overwrite the quantized model file with empty content
+        std::fs::write(dir.join(QUANTIZED_MODEL_FILE), "").unwrap();
         let dl = ModelDownloader::new(&dir);
         assert!(!dl.check_complete());
         let missing = dl.missing_files();
-        assert!(missing.contains(&"model.onnx".to_string()));
+        assert!(missing.contains(&QUANTIZED_MODEL_FILE.to_string()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

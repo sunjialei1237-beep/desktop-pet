@@ -1,3 +1,4 @@
+use crate::embedding::download::{LEGACY_MODEL_FILE, LEGACY_WEIGHTS_FILE, QUANTIZED_MODEL_FILE};
 use crate::embedding::error::{EmbeddingError, Result};
 use ndarray::{Array1, Array2, ArrayBase, Data, Ix2};
 use ort::session::{builder::GraphOptimizationLevel, Session};
@@ -10,16 +11,38 @@ pub const EMBEDDING_DIM: usize = 1024;
 /// Max sequence length for BGE-M3 tokenizer.
 const MAX_SEQ_LEN: usize = 8192;
 
+/// App-config keys marking which model produced the stored episode vectors.
+/// Changing the model file (fp32 <-> int8) changes the vector space slightly,
+/// so stored vectors must be recomputed to avoid a mixed-space DB.
+pub const MODEL_KEY_INT8: &str = "bge-m3-int8";
+pub const MODEL_KEY_FP32: &str = "bge-m3-fp32";
+
+/// Picks which ONNX model file to load. Quantized int8 is preferred (P1 memory
+/// reduction: ~570 MB vs ~2.1 GB fp32); legacy fp32 is the fallback so existing
+/// installs keep working until the quantized file is downloaded.
+pub fn choose_model_file(model_dir: &Path) -> String {
+    let quantized = model_dir.join(QUANTIZED_MODEL_FILE);
+    if quantized.exists() && quantized.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+        QUANTIZED_MODEL_FILE.to_string()
+    } else {
+        LEGACY_MODEL_FILE.to_string()
+    }
+}
+
 /// Holds the loaded ONNX session + tokenizer.
 /// Thread-safe to share via `Arc<EmbeddingModel>` for inference.
 pub struct EmbeddingModel {
     session: Session,
     tokenizer: Tokenizer,
+    /// Which file was loaded — used to derive `model_key` for vector-space
+    /// reconciliation (stored vectors must match the active model).
+    model_file: String,
 }
 
 impl EmbeddingModel {
     /// Loads the ONNX model and tokenizer from the given directory.
-    /// Expected files: model.onnx, tokenizer.json
+    /// Preferred: `model_quantized.onnx` (single-file int8 export).
+    /// Fallback: `model.onnx` + `model.onnx_data` (legacy fp32 export).
     /// Also expects onnxruntime.dll in the model dir (for load-dynamic feature).
     pub fn load(model_dir: &Path) -> Result<Self> {
         // For ort load-dynamic: set the ORT_DYLIB_PATH env var so ort can
@@ -32,7 +55,8 @@ impl EmbeddingModel {
             log::warn!("onnxruntime.dll not found in model dir; ort will try system PATH");
         }
 
-        let onnx_path = model_dir.join("model.onnx");
+        let model_file = choose_model_file(model_dir);
+        let onnx_path = model_dir.join(&model_file);
         let tokenizer_path = model_dir.join("tokenizer.json");
 
         if !onnx_path.exists() {
@@ -47,8 +71,23 @@ impl EmbeddingModel {
                 tokenizer_path
             )));
         }
+        // The legacy fp32 export keeps its weights in an external data file
+        // next to model.onnx; ORT needs it present or loading fails late.
+        if model_file == LEGACY_MODEL_FILE {
+            let weights = model_dir.join(LEGACY_WEIGHTS_FILE);
+            if !weights.exists() {
+                return Err(EmbeddingError::ModelFilesMissing(format!(
+                    "{:?}",
+                    weights
+                )));
+            }
+        }
 
-        log::info!("Loading ONNX model from {:?}", onnx_path);
+        log::info!(
+            "Loading ONNX model from {:?} (quantized: {})",
+            onnx_path,
+            model_file == QUANTIZED_MODEL_FILE
+        );
 
         let session = Session::builder()
             .map_err(|e| EmbeddingError::Onnx(format!("Session builder: {}", e)))?
@@ -79,7 +118,16 @@ impl EmbeddingModel {
 
         log::info!("ONNX model loaded successfully");
 
-        Ok(EmbeddingModel { session, tokenizer })
+        Ok(EmbeddingModel { session, tokenizer, model_file })
+    }
+
+    /// App-config key for the vector space produced by this loaded model.
+    pub fn model_key(&self) -> String {
+        if self.model_file == QUANTIZED_MODEL_FILE {
+            MODEL_KEY_INT8.to_string()
+        } else {
+            MODEL_KEY_FP32.to_string()
+        }
     }
 
     /// Embeds a single text string into a 1024-dim normalized vector.
@@ -217,6 +265,38 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_choose_model_file_prefers_quantized() {
+        let dir = std::env::temp_dir().join("dpet_test_model_choose_q");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(QUANTIZED_MODEL_FILE), "q").unwrap();
+        std::fs::write(dir.join(LEGACY_MODEL_FILE), "f").unwrap();
+        assert_eq!(choose_model_file(&dir), QUANTIZED_MODEL_FILE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_choose_model_file_falls_back_to_fp32() {
+        let dir = std::env::temp_dir().join("dpet_test_model_choose_fp32");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(LEGACY_MODEL_FILE), "f").unwrap();
+        assert_eq!(choose_model_file(&dir), LEGACY_MODEL_FILE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_choose_model_file_ignores_empty_quantized() {
+        let dir = std::env::temp_dir().join("dpet_test_model_choose_empty_q");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(QUANTIZED_MODEL_FILE), "").unwrap();
+        std::fs::write(dir.join(LEGACY_MODEL_FILE), "f").unwrap();
+        assert_eq!(choose_model_file(&dir), LEGACY_MODEL_FILE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn test_l2_normalize() {
