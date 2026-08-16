@@ -3,7 +3,7 @@
 > **新会话进入顺序**：① `CLAUDE.md`（自动加载）→ ② 本文件 → ③ 按需 `Architecture-Principles.md` / design / plan。
 > **进度以 `cargo test` + harness 为准**；本文件是带上下文的快照，**可能滞后于代码**。
 > **维护规则**：每次会话结束前，更新 `§当前任务` 和 `§最近一轮` 两段。
-> 最后更新：**2026-08-16（续⁴⁵·拖拽跟手丝滑化✅：按住期间光标采样 60Hz→125Hz + 1ms 定时精度，详见 §当前任务）。上轮 续⁴⁴（顶部停靠气泡移到头顶右侧✅ + 拖拽后光标错位根因修复✅）。上轮 续⁴³（拖拽空气墙根治✅：四墙贴视觉身体——头顶可触屏顶、脚底可踩任务栏，气泡随停高位翻转到下巴下方）。上轮 续⁴²（重启问候多元化本地池✅）。上轮 续⁴¹（记忆浮现 LLM 选择器+bubble_log✅）。上轮 续⁴⁰（重启问候单声化✅）。上轮 续³⁹·3（手动拖拽+屏幕墙✅）。上轮 续³⁹（拖拽落体彻底关闭✅：放哪停哪）。上轮 续³⁶（拖拽剧烈晃动根治✅：GetAsyncKeyState 左键真值门）。上轮 续³⁵（Soul v2 灵魂工程全链路✅，报告 docs/review/soul-upgrade-report-2026-08-15.md）。上轮 续³⁴（二期第一梯队三连✅）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
+> 最后更新：**2026-08-16（续⁴⁶·P1 内存治理✅：BGE-M3 int8 量化 + ORT 调优，主进程 1500→870MB、总 1929→1318MB，详见 §当前任务）。上轮 续⁴⁵（拖拽跟手丝滑化✅：按住期间光标采样 60Hz→125Hz + 1ms 定时精度）。上轮 续⁴⁴（顶部停靠气泡移到头顶右侧✅ + 拖拽后光标错位根因修复✅）。上轮 续⁴³（拖拽空气墙根治✅：四墙贴视觉身体——头顶可触屏顶、脚底可踩任务栏，气泡随停高位翻转到下巴下方）。上轮 续⁴²（重启问候多元化本地池✅）。上轮 续⁴¹（记忆浮现 LLM 选择器+bubble_log✅）。上轮 续⁴⁰（重启问候单声化✅）。上轮 续³⁹·3（手动拖拽+屏幕墙✅）。上轮 续³⁹（拖拽落体彻底关闭✅：放哪停哪）。上轮 续³⁶（拖拽剧烈晃动根治✅：GetAsyncKeyState 左键真值门）。上轮 续³⁵（Soul v2 灵魂工程全链路✅，报告 docs/review/soul-upgrade-report-2026-08-15.md）。上轮 续³⁴（二期第一梯队三连✅）。**续⁸ 自主冒泡灵性重构仍在位**（频率 60min + 记忆 15/灵性 85）。**
 
 ## 项目一句话
 见 [`CLAUDE.md`](../CLAUDE.md)。Kill List 三闭环驱动开发：活着 Body → 记住你 Memory → 懂你 Soul。
@@ -16,7 +16,7 @@
 | 闭环2 到期主动提起 | ✅ | harness + 实跑：3分钟后主动冒泡提醒 |
 | Soul 反思→念头外显 | ✅ | `cargo test --test soul_harness` |
 | 闭环3 "她记得我"体感 | ✅ | 实跑：重启后问"我最近忙啥"→recall 出"找实习" |
-| 库单测 | ✅ 194 passed | `cargo test --lib` |
+| 库单测 | ✅ 431 passed | `cargo test --lib` |
 | Body 视线 360°（上下） | ✅ | 实跑验收通过（autoFocus:false + ny 取反） |
 | 生命感 回来主动招呼 | ✅ 实跑通过 | loop_runner presence 转换 → welcome_back_bubble |
 | 生命感 情绪连续外显 | ✅ build 过 / 待实跑 | emotionDriver → Live2DCanvas 连续参数插值（P10 emotionBridge）|
@@ -28,6 +28,8 @@
 **阶段**：三闭环全部端到端跑通（含真实运行）。**原则 #10：优先生命感不优先功能**——别急着加工具性能力。提醒功能是闭环2 的入口补全（生命感：她会主动找你），非工具性能力。
 
 ## §当前任务（接手者先看这）
+> **2026-08-16（续⁴⁶）· P1 后台内存治理 ✅（commit `ed5c69d` 量化切换 + `bd61d77` ORT 调优，lib 431 绿 / cargo check --tests 绿 / tsc 0 / release 已 rebuild + 重启实测）**。用户报告后台内存 ~1600 偏高，要求分析并降低。**实测基线**：desktop-pet.exe WS 1500MB / Private 1477MB + WebView2 树 429MB ≈ **1929MB**。**根因**：`D:\models\bge-m3\model.onnx_data` fp32 权重 2161.8MB 由 ORT 全量常驻。**修法**：① 换 `Xenova/bge-m3` 官方 int8 量化 `model_quantized.onnx`（570MB，同 1024 维，不需改表）；`choose_model_file` 优先量化、fp32 回退；下载器改下载量化集、兼容存量 fp32（`quantized_complete` 强制升级）。② 向量空间对齐：`reconcile_vectors_for_model` + `app_config.embedding_model_key`——fp32→int8 切换时自动清空 `episode_vectors`（实测清 43 条）并由 backfill 全量重嵌入（43 条 1 秒完成），消除混合空间对 serendipity [0.15,0.45]/grounding 阈值的影响（用户修正①）。③ ORT builder 调优（内存探针 6 组对比）：`GraphOptimizationLevel::Level1` + `with_device_allocated_initializers` + `inter_threads(1)` + `parallel_execution(false)` + `memory_pattern(false)`——`device_allocated_initializers` 让 570MB 权重绕过 arena，是全组最大变量。**最终实测**：desktop-pet.exe WS **870MB** / Private 841MB；总（含 WebView2 449MB）**1318MB**（↓611MB，主进程 ↓42%）。**质量**：同模型同 tokenizer 同维度，Level1 不改变量化权重数学；重嵌入后向量空间一致。**方案文档**：`docs/plans/2026-08-16-memory-reduction.md`（含 P2 懒加载/空闲卸载、P3 小模型备选，及用户三点修正）。**遗留**：① 旧 fp32 文件 `model.onnx_data`（2.16GB）仍在 `D:\models\bge-m3`，确认稳定后可手动删除释放磁盘；② P2（懒加载+空闲卸载）预期是"锯齿"而非稳态（调度器 60min 会拉起），若继续压内存按方案 P2/P3 推进；③ Alt+Space 注册失败（HotKey 已被占用）多次出现在日志，与本轮无关但建议排查（可能旧实例或他程序占位）。
+
 > **2026-08-16（续⁴¹·4）· 周日总结默认关闭 ✅（commit `ca59d0a`，lib 431 绿 / release 已 rebuild + 重启）**。用户决策："周复盘其实不需要，两个朋友聊天是不会每周进行复盘的"——定时周报式复盘本身就是工具感，不是朋友的说话方式。新增 `[scheduler] enable_weekly_summary`（**默认 false**，独立于 enable_rituals，早安/晚安不受影响；置 true 恢复）。上周日总结触发的「流星雨」漂移修复（续⁴¹·3）保留在代码里，功能恢复时即生效。soul/weekly.rs 代码与测试保留（可逆），JobStat/soul_ritual_harness 周总结用例保留。
 
 > **2026-08-16（续⁴¹·3）· 「流星雨」气泡溯源 + 仪式路径补漏 ✅（commit `ab69fb7`，lib 427 绿 / release 已 rebuild + 重启）**。用户报告气泡「新身体已经换了1周了，还适应吗？还记得你带糯米去看流星雨，眼睛亮亮的」，三点质疑全部查实：**① 溯源**＝周日总结（当天 2026-08-16 正是周日，17:00:08 进 Evening 窗口首 tick 触发，`last_proactive_bubble_at` 时间戳吻合；里程碑已全庆祝过、念头池/本地问候池内容不符均排除）；"新身体+糯米外出"两件事被粘在一起是周总结"复盘本周 1-2 件"设计使然，但"换了1周"实为 3 天（时间自己估的）。**② 流星雨＝坐实编造（名词级语义漂移）**——全库无"流星"任何记载，真实记忆是「用户昨天带宠物狗糯米去看了流浪狗，觉得它们很可爱」(08-13)；发声模型把"流浪狗"漂成"流星雨"、"觉得它们很可爱"加戏成"眼睛亮亮的"；grounding 的字符重叠检查抓不住单名词替换（带/糯/米/去/看 全重叠，仅"流"共 1 字）。**③ 排除保证的现状**：item 级有（被 proactive 选中过的 fact/episode 各自 7 天硬排除——pet_name/pet_type 已排除至 08-22），topic 级没有（糯米还有 6 条不同 item 可轮）；且仪式路径此前**完全不写浮现账本**——周总结刚说完糯米，选择器全盲，明天 proactive 照样可能再提糯米（不同 item）。**修复**：① weekly/goodmorning/goodnight/landmark 四条仪式路径全部落 bubble_log（`log_bubble` 升 pub(crate)，选择器"别选她刚提过的"从此看得见仪式内容）；② 周总结 prompt 加名词级原意约束（"把「去看流浪狗」说成「去看流星雨」就是失败的复盘"）+ 反硬凑（"两件事没有自然连接就只说一件"）+ 时间按记忆日期不自己估。**遗留**：grounding 检查仍是字符重叠粒度，单名词漂移理论上还可能发生（prompt 约束是软的）——若再出现同类漂移，考虑给 check_groundedness 加名词级比对；本地问候池（前端）仍不入 log（低价值，记录在案）。

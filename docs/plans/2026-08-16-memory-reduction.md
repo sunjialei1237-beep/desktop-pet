@@ -1,7 +1,7 @@
 # 后台内存治理方案（2026-08-16）
 
-> 状态：**方案待批**。目标：在不影响正常使用（记忆召回质量、响应速度、动画流畅度）的前提下，把后台内存占用降得越低越好。
-> 当前实测总占用 ≈ **1.9 GB**（desktop-pet.exe 1500 MB + 其 WebView2 子进程 429 MB）。设计文档 §6.11 的性能目标是 **内存 < 80 MB**，差距巨大，但主要差距集中在一个可治理点：**本地 embedding 模型以 fp32 全量常驻**。
+> 状态：**P1 已实施并实测 ✅（commit `ed5c69d` + `bd61d77`）**。目标：在不影响正常使用（记忆召回质量、响应速度、动画流畅度）的前提下，把后台内存占用降得越低越好。
+> 基线实测总占用 ≈ **1.9 GB**（desktop-pet.exe 1500 MB + 其 WebView2 子进程 429 MB）。P1 后实测总占用 **1318 MB**（desktop-pet.exe 870 MB + WebView2 树 449 MB）。设计文档 §6.11 的性能目标是 **内存 < 80 MB**，仍有差距；剩余大头是 WebView2 平台开销与量化模型本身，对应 P2/P3。
 
 ## 1. 实测数据（2026-08-16，运行中的 release 桌宠）
 
@@ -32,6 +32,7 @@
 - **做法**：仍用 `Xenova/bge-m3` 官方导出的 `onnx/model_quantized.onnx`（**570 MB**，uint8 量化，单文件，输出仍是 float32、**维度仍 1024**）。同一模型、同一 tokenizer、同一 1024 维 → **不需要改 schema**。
 - **⚠️ 修正①：存量向量必须重嵌入**。量化后查询向量（int8 模型算）与存量向量（fp32 模型算）属于混合向量空间——单向量噪声小，但跨空间余弦分布偏移会悄悄影响依赖绝对相似度阈值的行为（serendipity [0.15,0.45] 带、grounding 相关判定）。**做法**：落地时顺手清空 `episode_vectors` 表，由现成的 `backfill_missing_vectors` 全量重嵌入（语料 <100 条，一分钟内完成），彻底消除混合空间风险；并用 `app_config` 记 `embedding_model_key`（`bge-m3-fp32` / `bge-m3-int8`），模型文件切换时自动清向量 + 重嵌入。
 - **预期收益**：desktop-pet.exe 从 1500 MB → 预计 **700-900 MB**；总占用从 ~1.9 GB → 预计 **1.1-1.3 GB**。
+- **✅ 实测（2026-08-16 release）**：`desktop-pet.exe` WS **870 MB / Private 841 MB**；总占用（含 WebView2 树 449 MB）**1318 MB**。关键调优：ORT builder 用 `GraphOptimizationLevel::Level1` + `with_device_allocated_initializers()` + `with_inter_threads(1)` + `with_parallel_execution(false)` + `with_memory_pattern(false)`；其中 `device_allocated_initializers`（570MB 权重绕过 arena）与 Level1 是最大变量，`memory_pattern/parallel` 单用无效但与 Level1 组合更稳（内存探针对比 6 组配置，见 commit `bd61d77`）。
 - **改动点**：
   - `embedding/download.rs`：`REQUIRED_FILES` 改为量化文件集 `model_quantized.onnx / tokenizer.json / config.json / onnxruntime.dll`；`check_complete()` 兼容存量 fp32（任一文件集齐全即 true）；`download_all()` 改为下载量化文件，不再下载 `model.onnx_data`；`quantized_complete()` 供下载命令强制升级用。
   - `embedding/model.rs`：加载时**优先 `model_quantized.onnx`**，不存在再回退 `model.onnx`（老用户无感）；抽一个纯函数 `choose_model_file(dir)` 便于单测；记录本次加载的 `model_key`。
@@ -65,7 +66,7 @@
 2. dev 实跑：模型加载成功（日志含 quantized 文件路径）；对话、记忆召回、主动气泡、忘记/检索功能正常。
 3. 质量抽检：量化前后对同一批 query 的 top-5 episode 召回的 id 一致率 ≥ 95%（或人工确认无"她失忆"体感）。
 4. 内存复测：`Get-Process desktop-pet` 的 WS/Private 显著下降；记录 WebView2 子进程合计。
-5. release 构建前先 `taskkill //IM desktop-pet.exe //F`（踩坑#6），`npx tauri build --no-bundle`，重启后复测。
+5. release 构建前先 `taskkill /IM desktop-pet.exe /F`（踩坑#6），`npx tauri build --no-bundle`，重启后复测。
 6. 更新 `docs/HANDOFF.md`（§当前任务 + §最近一轮）。
 
 ## 5. 风险与回滚
@@ -83,6 +84,6 @@
 | 阶段 | desktop-pet.exe | 总计（含 WebView2） | 质量风险 |
 |---|---|---|---|
 | 现状 | 1500 MB | ~1929 MB | — |
-| P1 量化 | ~700-900 MB | ~1100-1300 MB | 极低（重嵌入后消除混合空间） |
+| P1 量化 + ORT 调优（✅ 已实测） | **870 MB** | **1318 MB** | 极低（重嵌入后消除混合空间） |
 | P1+P2 | 锯齿：闲置卸载后 ~100-200 MB，调度器拉起后回到 P1 水平 | 锯齿 ~500-1300 MB | 低（加载延迟被 reasoning 吞掉） |
 | P1+P2+P3（如需） | 加载时 ~300 MB 级 | ~700 MB 级 | 需评测 |
