@@ -232,6 +232,19 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       y: maxY >= minY ? Math.min(Math.max(pos.y, minY), maxY) : pos.y,
     };
   };
+  // ALL programmatic window moves go through here. It syncs windowOriginRef
+  // (physical px, used by the global-cursor click-through test) to the target
+  // BEFORE the async onMoved echo arrives. Without this, a move at drag end
+  // (snap-undo / visible-clamp / wall clamp) leaves the origin stale, so the
+  // inside/outside test is shifted: the body is treated as click-through
+  // (no grab cursor on the pet) while blank canvas beside her is treated as
+  // interactive (grab cursor outside the pet). The origin then only heals
+  // once some later onMoved fires — the "recovers after a while" symptom.
+  const moveWindowTo = useCallback((x: number, y: number) => {
+    const f = scaleFactorRef.current || 1;
+    windowOriginRef.current = { x: Math.round(x * f), y: Math.round(y * f) };
+    return getCurrentWindow().setPosition(new LogicalPosition(x, y));
+  }, []);
   // Physical left-button state from the backend's global-cursor events (OS
   // truth via GetAsyncKeyState). Native drags swallow webview mouseup, so the
   // page alone can't tell "user paused mid-drag" from "user released" — this
@@ -853,7 +866,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
           lastSnapRestoreRef.current = { held: restore, snapped: logical, at: Date.now() };
           console.warn("[drag] OS top-clamp snap undone", { held: restore, snapped: logical });
           petPosRef.current = restore;
-          win.setPosition(new LogicalPosition(restore.x, restore.y)).catch((err) =>
+          moveWindowTo(restore.x, restore.y).catch((err) =>
             console.warn("[drag] snap-undo setPosition failed", err),
           );
         }
@@ -910,7 +923,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
               x: (sx - off.x) / f,
               y: (sy - off.y) / f,
             });
-            getCurrentWindow().setPosition(new LogicalPosition(target.x, target.y)).catch(() => {});
+            moveWindowTo(target.x, target.y).catch(() => {});
           }
         }
       } else if (prevLbutton) {
@@ -947,7 +960,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
                 lastSnapRestoreRef.current = { held: restore, snapped, at: Date.now() };
                 console.warn("[drag] OS top-clamp snap undone (release fast path)", { held: restore, snapped });
                 petPosRef.current = restore;
-                getCurrentWindow().setPosition(new LogicalPosition(restore.x, restore.y)).catch((err) =>
+                moveWindowTo(restore.x, restore.y).catch((err) =>
                   console.warn("[drag] snap-undo setPosition failed", err),
                 );
               }
@@ -1119,7 +1132,6 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
         // B2 (P12.1): free-fall toward a hover point (1/3 of the way to the
         // taskbar). Runs until grounded.
         if (!gravity.grounded) {
-          const win = getCurrentWindow();
           const bottom = pos.y + winSizeRef.current.h;
           const newBottom = stepGravity(gravity, dt, bottom);
           // 1/3-arc rule: she falls only a third of the way to the floor, then
@@ -1136,7 +1148,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
           }
           const newY = Math.round(finalBottom - winSizeRef.current.h);
           petPosRef.current = { x: pos.x, y: newY };
-          win.setPosition(new LogicalPosition(pos.x, newY)).catch(() => {});
+          moveWindowTo(pos.x, newY).catch(() => {});
         } else {
           // B2 (P12.1): drag-end detection. After a native drag the window
           // goes still once the user releases; if she was left above the
@@ -1187,7 +1199,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
                     lastSnapRestoreRef.current = { held: restore, snapped: real, at: Date.now() };
                     console.warn("[drag] OS top-clamp snap undone (arm fallback)", { held: restore, real });
                     pos = restore;
-                    getCurrentWindow().setPosition(new LogicalPosition(restore.x, restore.y)).catch((err) =>
+                    moveWindowTo(restore.x, restore.y).catch((err) =>
                       console.warn("[drag] snap-undo setPosition failed", err),
                     );
                   }
@@ -1199,7 +1211,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
                   if (Math.abs(clamped.x - pos.x) > 0.5 || Math.abs(clamped.y - pos.y) > 0.5) {
                     console.warn("[drag] release off-screen — clamped to visible", { real, clamped });
                     pos = clamped;
-                    getCurrentWindow().setPosition(new LogicalPosition(clamped.x, clamped.y)).catch((err) =>
+                    moveWindowTo(clamped.x, clamped.y).catch((err) =>
                       console.warn("[drag] visible-clamp setPosition failed", err),
                     );
                   }

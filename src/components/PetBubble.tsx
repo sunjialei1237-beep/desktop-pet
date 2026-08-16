@@ -127,6 +127,11 @@ export function PetBubble({
   const v = normalizeVariant(String(variant));
   const isGlyph = mode === "glyph" || v === "glyph";
   const motionConfig = getMotionConfig(v);
+  // Below mode parks the bubble at the head's top-right (not over her body).
+  // The window is only 400px wide and the head's right edge sits at ~x230, so
+  // a bubble at left:240 has ~152px to the window edge — cap the width there
+  // so long text wraps instead of clipping past the window.
+  const effectiveMaxWidth = below ? Math.min(maxWidth, 150) : maxWidth;
   // True once text actually exceeds the height cap. Below the cap the bubble
   // stays overflow-y:hidden (no scrollbar, not user-scrollable — it just
   // streams/grows with the text); .pet-bubble--scrollable flips it to
@@ -169,7 +174,7 @@ export function PetBubble({
     } else {
       onBubbleBounds(null);
     }
-  }, [visible, text, onBubbleBounds]);
+  }, [visible, text, onBubbleBounds, below]);
 
   return (
     <AnimatePresence initial={false} mode="sync">
@@ -197,7 +202,7 @@ export function PetBubble({
           transition={motionConfig.transition}
           style={
             {
-              "--pet-bubble-max-width": `${maxWidth}px`,
+              "--pet-bubble-max-width": `${effectiveMaxWidth}px`,
               "--pet-bubble-tail-direction": tail === "right-bottom" ? "-1" : "1",
               // Tail-tip anchored at Liri's head top-right, FIXED for every
               // bubble (speech/glyph, all variants, all call sites — no
@@ -220,13 +225,15 @@ export function PetBubble({
               //
               // below=true (window parked with its top off-screen — head at
               // the screen top): the above position would be entirely above
-              // the visible screen. The bubble hangs from her chin instead
-              // (top:335 ≈ head bottom y330 + 5px), tail mirrored upward at
-              // the bubble's top edge, text growing downward over her body —
-              // face stays visible, text stays on-screen.
+              // the visible screen. The bubble sits at the head's TOP-RIGHT
+              // instead: top 240 = head top (window y), left 240 = 10px right
+              // of the head's right edge (x230). It grows downward beside her
+              // head — never over her waist/body — and the tail points LEFT
+              // from the bubble's left edge back at her head. Width is capped
+              // to 150px so the bubble stays inside the 400px window.
               position: "absolute",
-              ...((below ? { top: "335px" } : { bottom: "535px" }) as React.CSSProperties),
-              left: "188px",
+              ...((below ? { top: "240px" } : { bottom: "535px" }) as React.CSSProperties),
+              left: below ? "240px" : "188px",
               zIndex: 50,
               pointerEvents: "none",
             } as React.CSSProperties

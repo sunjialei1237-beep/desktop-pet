@@ -174,10 +174,13 @@ html, body, #root {
 
 /* Below mode (same trigger as the speech bubble — window top off-screen):
    the default spot above her head is above the visible screen, so the orb
-   drops to her chest instead. */
+   moves to the head's top-right, level with the head top and clear of her
+   body (matches the speech bubble's below placement). */
 .thinking-orb--below {
   bottom: auto;
-  top: 345px;
+  top: 250px;
+  left: 240px;
+  transform: none;
 }
 
 .settings-overlay {
@@ -837,22 +840,24 @@ html, body, #root {
 }
 
 /* Below mode (parked with the window top off-screen — head at the screen
-   top): the bubble hangs from her chin and grows downward, so the tail sits
-   at the bubble's TOP edge pointing up at her head. Mirrors the default
-   seam-overlap trick (tail bottom tucked 2px INTO the bubble body below it).
-   scaleY(-1) flips the clip-path tip upward; the rotate sign flips with it
-   so the organic tilt keeps the same handedness. */
+   top): the bubble sits at the head's top-right (anchor top:240 left:240),
+   so the tail sits at the bubble's LEFT edge and points LEFT at her head.
+   rotate(90deg) turns the down-pointing clip-path tip leftward; the element
+   box is 17x12 and the rotation is around its center, so with left:-12px/
+   top:14px the visual tip lands ~9.5px outside the bubble's left edge and
+   ~19px below its top — right at the head's upper-right edge. */
 .pet-bubble-anchor--below .pet-bubble-tail {
-  top: -10px;
+  left: -12px;
+  top: 14px;
   bottom: auto;
-  transform: scaleX(calc(var(--pet-bubble-tail-direction, 1))) scaleY(-1) rotate(5deg);
-  transform-origin: center bottom;
+  transform: rotate(90deg);
+  transform-origin: center;
 }
 
-/* Enter/exit animation grows from the tail edge — in below mode that's the
-   bubble's top edge instead of its bottom edge. */
+/* Enter/exit animation grows from the corner nearest the head — in below
+   mode that's the bubble's top-left corner (beside the head top-right). */
 .pet-bubble-anchor--below .pet-bubble-motion {
-  transform-origin: 50% 0%;
+  transform-origin: 0% 0%;
 }
 
 /* Streaming-friendly content block — no fixed height, grows with text. */
