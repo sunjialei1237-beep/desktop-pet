@@ -91,16 +91,30 @@ impl EmbeddingModel {
 
         let session = Session::builder()
             .map_err(|e| EmbeddingError::Onnx(format!("Session builder: {}", e)))?
-            // NOTE: ort 2.0.0-rc.12 maps `Level3` -> `ORT_ENABLE_LAYOUT`, a value the
-            // ORT 1.20 runtime does not recognise -> it rejects with
-            // "graph_optimization_level is not valid" and loading fails. `All` maps
-            // to the standard `ORT_ENABLE_ALL` and is what ort's own docs mean by
-            // "all optimizations (i.e. Level3)". (Production load hits the same
-            // path, so this fix applies to the app too.)
-            .with_optimization_level(GraphOptimizationLevel::All)
+            // Memory probe (2026-08-16) on the quantized model:
+            // Level1 + device_allocated_initializers gives WS ~828 MB vs
+            // ~1147 MB for All. Level1 is the safe "basic" level
+            // (ORT_ENABLE_BASIC); the old NOTE about Level3/All remains true:
+            // ort maps Level3 -> ORT_ENABLE_LAYOUT, which the ORT 1.20 runtime
+            // rejects, while All -> ORT_ENABLE_ALL and is accepted.
+            .with_optimization_level(GraphOptimizationLevel::Level1)
             .map_err(|e| EmbeddingError::Onnx(format!("Opt level: {}", e)))?
             .with_intra_threads(2)
             .map_err(|e| EmbeddingError::Onnx(format!("Threads: {}", e)))?
+            // Memory hygiene (2026-08-16): embedding inputs are short and
+            // variable-length, so ORT's memory-pattern optimization only pins
+            // large reusable buffers we don't need. A single sequential
+            // transformer also has nothing to gain from inter-op parallelism.
+            // Device-allocated initializers bypass the arena for the 570 MB of
+            // quantized weights — the single biggest measured win.
+            .with_inter_threads(1)
+            .map_err(|e| EmbeddingError::Onnx(format!("Inter threads: {}", e)))?
+            .with_parallel_execution(false)
+            .map_err(|e| EmbeddingError::Onnx(format!("Parallel execution: {}", e)))?
+            .with_memory_pattern(false)
+            .map_err(|e| EmbeddingError::Onnx(format!("Memory pattern: {}", e)))?
+            .with_device_allocated_initializers()
+            .map_err(|e| EmbeddingError::Onnx(format!("Device initializers: {}", e)))?
             .commit_from_file(&onnx_path)
             .map_err(|e| EmbeddingError::Onnx(format!("Load model: {}", e)))?;
 
