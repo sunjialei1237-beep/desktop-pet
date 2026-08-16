@@ -227,6 +227,9 @@ pub async fn generate_goodmorning(
 
     let reply = chat_result.content.trim().to_string();
     let reply = crate::pending::proactive::grounding_guard(reply, &retrieval, &messages, llm).await;
+    if let Some(r) = &reply {
+        crate::pending::proactive::log_bubble(db, "ritual_goodmorning", r, &memory_anchor.clone(), None);
+    }
     match reply {
         Some(reply) => Ok(Some(crate::pending::proactive::BubbleOutcome {
             reply,
@@ -356,6 +359,9 @@ pub async fn generate_goodnight(
 
     let reply = chat_result.content.trim().to_string();
     let reply = crate::pending::proactive::grounding_guard(reply, &retrieval, &messages, llm).await;
+    if let Some(r) = &reply {
+        crate::pending::proactive::log_bubble(db, "ritual_goodnight", r, &memory_anchor.clone(), None);
+    }
     match reply {
         Some(reply) => Ok(Some(crate::pending::proactive::BubbleOutcome {
             reply,

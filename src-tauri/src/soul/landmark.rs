@@ -244,6 +244,9 @@ pub async fn generate_landmark(
 
     let reply = chat_result.content.trim().to_string();
     let reply = crate::pending::proactive::grounding_guard(reply, &retrieval, &messages, llm).await;
+    if let Some(r) = &reply {
+        crate::pending::proactive::log_bubble(db, "landmark_celebration", r, &landmark.description, None);
+    }
     match reply {
         Some(reply) => Ok(Some(crate::pending::proactive::BubbleOutcome {
             reply,

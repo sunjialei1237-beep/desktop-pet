@@ -204,8 +204,12 @@ fn last_bubbles_clause(db: &DbState, now: &DateTime<Utc>) -> String {
 }
 
 /// Appends a successful bubble outcome to the log (best-effort — logging must
-/// never break bubbling).
-fn log_bubble(db: &DbState, kind: &str, reply: &str, anchor: &str, anchor_reason: Option<&str>) {
+/// never break bubbling). Pub(crate): the soul ritual paths (weekly /
+/// goodmorning / goodnight / landmark) emit user-visible bubbles too — without
+/// logging them, the next window's selector and voicing prompts don't know
+/// she JUST said those things (2026-08-16 incident: the weekly recap talked
+/// about 糯米, bubble_log stayed empty, nothing downstream could see it).
+pub(crate) fn log_bubble(db: &DbState, kind: &str, reply: &str, anchor: &str, anchor_reason: Option<&str>) {
     let now = chrono::Utc::now().to_rfc3339();
     if let Err(e) =
         db.with_conn(|conn| crate::db::bubble_log::insert(conn, kind, reply, anchor, anchor_reason, &now))

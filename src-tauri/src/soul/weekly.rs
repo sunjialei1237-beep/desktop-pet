@@ -125,7 +125,7 @@ pub async fn generate_weekly_summary(
         crate::mind::budget::allocate_and_compress(&retrieval, wm_context, &emotion, &intent);
 
     messages.push(ChatMessage::user(format!(
-        "（今天是周日。上面的记忆区就是这一周你们之间的事——{ep_count} 件小事、{fact_count} 条新记住的偏好。你想跟 ta 随口复盘一下这周：像朋友聊天时那样自然地提一两句最值得说的，可以带一点你自己的感受（开心/心疼/期待），**不是工作周报，不要罗列清单**，不用面面俱到。只提上面真实有的内容，绝不编造没发生过的事。最多一个问句，1-3 句。称呼对方用「你」。按规则回复。）"
+        "（今天是周日。上面的记忆区就是这一周你们之间的事——{ep_count} 件小事、{fact_count} 条新记住的偏好。你想跟 ta 随口复盘一下这周：像朋友聊天时那样自然地提一两句最值得说的，可以带一点你自己的感受（开心/心疼/期待），**不是工作周报，不要罗列清单**，不用面面俱到。两件事之间没有自然的连接就只说一件，别硬凑在一起。只提上面真实有的内容，绝不编造没发生过的事；提到某件事时**用它的原意原词说清楚**——它是什么就是什么，绝不能把一件事换成另一件事或换掉关键的名字（比如把「去看流浪狗」说成「去看流星雨」就是失败的复盘）。时间也按记忆里带的日期说，别自己估。最多一个问句，1-3 句。称呼对方用「你」。按规则回复。）"
     )));
 
     log::info!(
@@ -148,6 +148,18 @@ pub async fn generate_weekly_summary(
 
     let reply = chat_result.content.trim().to_string();
     let reply = crate::pending::proactive::grounding_guard(reply, &retrieval, &messages, llm).await;
+    if let Some(r) = &reply {
+        // Log the recap like every other bubble so the next window's selector
+        // knows she just talked about these memories (incident 2026-08-16:
+        // recap mentioned 糯米, log stayed empty, downstream blind).
+        crate::pending::proactive::log_bubble(
+            db,
+            "weekly_summary",
+            r,
+            &format!("本周 {ep_count} 件事"),
+            Some("周日的每周小结"),
+        );
+    }
     match reply {
         Some(reply) => Ok(Some(crate::pending::proactive::BubbleOutcome {
             reply,
