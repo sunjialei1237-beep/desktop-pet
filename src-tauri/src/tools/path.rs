@@ -89,9 +89,11 @@ pub fn resolve(raw: &str) -> Result<PathBuf, PathDeny> {
     Ok(canonical)
 }
 
-/// Stage 2: grant authorization on the CANONICAL path. The longest matching
-/// grant wins; an explicit deny overrides any allow at the same or shorter
-/// depth (deny is checked across all matches first).
+/// Stage 2: grant authorization on the CANONICAL path. Most-specific match
+/// wins: the deepest matching grant (allow or deny) decides; on an exact tie
+/// an explicit deny beats allow. This keeps the natural escalation path alive
+/// — an earlier broad deny of `D:\Projects` does NOT permanently shadow a
+/// later specific grant of `D:\Projects\Liri` (plan §8.2-C4).
 pub fn authorize(canonical: &Path, grants: &[FsGrant]) -> Result<(), PathDeny> {
     if is_pet_own_dir(canonical) {
         return Err(PathDeny::SensitiveFile);
@@ -104,8 +106,8 @@ pub fn authorize(canonical: &Path, grants: &[FsGrant]) -> Result<(), PathDeny> {
         return Err(PathDeny::SensitiveFile);
     }
 
-    let mut matched_any = false;
-    let mut matched_deny = false;
+    let mut allow_depth: Option<usize> = None;
+    let mut deny_depth: Option<usize> = None;
     for g in grants {
         if g.mode != "deny" && g.mode != "once" && g.mode != "project" && g.mode != "always" {
             continue;
@@ -114,23 +116,39 @@ pub fn authorize(canonical: &Path, grants: &[FsGrant]) -> Result<(), PathDeny> {
         // names / different case than the canonicalized request path (seen
         // in tests via std::env::temp_dir returning "SUNJIA~1" short form).
         // Stale/nonexistent roots simply never match.
-        let Some(canonical_root) = dunce::canonicalize(&g.root).ok() else {
+        let Ok(canonical_root) = dunce::canonicalize(&g.root) else {
             continue;
         };
-        if root_contains(&canonical_root, canonical) {
-            matched_any = true;
-            if g.mode == "deny" {
-                matched_deny = true;
-            }
+        if !root_contains(&canonical_root, canonical) {
+            continue;
+        }
+        let depth = path_depth(&canonical_root);
+        if g.mode == "deny" {
+            deny_depth = Some(deny_depth.map_or(depth, |d| d.max(depth)));
+        } else {
+            allow_depth = Some(allow_depth.map_or(depth, |d| d.max(depth)));
         }
     }
-    if matched_deny {
-        Err(PathDeny::DeniedByGrant)
-    } else if matched_any {
-        Ok(())
-    } else {
-        Err(PathDeny::NotAuthorized)
+
+    match (allow_depth, deny_depth) {
+        // Same specificity → explicit refusal wins; this covers the common
+        // same-root allow+deny rows and the defensive default.
+        (Some(a), Some(d)) if d >= a => Err(PathDeny::DeniedByGrant),
+        // A deeper allow overrides a shallower deny.
+        (Some(_), Some(_)) => Ok(()),
+        (Some(_), None) => Ok(()),
+        (None, Some(_)) => Err(PathDeny::DeniedByGrant),
+        (None, None) => Err(PathDeny::NotAuthorized),
     }
+}
+
+/// Relative specificity metric for most-specific-match arbitration:
+/// component depth of the normalized canonical path (more separators =
+/// deeper = more specific).
+fn path_depth(path: &Path) -> usize {
+    crate::tools::workspace::normalize_for_compare(&path.to_string_lossy())
+        .matches('\\')
+        .count()
 }
 
 /// Full pipeline: canonicalize → authorize. Tools call only this.
@@ -138,6 +156,16 @@ pub fn resolve_and_authorize(raw: &str, grants: &[FsGrant]) -> Result<PathBuf, P
     let canonical = resolve(raw)?;
     authorize(&canonical, grants)?;
     Ok(canonical)
+}
+
+/// Whether a raw grant root covers any of the canonical paths a tool actually
+/// used successfully this turn. Used for precise once-grant consumption
+/// (plan §8.2-H1): stale roots canonicalize to nothing and match no one.
+pub fn covers_any(grant_root_raw: &str, used: &[std::path::PathBuf]) -> bool {
+    match dunce::canonicalize(grant_root_raw) {
+        Ok(canon_root) => used.iter().any(|u| root_contains(&canon_root, u)),
+        Err(_) => false,
+    }
 }
 
 /// Binary-extension denylist for read_text_file / search content sniffing.
@@ -229,6 +257,49 @@ mod tests {
     }
 
     #[test]
+    fn authorize_deeper_allow_overrides_shallower_deny() {
+        // Real-world escalation: once refused a broad parent, later granted a
+        // specific project. The specific decision must win (plan §8.2-C4) —
+        // otherwise the project stays unreachable forever.
+        let dir = temp_project();
+        let root = dir.to_string_lossy().to_string();
+        let parent = dir.parent().unwrap().to_string_lossy().to_string();
+        let grants = vec![
+            grant(&parent, GrantMode::Deny),
+            grant(&root, GrantMode::Project),
+        ];
+        let inside = dir.join("src").join("a.rs");
+        assert!(authorize(&inside, &grants).is_ok());
+        // A sibling under the same parent is still covered by the parent deny.
+        let sibling = dir.parent().unwrap().join(format!(
+            "{}Clone",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        assert_eq!(authorize(&sibling, &grants), Err(PathDeny::DeniedByGrant));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn authorize_deeper_deny_overrides_shallower_allow() {
+        let dir = temp_project();
+        let root = dir.to_string_lossy().to_string();
+        let parent = dir.parent().unwrap().to_string_lossy().to_string();
+        let grants = vec![
+            grant(&parent, GrantMode::Project),
+            grant(&root, GrantMode::Deny),
+        ];
+        let inside = dir.join("src").join("a.rs");
+        assert_eq!(authorize(&inside, &grants), Err(PathDeny::DeniedByGrant));
+        let sibling = dir.parent().unwrap().join(format!(
+            "{}Clone",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        assert!(authorize(&sibling, &grants).is_ok());
+        // Same-depth tie stays deny-first (already covered above for the root).
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn authorize_no_grants_not_authorized() {
         let dir = temp_project();
         assert_eq!(
@@ -261,6 +332,21 @@ mod tests {
         // name; it must be blocked by the hard AppData rule itself.
         let e = authorize(&target, &grants).unwrap_err();
         assert_eq!(e, PathDeny::SensitiveFile);
+    }
+
+    #[test]
+    fn covers_any_matches_only_covering_roots() {
+        let dir = temp_project();
+        let root = dir.to_string_lossy().to_string();
+        let used = vec![dir.join("src").join("a.rs")];
+        assert!(covers_any(&root, &used));
+        // A stale/unknown root canonicalizes to nothing and must not match.
+        let missing = dir.parent().unwrap().join(format!(
+            "{}Clone",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        assert!(!covers_any(&missing.to_string_lossy(), &used));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

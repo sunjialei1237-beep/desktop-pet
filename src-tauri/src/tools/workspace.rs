@@ -60,12 +60,22 @@ impl WorkspaceRegistry {
                     Self::default()
                 }
             },
-            Err(_) => {
-                // First run: persist an empty registry so the file location
-                // is discoverable by the user.
+            // First run only: persist an empty registry so the file location
+            // is discoverable. ANY other read failure (permission / sharing
+            // violation) degrades to an empty in-memory registry WITHOUT
+            // saving — a transient IO error must never overwrite the user's
+            // file with an empty table (plan §8.2-H2).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let reg = Self::default();
                 reg.save();
                 reg
+            }
+            Err(e) => {
+                log::warn!(
+                    "[workspace] registry unreadable ({}), starting empty WITHOUT overwriting",
+                    e
+                );
+                Self::default()
             }
         }
     }

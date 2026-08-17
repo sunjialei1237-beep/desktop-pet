@@ -40,27 +40,53 @@ pub fn classify_reply(text: &str) -> ConsentReply {
     let t = text.trim();
     let lower = t.to_lowercase();
 
-    // Deny first: "不要" / "不行" / "先不用" must never fall into allow.
+    // 1) Bare deny keywords — checked first, always win.
     const DENY: &[&str] = &[
-        "不行", "不要", "不用", "不许", "拒绝", "算了", "别看", "不可以", "no", "don't",
+        "不行", "不要", "不用", "不许", "拒绝", "算了", "别看", "不可以", "不想",
+        "不能", "不准", "不让", "不同意", "别同意", "no", "don't",
     ];
     if DENY.iter().any(|k| lower.contains(k)) {
         return ConsentReply::Deny;
     }
 
-    const ALWAYS: &[&str] = &["以后", "一直", "永久", "总是", "always", "whenever"];
-    if ALWAYS.iter().any(|k| lower.contains(k)) {
+    // 2) Negation glued to an allow anchor ("不想给你看", "以后再也不想看").
+    // A negation immediately before the anchor flips the phrase into a refusal
+    // even though the allow anchor itself is present.
+    const ALLOW_ANCHORS: &[&str] = &["给你看", "看吧", "同意", "允许", "可以", "授权"];
+    let negated_anchor = ALLOW_ANCHORS.iter().any(|anchor| {
+        lower.match_indices(anchor).any(|(pos, _)| {
+            let prefix = &lower[..pos];
+            prefix
+                .chars()
+                .rev()
+                .take(2)
+                .any(|c| c == '不' || c == '别' || c == '没')
+        })
+    });
+    if negated_anchor {
+        return ConsentReply::Deny;
+    }
+
+    // 3) Persistent grant: a time word AND an affirmative anchor must coexist.
+    // Time word alone never grants — "以后再说" / "一直没空" are unrelated.
+    const TIME: &[&str] = &["以后", "一直", "永久", "总是", "每次", "always", "whenever"];
+    const AFFIRM: &[&str] = &["都行", "可以", "没问题", "允许", "同意", "授权", "开放", "给你看", "看吧", "能看", "ok", "yes", "allow"];
+    if TIME.iter().any(|k| lower.contains(k)) && AFFIRM.iter().any(|k| lower.contains(k)) {
         return ConsentReply::Always;
     }
 
-    // Allow: a short affirmative reply. Whole-message match for the bare
+    // 4) Allow: a short affirmative reply. Whole-message match for the bare
     // ones ("好", "行", "嗯") so "好累" doesn't count; contains for the
     // unambiguous phrases.
-    const BARE_ALLOW: &[&str] = &["好", "行", "嗯", "可以", "允许", "ok", "yes", "好呀", "好嘞", "没问题"];
+    const BARE_ALLOW: &[&str] = &[
+        "好", "行", "嗯", "可以", "允许", "ok", "yes", "好呀", "好嘞", "没问题",
+    ];
     if BARE_ALLOW.contains(&t) {
         return ConsentReply::Once;
     }
-    const PHRASE_ALLOW: &[&str] = &["就这次", "这次可以", "看吧", "给你看", "你看看吧", "同意"];
+    const PHRASE_ALLOW: &[&str] = &[
+        "就这次", "这次可以", "可以了", "可以的", "看吧", "给你看", "你看看吧", "同意",
+    ];
     if PHRASE_ALLOW.iter().any(|k| t.contains(k)) {
         return ConsentReply::Once;
     }
@@ -96,6 +122,29 @@ mod tests {
     fn persistent_yes_is_always() {
         assert_eq!(classify_reply("以后都可以"), ConsentReply::Always);
         assert_eq!(classify_reply("一直允许你"), ConsentReply::Always);
+        assert_eq!(classify_reply("每次都能看"), ConsentReply::Always);
+        assert_eq!(classify_reply("always ok"), ConsentReply::Always);
+    }
+
+    #[test]
+    fn time_word_without_affirmation_is_unrelated() {
+        // "以后再说" means LATER, never a grant; "一直没空" is just a status.
+        assert_eq!(classify_reply("以后再说"), ConsentReply::Unrelated);
+        assert_eq!(classify_reply("一直没空"), ConsentReply::Unrelated);
+        assert_eq!(classify_reply("以后不想提这事"), ConsentReply::Deny);
+    }
+
+    #[test]
+    fn negated_allow_anchor_is_deny() {
+        // The dangerous false-consent class: the allow anchor is present but a
+        // negation right before it flips the meaning.
+        assert_eq!(classify_reply("我不同意"), ConsentReply::Deny);
+        assert_eq!(classify_reply("别同意"), ConsentReply::Deny);
+        assert_eq!(classify_reply("我不想给你看"), ConsentReply::Deny);
+        assert_eq!(classify_reply("不给你看任何东西"), ConsentReply::Deny);
+        assert_eq!(classify_reply("以后再也不想看"), ConsentReply::Deny);
+        assert_eq!(classify_reply("每次不能看"), ConsentReply::Deny);
+        assert_eq!(classify_reply("一直不准看"), ConsentReply::Deny);
     }
 
     #[test]

@@ -33,6 +33,11 @@ const MAX_DIR_ENTRIES: usize = 200;
 const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".liri"];
 /// get_git_context: result TTL.
 const GIT_CACHE_TTL_SECS: u64 = 10;
+/// get_git_context: per-subprocess hard deadline (plan §2.5). A watchdog kills
+/// the child after this; the agent loop's outer timeout cannot interrupt a
+/// blocking `Command::output()` future, so the deadline lives HERE (plan
+/// §8.2-C3).
+const GIT_TIMEOUT_SECS: u64 = 5;
 
 fn rejected(msg: &str) -> ToolResult {
     ToolResult {
@@ -88,6 +93,36 @@ fn note_denied_root(canonical: &Path) {
 /// authorization slot.
 pub fn take_denied_root() -> Option<String> {
     denied_root_slot().lock().ok().and_then(|mut g| g.take())
+}
+
+// --- Precise once-grant consumption (plan §8.2-H1) -----------------------------
+
+/// Canonical paths actually touched by a SUCCESSFUL fs tool execution this
+/// turn. `converse` consumes a once-grant only when its root covers one of
+/// these — failed calls and unused grants survive, so "就这次" means a
+/// successful interaction, not a burned ticket.
+fn used_roots_slot() -> &'static std::sync::Mutex<Vec<PathBuf>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Record one successful use (deduplicated). Call only after an operation has
+/// actually succeeded — every early-return failure path skips this by
+/// construction.
+pub fn note_used_root(canonical: &Path) {
+    if let Ok(mut v) = used_roots_slot().lock() {
+        if !v.iter().any(|p| p != canonical) {
+            v.push(canonical.to_path_buf());
+        }
+    }
+}
+
+/// Converse reads (and clears) the successful-use list after the loop.
+pub fn take_used_roots() -> Vec<PathBuf> {
+    used_roots_slot()
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default()
 }
 
 /// Shared pipeline wrapper for the tools below: on NotAuthorized it both
@@ -152,9 +187,9 @@ pub async fn read_text_file(args: &serde_json::Value, grants: &[crate::db::grant
     let requested_end = args
         .get("end_line")
         .and_then(|v| v.as_u64())
-        .map(|v| v.max(start as u64) as usize)
-        .unwrap_or(start + MAX_LINES_PER_READ - 1);
-    let end = requested_end.min(start + MAX_LINES_PER_READ - 1);
+        .map(|v| (v as usize).max(start))
+        .unwrap_or_else(|| start.saturating_add(MAX_LINES_PER_READ - 1));
+    let end = requested_end.min(start.saturating_add(MAX_LINES_PER_READ - 1));
 
     if start > all_lines.len() {
         return failed(format!("文件一共 {} 行，起始行 {} 超出了。", all_lines.len(), start));
@@ -178,11 +213,12 @@ pub async fn read_text_file(args: &serde_json::Value, grants: &[crate::db::grant
     }
     let mut header = format!("{}:{}-{}\n", canonical.display(), start, last_line);
     // Report whenever we delivered less than requested: the window was
-        // clamped (end < requested_end), the file ran out (last_line < end),
-        // or the char cap hit mid-window.
-        if end < requested_end || last_line < end || char_truncated {
+    // clamped (end < requested_end), the file ran out (last_line < end),
+    // or the char cap hit mid-window.
+    if end < requested_end || last_line < end || char_truncated {
         header.push_str("（片段已截断；需要更多内容请指定后续行号）\n");
     }
+    note_used_root(&canonical);
     ToolResult {
         status: ToolStatus::Success,
         content: format!("{}{}", header, out),
@@ -190,6 +226,19 @@ pub async fn read_text_file(args: &serde_json::Value, grants: &[crate::db::grant
 }
 
 // --- search_files ------------------------------------------------------------
+
+fn is_skip_dir_name(name: &std::ffi::OsStr) -> bool {
+    let n = name.to_string_lossy().to_lowercase();
+    SKIP_DIRS.iter().any(|d| *d == n.as_str())
+}
+
+/// Prune noise directories (`node_modules`/`.git`/`target`…) without pruning
+/// the walk root itself. Used by `filter_entry` so those subtrees are never
+/// descended (not merely skipped after burning the walk budget).
+fn should_descend(entry: &ignore::DirEntry) -> bool {
+    entry.depth() == 0
+        || !(entry.path().is_dir() && is_skip_dir_name(entry.file_name()))
+}
 
 /// Case-insensitive substring search within a granted project scope.
 /// Live scan (no index — "registry is not a prompt, files are queried at
@@ -218,12 +267,16 @@ pub async fn search_files(args: &serde_json::Value, grants: &[crate::db::grants:
     let mut hits: Vec<String> = Vec::new();
     let mut visited = 0usize;
 
+    // filter_entry PRUNES .git/node_modules/target at the directory level
+    // (plan §8.2-H3): without pruning, the walker still descends those trees
+    // burning the MAX_WALK_ENTRIES budget before ever reaching source files.
     let walker = ignore::WalkBuilder::new(&root)
         .hidden(true)
         .git_ignore(true)
         .git_global(false)
         .parents(true)
         .max_depth(Some(8))
+        .filter_entry(should_descend)
         .build();
 
     for entry in walker.flatten() {
@@ -270,6 +323,7 @@ pub async fn search_files(args: &serde_json::Value, grants: &[crate::db::grants:
         }
     }
 
+    note_used_root(&root);
     if hits.is_empty() {
         return ToolResult {
             status: ToolStatus::Success,
@@ -329,6 +383,7 @@ pub async fn list_directory(args: &serde_json::Value, grants: &[crate::db::grant
     let mut lines = dirs;
     lines.extend(files);
     let note = if lines.len() >= MAX_DIR_ENTRIES { "（已达条目上限）" } else { "" };
+    note_used_root(&canonical);
     ToolResult {
         status: ToolStatus::Success,
         content: format!("{} 共 {} 项：\n{}{}", canonical.display(), lines.len(), lines.join("\n"), note),
@@ -362,6 +417,7 @@ pub async fn get_file_metadata(args: &serde_json::Value, grants: &[crate::db::gr
         })
         .unwrap_or_else(|| "未知".to_string());
     let size = if meta.is_dir() { "—".to_string() } else { format!("{} 字节", meta.len()) };
+    note_used_root(&canonical);
     ToolResult {
         status: ToolStatus::Success,
         content: format!("{}：{} | {} | 修改于 {}", canonical.display(), kind, size, modified),
@@ -378,18 +434,88 @@ fn git_cache(
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-fn run_git(root: &Path, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("git")
+/// Synchronous git invocation with a REAL timeout (plan §8.2-C3): the child
+/// is spawned with piped stdio, its streams are drained on helper threads, and
+/// a watchdog kills it after `GIT_TIMEOUT_SECS`. Returns trimmed stdout only
+/// on `exit status == 0`.
+fn run_git_sync(root: &Path, args: &[String]) -> Option<String> {
+    let mut child = match std::process::Command::new("git")
         .arg("-C")
         .arg(root)
         .arg("--no-optional-locks")
         .args(args)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[fs] git spawn failed for {}: {}", root.display(), e);
+            return None;
+        }
+    };
+
+    let mut stdout = child.stdout.take()?;
+    let mut stderr = child.stderr.take()?;
+    // Drain both pipes on threads: a full pipe would otherwise deadlock the
+    // child (and then the watchdog kill) while we wait for exit.
+    let out_thread = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        stdout
+            .read_to_string(&mut buf)
+            .ok()
+            .map(|_| buf.trim().to_string())
+    });
+    let err_thread = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut sink = String::new();
+        let _ = stderr.read_to_string(&mut sink);
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(GIT_TIMEOUT_SECS);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                log::warn!(
+                    "[fs] git timeout after {}s, killing child (root {})",
+                    GIT_TIMEOUT_SECS,
+                    root.display()
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(e) => {
+                log::warn!("[fs] git try_wait failed: {}", e);
+                break None;
+            }
+        }
+    };
+
+    let stdout = out_thread.join().ok().flatten();
+    let _ = err_thread.join();
+    let status = status?;
+    if status.success() {
+        stdout
+    } else {
+        None
     }
-    Some(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Async wrapper: the blocking git run happens in the blocking pool so the
+/// agent loop's `tokio::time::timeout` can actually fire again; the hard
+/// deadline remains the watchdog in `run_git_sync`.
+async fn run_git(root: &Path, args: &[&str]) -> Option<String> {
+    let root = root.to_path_buf();
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    tokio::task::spawn_blocking(move || run_git_sync(&root, &args))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Git metadata for a registry project. TTL-cached (plan §2.5): "早上好"
@@ -414,6 +540,7 @@ pub async fn get_git_context(args: &serde_json::Value, grants: &[crate::db::gran
     if let Ok(cache) = git_cache().lock() {
         if let Some((at, content)) = cache.get(&key) {
             if at.elapsed().as_secs() < GIT_CACHE_TTL_SECS {
+                note_used_root(&root);
                 return ToolResult {
                     status: ToolStatus::Success,
                     content: content.clone(),
@@ -422,8 +549,8 @@ pub async fn get_git_context(args: &serde_json::Value, grants: &[crate::db::gran
         }
     }
 
-    let status_out = run_git(&root, &["status", "-sb", "--porcelain"]);
-    let log_out = run_git(&root, &["log", "-1", "--oneline"]).unwrap_or_default();
+    let status_out = run_git(&root, &["status", "-sb", "--porcelain"]).await;
+    let log_out = run_git(&root, &["log", "-1", "--oneline"]).await.unwrap_or_default();
 
     let content = match status_out {
         Some(s) => {
@@ -449,12 +576,13 @@ pub async fn get_git_context(args: &serde_json::Value, grants: &[crate::db::gran
                 format!("项目 {}：分支 {} | {} 处改动（{} 已暂存）| 最近提交 {}", root.display(), branch, changed, staged, recent)
             }
         }
-        None => format!("项目 {} 不是 git 仓库（或 git 不可用）。", root.display()),
+        None => format!("项目 {} 不是 git 仓库（或 git 不可用/读取超时）。", root.display()),
     };
 
     if let Ok(mut cache) = git_cache().lock() {
         cache.insert(key, (std::time::Instant::now(), content.clone()));
     }
+    note_used_root(&root);
     ToolResult {
         status: ToolStatus::Success,
         content,
@@ -566,6 +694,87 @@ mod tests {
         // global file; instead verify the miss path returns success-empty.
         let r = search_files(&args, &grants).await;
         assert_eq!(r.status, ToolStatus::Rejected); // no registry → unknown scope
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn walker_prunes_skip_dirs_before_walking() {
+        let dir = temp_project(3);
+        std::fs::create_dir_all(dir.join("node_modules").join("pkg")).unwrap();
+        for i in 0..150 {
+            std::fs::write(
+                dir.join("node_modules").join("pkg").join(format!("f{}.js", i)),
+                format!("needle js {i}"),
+            )
+            .unwrap();
+        }
+        let dir_clone = dir.clone();
+        // Same pruning decision function as production search_files.
+        let walker = ignore::WalkBuilder::new(&dir_clone)
+            .hidden(true)
+            .git_ignore(true)
+            .parents(true)
+            .filter_entry(should_descend)
+            .build();
+        let paths: Vec<PathBuf> = walker.flatten().map(|e| e.path().to_path_buf()).collect();
+        assert!(
+            !paths
+                .iter()
+                .any(|p| p.to_string_lossy().to_lowercase().contains("node_modules")),
+            "node_modules must be pruned, not descended"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn read_huge_start_line_is_clean_failure() {
+        let dir = temp_project(3);
+        let grants = grant_for(&dir);
+        let args = serde_json::json!({
+            "path": dir.join("big.rs").to_string_lossy(),
+            "start_line": u64::MAX
+        });
+        let r = read_text_file(&args, &grants).await;
+        assert_eq!(r.status, ToolStatus::Failed);
+        assert!(r.content.contains("超出"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_git_returns_status_or_times_out_cleanly() {
+        let has_git = std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !has_git {
+            eprintln!("git not installed — run_git test skipped");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "pet_git_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["init", "-q"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ok {
+            let out = run_git(&dir, &["status", "-sb", "--porcelain"]).await;
+            assert!(out.is_some(), "fresh repo status should succeed");
+            assert!(out.as_deref().unwrap().contains("##"));
+        }
+        let missing = dir.join("definitely_missing_subdir_xyz");
+        let out = run_git(&missing, &["status", "-sb", "--porcelain"]).await;
+        assert!(out.is_none(), "missing root must fail fast, not hang");
         std::fs::remove_dir_all(&dir).ok();
     }
 

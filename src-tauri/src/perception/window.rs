@@ -1,8 +1,11 @@
 //! Window perception: detects the foreground application category.
 //!
-//! Privacy: Only the process name is extracted and mapped to a category.
-//! Window titles are never stored in the DB or sent to the LLM.
-//! The LLM only sees high-level descriptions like "working" or "gaming".
+//! Privacy: Only the process name is extracted for category mapping. Window
+//! titles ARE sampled locally for the environment hints (plan 2026-08-17),
+//! but they reach the LLM only through the relevance-gated `[Environment]`
+//! section after control-char stripping + length caps, with a fixed
+//! untrusted-data declaration appended (environment.rs §8.2-C2). They are
+//! never stored in the DB — perception module invariant.
 
 /// Application category for context-aware behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

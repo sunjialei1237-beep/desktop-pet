@@ -813,14 +813,17 @@ pub async fn converse(
             }
         }
 
-        // Consume once-grants: they authorized THIS interaction only. Any
-        // successful tool round under SystemObservation spends them.
-        if outcome.tool_rounds > 0
-            && intent.capability == crate::tools::CapabilityMode::SystemObservation
-        {
+        // Consume once-grants precisely (plan §8.2-H1): only a grant whose
+        // root covers a path that a tool ACTUALLY USED SUCCESSFULLY this turn
+        // is spent. Failed calls and unused grants survive — "就这次" means a
+        // successful interaction, not a ticket burned by an error.
+        let used_roots = crate::tools::fs::take_used_roots();
+        if !used_roots.is_empty() {
             for g in fs_grants.iter().filter(|g| g.mode == "once") {
-                let _ = ctx.db.with_conn(|conn| crate::db::grants::revoke(conn, &g.root));
-                log::info!("[converse] once-grant consumed: {}", g.root);
+                if crate::tools::path::covers_any(&g.root, &used_roots) {
+                    let _ = ctx.db.with_conn(|conn| crate::db::grants::revoke(conn, &g.root));
+                    log::info!("[converse] once-grant consumed: {}", g.root);
+                }
             }
         }
         (outcome.reply, outcome.tool_rounds)
