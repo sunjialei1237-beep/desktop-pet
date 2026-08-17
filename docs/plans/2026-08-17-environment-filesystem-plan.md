@@ -159,6 +159,8 @@ Recently: grounding.rs → planner.rs      ← ring buffer 摘要（命中时）
 
 四级模型（Observe/Inspect/Modify/Execute）作为 Settings 的呈现层，映射到上述两处存储。V1 默认：Observe=on，Inspect=显式项目授权，Modify/Execute=off。
 
+> **实施裁定（§8.3-E4，消除"Observe"一词二义）**：`perception.enable_window=true` 对应四级模型的 **Observe（环境事实层，默认开）**；`tools.enable_fs_observe=false` 对应 **Inspect（文件读取层，默认关，首次对话授权后可用）**。两者都满足"V1 默认 Observe=on、Inspect=显式授权"，不矛盾。
+
 ---
 
 ## 3. Filesystem（本节为深度安全审核后的最终规格）
@@ -243,8 +245,9 @@ execute 阶段：重新执行同一管线（defense-in-depth，沿用 open_appli
   → 写入 pending（克隆 resolve_pending_forget 模式：挂起轮不 ingest）
   → 用户答复"可以/就这次/以后都行/不行"
   → resolve：写 fs_grants（once/project/always 或 deny+冷却）
-  → 授权轮本身就是新的 converse()：planner 重新命中 → policy 通过 → 工具自然执行
-    （无需显式 retry 机制——"重试"就是正常对话）
+  → 授权答复轮只做"resolve + 角色化确认"（不重跑工具）；授权已生效，用户在自然下一轮
+    重述或提出环境请求时 planner 重新命中 → policy 通过 → 工具执行
+    （无需显式 retry 机制——"重试"就是正常对话。§8.3-E1 修订；同轮自动续做为 §8.4 候选）
 ```
 
 ### 3.8 审计与观测
@@ -311,3 +314,77 @@ DebugPanel 新增 section：Environment Snapshot / [Environment] 注入与否及
 14. 工具描述内嵌不可信声明；capability 互斥不得破坏（结构性防外泄）。
 15. Shell/Execute/Delete/Move 无限期不做。
 16. V1 只做 Observe + Inspect 闭环；写侧在 F 阶段且从 create_note 起步。
+17. **环境标题/文件名是外部不可信输入**（与铁律 #14 同族）：进入 `[Environment]` 前必须截断、剥控制字符，并在 section 尾部附加固定不可信声明——标题里的任何指令一律不执行（§8.2-C2，2026-08-17 审查新增）。
+
+---
+
+## 8. 深度审查勘误与增补模块（2026-08-17，实施后补审冻结）
+
+> 状态：**审查裁决 + 随附修复的书面依据**。本章先于修复记录（用户裁定：修全部 Critical + High，且在动代码前把所有问题与方案修订落到本模块）。
+> 审查对象：GLM 实施的五个 commit `06b27e6`（P0/P1）、`ebd1795`（P2）、`4aa4623`（P3）、`601d103`（P4）、`9c61778`（P5）。
+> 复跑验证：`cargo test --lib` = **492 passed / 0 failed**；`cargo check --tests` = **exit 0**（仅 1 条既有 dead_code warning）；`tsc --noEmit` = **exit 0**。
+
+### 8.0 审查结论（总纲）
+
+交付总体可信：canonicalize-first 管线、capability 枚举互斥、v5→v6/v6→v7 双迁移守卫、deny 冷却、跨轮 pending 复用 forget 模式、harness 签名全量同步，全部落实。但发现 **4 Critical + 4 High + 12 Medium/一致性问题**。本章 8.2 为随附修复清单（为什么改、改成什么样），8.3 为方案文本勘误与裁决，8.4 为头脑风暴产出的 UX 增强候选，8.5 为不改码只登记的问题。
+
+### 8.2 随附修复清单（Critical + High，本轮修）
+
+| ID | 位置 | 问题（证据） | 修改 | 为什么 |
+|---|---|---|---|---|
+| **C1** | `mind/consent.rs::classify_reply` | **假授权**：DENY 表先跑但只含裸否定词，PHRASE_ALLOW=`contains`。`"我不同意"`/`"别同意"`/`"我不想给你看"` 都不含 DENY 词 → 命中 `同意/给你看` → **Once 授权**；ALWAYS 只看时间词 → `"以后再说"`/`"一直没空"`/`"以后不想给你看"` → **Always 永久授权** | 重写判定：① 裸否决词 → Deny；② **否定副词（不/别/没/别/不准）+ 许可锚点相邻** → Deny；③ 时间词 AND 肯定锚点 → Always；④ 裸肯定词全句匹配 → Once；⑤ 短语肯定 → Once。补 8 个拒绝/无关/肯定测试 | 授权边界是用户对璃的信任本体；拒绝被解析成允许是最高等级错误。宁拒不授 |
+| **C2** | `perception/environment.rs::build_environment_section` + `window.rs` 模块文档 | **未防护的注入通道**：`window=`/`file=`/`project=`/`Recently:` 来自前台窗口标题（浏览器页题可远端控制），无 untrusted 声明、`file/project/Recent` 不截断、控制字符不剥离，直接成为 system message。`window.rs:1-5` 文档仍称"titles never sent to the LLM"（P4 已失实） | 所有环境字段统一 `sanitize`（剥控制字符 + 上限：title 120 / app 64 / file 64 / project 64 / Recent 每项 40），section 尾部固定一行不可信声明；同步更正 `window.rs` 文档 | 铁律 #14 同族：工具结果与**环境事实**同为外部不可信输入。截断同时保护 token 预算 |
+| **C3** | `tools/fs.rs::run_git` | **超时形同虚设**：async fn 内 `std::process::output()` 阻塞 poll，外层 `tokio::time::timeout(10s)`（agent.rs）无法打断不 yield 的 future；挂住的 git（凭据/网络盘）会永远卡死该轮对话。方案 §2.5 要求 5s | 改为 `spawn_blocking` 执行 + **子进程内建 5s deadline watchdog（try_wait 轮询，超时 kill+wait）**；日志记录 timeout；外层 timeout 从虚设退回为正常兜底 | 远离用户会原谅她，卡死不会；Availability 也是生命感的一部分 |
+| **C4** | `tools/path.rs::authorize` | **deny 深度优先级未定义且实现自相矛盾**：注释称"longest match wins、deny 只压同级或更浅"，代码是任意深度 deny 恒胜。`拒 D:\Projects` 后单独授权 `D:\Projects\Liri` 也永远 DeniedByGrant，且冷却期内连再申请都不行（死锁式 UX） | 改为**最长前缀优先**：计算最深的 allow 匹配与最深的 deny 匹配，更深者胜，同深 tie 时 deny 胜。补"父 deny + 子 allow → 放行子、仍拒父他项；子 deny + 父 allow → 拒"测试 | 必须支持"先谨慎拒绝大范围、后精确放行小范围"的自然授权演进 |
+| **H1** | `mind/converse.rs` once 消费 | once 语义过宽：只要本轮 SystemObservation 且 `tool_rounds>0` 就 revoke **所有** once 行；失败调用、未涉及该 root 的调用也会烧掉授权 | 工具**成功执行后**记录实际使用的 canonical 根；轮尾只消费"授权根覆盖实际使用根"的 once 行。失败/未用不烧 | "就这次"应该是**一次成功的互作用**；失败烧授权会让用户经历"不行→再问→又不行"的伤害循环 |
+| **H2** | `tools/workspace.rs::load` | 读取 registry 的任何 Err（权限/占用）都走"首次运行"分支 → `save()` 写**空表覆盖用户文件** | 仅 `ErrorKind::NotFound` 写占位；其他错误降级空表并 warning，绝不 save | 索引文件是用户手工资产；瞬时 IO 错误不能成为静默数据销毁 |
+| **H3** | `tools/fs.rs::search_files` | SKIP_DIRS 不剪枝：`is_file()` continue 后 walker 仍下钻 `.git/node_modules/target`，20k visited 预算可能被噪声吃完，命中"假空" | `WalkBuilder::filter_entry` 在**目录层**（depth>0）剪掉 SKIP_DIRS；字符串跳过降级为兜底 | 搜索可靠性：一次假空比一次报错更伤信任 |
+| **H4** | `window.rs:1-5` 文档失实 | 与 C2 同源：模块头声称标题永不进 LLM，P4 后已错 | 随 C2 一并改写为"仅经 relevance 门 + 净化后的 [Environment] 可进 LLM" | 文档与代码必须同源（原则 #11） |
+
+### 8.3 方案勘误与裁决（对冻结版正文的修订，已同步改入正文）
+
+**E1 · §3.7 授权轮语义（已改正文）**：冻结版"授权轮本身就是新的 converse()：planner 重新命中 → 工具自然执行"不可达——用户回复"可以"命中不了任何环境关键词，capability=None，工具不会重挂。**裁决**：授权答复轮 = resolve + 角色化确认；"重试"靠用户自然复述的下一轮命中。同轮自动续做（记住上一轮 capability/root 并直接旧事重提）列入 §8.4 候选，P6 后单独评估。
+
+**E2 · `.liri` 双重人格（裁决不改码）**：`PROJECTS/*.md`（§2.6 语义层）与硬原则 #2"绝不读 `.liri/**` 入上下文"及 §3.2 AppData 硬拒互斥——当前它被创建但**零消费且不可读**。**裁决**：V1 保留目录与注册表为"人读 + 未来 UI（工作区设置页）"的地基，禁止任何工具读取；F 阶段若做 UI 前消费 PROJECTS，须在 §3.2 为 `.liri/PROJECTS/**` 开**只读白名单**（先于 AppData 硬拒判断）。**create_note 的 `.liri/NOTES/`（§3.6）同样与 AppData 硬拒冲突**：F1 实施时写路径管线必须增加"自身 `.liri/NOTES` 目录白名单特例"，否则 create_note 永久自拒。
+
+**E3 · `open_file` 无相位行（裁决补表）**：§3.5 定义了扩展名 allowlist 方案，但实施顺序表没有对应行，P0–P5 均不含它。**裁决**：追加到 ComputerAction 验收行——`open_file` 与既有 `open_application/open_url` 同批实现，扩展名白名单沿用 §3.5，不得自然蒸发。
+
+**E4 · 默认开关口径（已改正文）**：§2.7 "Observe=on" 与实现 `enable_fs_observe=false` 的矛盾纯属四级模型名词二义：`enable_window`（默认 on）= Observe；`enable_fs_observe`（默认 off）= Inspect。正文 §2.7 已补裁定。
+
+**E5 · git 缓存事件失效未接线（登记待 P6）**：实现目前只有 10s TTL，`file_changed/project_changed → 失效` 未接。本轮不补（C3 已保证超时安全），P6 评测轮若无成本问题，TTL 即验收；若需降延迟再接线。
+
+**E6 · 比冻结版更严的两处实现收紧（确认合法）**：search snippet 实为 1 行/处（方案 ≤3 行），list_directory 实为单层（方案深度 ≤2）。均满足上界，不改码；保留为后续需要更多上下文时的放宽空间。
+
+### 8.4 头脑风暴产出：UX 显著增强候选（评估过成本/北极星，按推荐序）
+
+1. **同轮授权续做**：把"可以"前的 capability + 目标 root 挂在 PendingAuthorization 上，resolve=Granted 时直接重跑一次工具轮并用角色化口吻衔接（"好～我看看你的 Liri"）。ROI 最高：每笔首次授权少两轮来回。风险：需防授权答复被误分类（由 C1 修复铺路）与 run_id 时序；
+2. **环境事实"借题发挥"**：gate 命中时允许她在首句自然带入一个环境事实（"你在写 agent.rs 呀"）；零新增调用，只在已有注入轮生效。**同时加诚实降级指令**：只有 `file`/`project` 为 None 时明确"看不出具体文件就不装知道，可以好奇地问"。原则 #12 约束不变：只在她先开口的轮次，不驱动她说话；
+3. **首次授权自动注册项目**：`grant_root_for` 已能命中 owning project——resolve=Granted 时回写 registry（path/name 已备），把"新认识的项目"变成持久关系。写 registry 需加原子写（同 H2 一并改）与 E2 裁定不冲突（这是写入不是读取）；
+4. **deny 后悔通道**："我改主意了/现在开放吧"应即时解冻 deny（24h 冷却只约束她**主动重询**，不约束用户主动开口）。依赖 C1 之后的分类器新增短语；
+5. **Settings 工作区/权限页**：开关（`enable_fs_observe`）、项目增删停用、已授权 root 列表 + 一键撤销——当前这些全部要手改 AppData JSON，原则 #6/#7 对普通用户缺门；
+6. **git 转译成人话**：cache 旁路时先由 Rust 转成"你的 {name} 有 3 处没提交、最近提交了 xxx"，再给 LLM，降低她的"术语味"；
+7. **Mutate 确认卡角色化**：最终气泡只留她的话（"我改了 3 行，看看行不行"），diff 卡独立存在——实施 F 阶段时作为验收项。
+
+### 8.5 本轮不改码、已登记的问题（Medium/后备）
+
+| # | 位置 | 问题 | 处置 |
+|---|---|---|---|
+| M1 | `window.rs::process_name_cache` | 永不淘汰 + Windows PID 复用 → 布局/类别错判、无界增长 | 限 256 条 + 失配清零；与 P6 同轮做 |
+| M2 | `fs.rs::read_text_file` | `start+79` 可溢出（debug panic） | `saturating_add`；跟 H3 同批即可，本轮若零成本顺手 |
+| M3 | `environment.rs` tests | ring 全局 OnceLock 被并行测试 share，潜在偶发红 | 测试串行化或函数注入 buffer |
+| M4 | deny 冷却查重 | `grants::get(root)` raw 字符串精确匹配，拼写/大小写变体漏过 24h 冷却 | 比对前 canonicalize 双方 |
+| M5 | `workspace.rs::resolve_scope` | `active_project` 项目名大小写敏感匹配 | 统一 normalize |
+| M6 | `fs.rs::note_denied_root` | 多工具轮只保留最后一个未授权 root | 改 Vec（与 H1 的 used-roots 槽同构） |
+| M7 | 环境观测自我窗口 | 璃自己被聚焦时 `desktop-pet` 覆盖真实前台 | 跳过自身 hwnd、沿用上一个非自我样本 |
+| M8 | 事件容量饥饿 | 高频 AppChanged 可挤掉 file 事件 | 分级保留/同 app 抖动去重 |
+| M9 | `commands.rs::fs_grant_access` | Settings 通道可写入注定 hard-deny 的自身 AppData 授权 | 入库存前跑 authorize 预检并明确报错 |
+| M10 | 审计指标 | §3.8 的部分字段（bytes/截断统计/grants 决策明细）只在日志，未进 DebugPanel 指标 | P6 后补 DebugPanel section |
+| M11 | `recent_summary`/`file/project` 无截断 | 归入 C2 修复 | 本轮随 C2 |
+| M12 | 标题解析边界 | 本地化/自定义 titlebar 下保守 None（已按设计容忍） | 不修，观察真机日志 |
+
+### 8.6 实施顺序与验证要求
+
+1. 先落本模块（本轮第一条 commit，docs-only）；
+2. 按 C1→C2→C3→C4→H1→H2→H3 顺序改码，每个修复带**可复现回归测试**（尤其 C1 的否定句、C4 的深度仲裁）；
+3. 验证门：`cargo test --lib` 较 492 只增不减且全绿 + `cargo check --tests` + `tsc --noEmit`；
+4. 全部通过后更新 `docs/HANDOFF.md` 续⁵¹；P6（成本/注入黑盒评测）与 F1/F2 计划不变。
