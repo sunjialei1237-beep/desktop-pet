@@ -10,6 +10,7 @@
 //! 4000 chars per read, 20 search hits, 200 dir entries) because file
 //! content enters the context OUTSIDE budget.rs's 4096-token allocation.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -191,6 +192,8 @@ pub async fn read_text_file(args: &serde_json::Value, grants: &[crate::db::grant
     if path::looks_binary(&bytes) {
         return rejected("文件内容是二进制的，读取没有意义。");
     }
+    // F2 optimistic lock: remember exactly what read_text_file saw.
+    record_read_snapshot(&canonical, &meta, &bytes);
     let text = String::from_utf8_lossy(&bytes);
     let all_lines: Vec<&str> = text.lines().collect();
 
@@ -598,6 +601,400 @@ pub async fn get_git_context(args: &serde_json::Value, grants: &[crate::db::gran
         status: ToolStatus::Success,
         content,
     }
+}
+
+// --- F2 edit_file: proposal mode (plan §3.6, §8.3-F2) ---------------------------
+//
+// No tool is advertised for editing. The LLM reads the file in a normal
+// Observation round and puts a structured patch block in its final reply; the
+// backend strips it (the bubble only shows the natural explanation), validates
+// `search` uniqueness, and arms a proposal. A later command applies the
+// proposal ONLY after the user confirms — with the include-only optimistic
+// lock checked against the exact moment read_text_file saw the file.
+
+/// Read-time optimistic-lock snapshot: file mtime (ns) + a dual-seed FNV-1a
+/// 64-bit content digest. Purposely a real byte digest, not hashmaps' random
+/// per-process DefaultHasher — it must be stable across turns in the same run.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadSnapshot {
+    pub mtime_nanos: u64,
+    pub content_hash: u64,
+}
+
+fn read_snapshots_slot() -> &'static std::sync::Mutex<HashMap<PathBuf, ReadSnapshot>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, ReadSnapshot>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn fnv1a64(bytes: &[u8], seed: u64) -> u64 {
+    let mut h = 0xcbf29ce484222325u64 ^ seed;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+pub fn content_hash64(bytes: &[u8]) -> u64 {
+    fnv1a64(bytes, 0x9e3779b97f4a7c15) ^ fnv1a64(bytes, 0xc2b2ae3d27d4eb4f)
+}
+
+fn mtime_nanos(meta: &std::fs::Metadata) -> u64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(u64::MAX)
+}
+
+/// Called by read_text_file on every SUCCESSFUL read. Converse can later
+/// validate an edit proposal against THIS snapshot (pessimistic read-then-
+/// write lock, plan §3.6). A collision-averse side effect: two reads of the
+/// same mtime with diverging bytes would change the hash.
+fn record_read_snapshot(canonical: &Path, meta: &std::fs::Metadata, bytes: &[u8]) {
+    let snap = ReadSnapshot {
+        mtime_nanos: mtime_nanos(meta),
+        content_hash: content_hash64(bytes),
+    };
+    if let Ok(mut slot) = read_snapshots_slot().lock() {
+        slot.insert(canonical.to_path_buf(), snap);
+    }
+}
+
+fn take_read_snapshot(canonical: &Path) -> Option<ReadSnapshot> {
+    read_snapshots_slot()
+        .lock()
+        .map(|mut g| g.remove(canonical))
+        .unwrap_or(None)
+}
+
+/// A validated, user-confirmable edit proposal. `read_*` are the optimistic
+/// lock captured at read time (or, when the model proposed without an actual
+/// read, at proposal-parse time — same protection window).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EditProposal {
+    pub id: String,
+    pub path: String,
+    pub search: String,
+    pub replacement: String,
+    pub read_mtime_nanos: u64,
+    pub read_hash: u64,
+}
+
+/// Strip the FIRST structured patch block from `reply` and (when valid) return
+/// the armed proposal. Malformed block → still stripped, proposal None (the
+/// block must never leak into the bubble; a log records why).
+///
+/// Block contract (written into the tool-mode prompt):
+/// ```edit_file
+/// path: <absolute path>
+/// <<<<< SEARCH
+/// exact original lines
+/// =====
+/// replacement lines
+/// >>>>> END
+/// ```
+pub fn extract_edit_proposal(reply: &str) -> (String, Option<EditProposal>) {
+    let Some(block) = find_patch_block(reply) else {
+        return (reply.trim().to_string(), None);
+    };
+    let body = block.body.as_str();
+    let left = &reply[..block.start];
+    let right = &reply[block.end..];
+    let left_trim = left.trim_end();
+    let right_trim = right.trim_start();
+    let clean = match (!left_trim.is_empty(), !right_trim.is_empty()) {
+        (true, true) => format!("{}\n{}", left_trim, right_trim),
+        (true, false) => left_trim.to_string(),
+        _ => right_trim.to_string(),
+    };
+    let missing_snapshot_warning = |p: &Path| {
+        match (std::fs::metadata(p), std::fs::read(p)) {
+            (Ok(m), Ok(bytes)) => ReadSnapshot {
+                mtime_nanos: mtime_nanos(&m),
+                content_hash: content_hash64(&bytes),
+            },
+            _ => ReadSnapshot {
+                mtime_nanos: 0,
+                content_hash: 0,
+            },
+        }
+    };
+    let path_line = body.lines().find(|l| l.starts_with("path:"));
+    let Some(path_raw) = path_line.and_then(|l| l.strip_prefix("path:")) else {
+        log::warn!("[edit_file] patch block missing path line — discarded");
+        return (clean, None);
+    };
+    let Ok(canonical) = dunce::canonicalize(path_raw.trim()) else {
+        log::warn!("[edit_file] patch path not canonicalizable: {}", path_raw.trim());
+        return (clean, None);
+    };
+    let search_idx = body.find("<<<<< SEARCH");
+    let sep_idx = body.find("=====");
+    let end_idx = body.find(">>>>> END");
+    let (Some(si), Some(ei), Some(end)) = (search_idx, sep_idx, end_idx) else {
+        log::warn!("[edit_file] malformed patch markers — discarded");
+        return (clean, None);
+    };
+    if si > ei || ei > end {
+        log::warn!("[edit_file] patch markers out of order — discarded");
+        return (clean, None);
+    }
+    let search = body[si + "<<<<< SEARCH".len()..ei].trim_matches('\n').trim_end_matches('\r');
+    let replacement = body[ei + "=====".len()..end]
+        .trim_matches('\n')
+        .trim_end_matches('\r');
+    if search.is_empty() {
+        log::warn!("[edit_file] empty search string — discarded");
+        return (clean, None);
+    }
+    if crate::tools::path::root_contains(&crate::config::app_data_dir(), &canonical)
+        || canonical
+            .file_name()
+            .map(|n| crate::tools::path::is_sensitive_name(&n.to_string_lossy()))
+            .unwrap_or(false)
+    {
+        log::warn!("[edit_file] path is pet-config/sensitive — no proposal");
+        return (clean, None);
+    }
+    let snapshot = take_read_snapshot(&canonical).unwrap_or_else(|| {
+        log::info!("[edit_file] no read snapshot for {} — using parse-time lock", canonical.display());
+        missing_snapshot_warning(&canonical)
+    });
+    if search_is_unique_in_file(&canonical, search) != Some(true) {
+        log::warn!("[edit_file] search not unique/absent in {} — no proposal", canonical.display());
+        return (clean, None);
+    }
+    let id = format!(
+        "edit_{}_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+        canonical
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    );
+    log::info!(
+        "[edit_file] armed proposal {} for {}: search {} bytes -> replacement {} bytes",
+        id,
+        canonical.display(),
+        search.len(),
+        replacement.len()
+    );
+    let proposal = EditProposal {
+        id,
+        path: canonical.to_string_lossy().to_string(),
+        search: search.to_string(),
+        replacement: replacement.to_string(),
+        read_mtime_nanos: snapshot.mtime_nanos,
+        read_hash: snapshot.content_hash,
+    };
+    (clean, Some(proposal))
+}
+
+struct PatchBlock {
+    /// Byte range of the WHOLE block (fence..closing fence) in `reply`.
+    start: usize,
+    end: usize,
+    /// Everything between ```tag and closing ```, tag excluded.
+    body: String,
+}
+
+fn find_patch_block(reply: &str) -> Option<PatchBlock> {
+    let lower = reply.to_lowercase();
+    let mut scan = 0usize;
+    while let Some(fence) = lower[scan..].find("```") {
+        let fence_at = scan + fence;
+        let line_end = reply[fence_at..].find('\n').unwrap_or(reply.len() - fence_at);
+        let tag_line = reply[fence_at + 3..fence_at + line_end].trim().to_lowercase();
+        if tag_line.contains("edit") && (tag_line.starts_with("edit") || tag_line.starts_with("patch")) {
+            let body_start = fence_at + line_end + (if reply[fence_at + line_end..].starts_with('\n') { 1 } else { 0 });
+            match reply[body_start..].find("```") {
+                Some(close) => {
+                    let raw_end = body_start + close + 3;
+                    return Some(PatchBlock {
+                        start: fence_at,
+                        end: raw_end,
+                        body: reply[body_start..body_start + close].to_string(),
+                    });
+                }
+                None => return None,
+            }
+        }
+        scan = fence_at + 3;
+    }
+    None
+}
+
+/// Occurrence count decision for the current on-disk bytes: Some(true) only
+/// when `search` matches EXACTLY ONCE; None = file unreadable/not UTF-8.
+fn search_is_unique_in_file(canonical: &Path, search: &str) -> Option<bool> {
+    let bytes = std::fs::read(canonical).ok()?;
+    let ok_utf8 = match std::string::String::from_utf8(bytes.clone()) {
+        Ok(s) => s,
+        // BOM alone counts as text, not binary.
+        Err(_) if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) => {
+            String::from_utf8(bytes[3..].to_vec()).ok()?
+        }
+        Err(_) => return None,
+    };
+    Some(ok_utf8.matches(search).count() == 1)
+}
+
+/// Cheap, honest preview for the confirm card: remove-then-add verbatim lines
+/// (search first, replacement second). Good enough for a yes/no diff card.
+pub fn preview_diff(search: &str, replacement: &str) -> String {
+    let mut out = String::new();
+    for l in search.lines() {
+        out.push_str(&format!("- {}\n", l));
+    }
+    if !search.ends_with('\n') {
+        out.push('\n');
+    }
+    for l in replacement.lines() {
+        out.push_str(&format!("+ {}\n", l));
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// Apply a CONFIRMED proposal. Re-runs the full security pipeline with the
+/// current grant snapshot, then the optimistic lock:
+///   mtime unchanged → ok
+///   mtime changed but digest matches read time → ok (editor autoSave noise)
+///   anything else → refuse, never overwrite (plan §3.6).
+/// Line endings and BOM of the ORIGINAL bytes are preserved; the write is
+/// same-directory temp + rename.
+pub fn apply_proposal(
+    proposal: &EditProposal,
+    grants: &[crate::db::grants::FsGrant],
+) -> Result<PathBuf, String> {
+    let canonical = path::resolve_and_authorize(&proposal.path, grants)
+        .map_err(|d| format!("授权检查没通过：{}", d.message()))?;
+    let bytes = std::fs::read(&canonical).map_err(|e| format!("读文件失败：{}", e))?;
+    let meta = std::fs::metadata(&canonical).map_err(|e| format!("取文件状态失败：{}", e))?;
+    let mtime_now = mtime_nanos(&meta);
+    if mtime_now != proposal.read_mtime_nanos {
+        let hash_now = content_hash64(&bytes);
+        if hash_now != proposal.read_hash {
+            return Err(
+                "文件在我读完之后被别人改过了。为了不覆盖你的新改动，我先停手——让璃重新读一遍再提一次吧。"
+                    .to_string(),
+            );
+        }
+    }
+
+    // UTF-8 only (BOM tolerated), plan §3.3.
+    let had_bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+    let text = if had_bom {
+        String::from_utf8(bytes[3..].to_vec())
+    } else {
+        String::from_utf8(bytes.clone())
+    }
+    .map_err(|_| "这个文件不是 UTF-8 文本，我不改二进制或别的编码文件。".to_string())?;
+
+    let crlf = text.matches("\r\n").count();
+    let lf = text.matches('\n').count().saturating_sub(crlf);
+    let eol = if crlf >= lf && crlf > 0 { "\r\n" } else { "\n" };
+    let search_norm = proposal.search.replace("\r\n", &eol);
+    let replacement_norm = normalize_eol(&proposal.replacement, eol);
+
+    let hits = text.matches(&search_norm).count();
+    if hits != 1 {
+        return Err(format!(
+            "要改的那段话现在在文件里出现了 {} 次（需要恰好 1 次才能安全替换）。内容已经变了，重新让璃读一遍吧。",
+            hits
+        ));
+    }
+    let edited = text.replacen(&search_norm, &replacement_norm, 1);
+
+    // Pre-image kept for session-level undo (plan §3.6).
+    let parent = canonical
+        .parent()
+        .ok_or_else(|| "文件没有父目录".to_string())?;
+    let tmp = parent.join(format!(
+        ".liri-edit-{}-{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let mut out = Vec::with_capacity(edited.len() + 3);
+    if had_bom {
+        out.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    out.extend_from_slice(edited.as_bytes());
+    std::fs::write(&tmp, &out).map_err(|e| format!("写临时文件失败：{}", e))?;
+    std::fs::rename(&tmp, &canonical).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("替换文件失败（可能正被其他程序占用）：{}", e)
+    })?;
+    remember_undo(&canonical, bytes);
+    Ok(canonical)
+}
+
+fn normalize_eol(s: &str, eol: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push_str(eol);
+            }
+            '\n' => out.push_str(eol),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn undo_slot() -> &'static std::sync::Mutex<Option<(PathBuf, Vec<u8>)>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<(PathBuf, Vec<u8>)>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn remember_undo(canonical: &Path, pre_image: Vec<u8>) {
+    if let Ok(mut slot) = undo_slot().lock() {
+        *slot = Some((canonical.to_path_buf(), pre_image));
+    }
+}
+
+/// Session-level single-step undo: restores the pre-image of the LAST edit.
+pub fn undo_last_edit(grants: &[crate::db::grants::FsGrant]) -> Result<PathBuf, String> {
+    let (canonical, pre) = undo_slot()
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+        .ok_or_else(|| "这一会儿还没有可以撤销的修改。".to_string())?;
+    path::resolve_and_authorize(&canonical.to_string_lossy(), grants)
+        .map_err(|d| format!("撤销也要重新授权：{}", d.message()))?;
+    let parent = canonical
+        .parent()
+        .ok_or_else(|| "文件没有父目录".to_string())?;
+    let tmp = parent.join(format!(
+        ".liri-undo-{}-{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&tmp, &pre).map_err(|e| format!("写撤销临时文件失败：{}", e))?;
+    std::fs::rename(&tmp, &canonical).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("撤销失败：{}", e)
+    })?;
+    Ok(canonical)
 }
 
 // --- F1 create_note (plan §3.6, §8.3-F1) -----------------------------------------
@@ -1091,5 +1488,122 @@ mod tests {
         assert_eq!(got.filename, "a.md");
         // Take-and-clear: a second take returns nothing.
         assert!(take_pending_note().is_none());
+    }
+
+    // --- F2 edit_file ------------------------------------------------------
+
+    fn f2_file(content: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pet_f2_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("target.txt");
+        std::fs::write(&path, content).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        record_read_snapshot(&dunce::canonicalize(&path).unwrap(), &meta, content.as_bytes());
+        dir
+    }
+
+    #[test]
+    fn patch_block_is_parsed_stripped_and_armed() {
+        let dir = f2_file("line one\nline two\n独一无二的目标\nline four\n");
+        let path = dir.join("target.txt");
+        let reply = format!(
+            "我把第一句的「目标」调整了一下，预览在下面。\n```edit_file\npath: {}\n<<<<< SEARCH\n独一无二的目标\n=====\n改好的目标\n>>>>> END\n```\n其他文字不要动。",
+            path.display()
+        );
+        let (clean, proposal) = extract_edit_proposal(&reply);
+        assert_eq!(clean, "我把第一句的「目标」调整了一下，预览在下面。\n其他文字不要动。");
+        let p = proposal.expect("valid patch must arm");
+        assert_eq!(p.search, "独一无二的目标");
+        assert_eq!(p.replacement, "改好的目标");
+        assert_eq!(p.path, dunce::canonicalize(&path).unwrap().to_string_lossy());
+        assert!(p.read_mtime_nanos != 0);
+        assert!(p.read_hash != 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn malformed_or_ununique_patch_is_stripped_but_disarmed() {
+        let dir = f2_file("same\nsame\n");
+        let path = dir.join("target.txt");
+        // Missing path line.
+        let (clean, p) = extract_edit_proposal(
+            "explain\n```edit_file\n<<<<< SEARCH\nsame\n=====\nx\n>>>>> END\n```",
+        );
+        assert_eq!(clean, "explain");
+        assert!(p.is_none());
+        // Search appears twice → no proposal, block still stripped.
+        let reply = format!(
+            "explain\n```edit_file\npath: {}\n<<<<< SEARCH\nsame\n=====\nx\n>>>>> END\n```",
+            path.display()
+        );
+        let (clean, p) = extract_edit_proposal(&reply);
+        assert_eq!(clean, "explain");
+        assert!(p.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_proposal_preserves_bom_crlf_and_supports_undo() {
+        let dir = f2_file("alpha\r\nbeta\r\nUNIQUE 行\r\nomega\r\n");
+        let path = dunce::canonicalize(dir.join("target.txt")).unwrap();
+        // f2_file wrote LF-only bytes; rebuild with BOM+CRLF and re-record.
+        let raw = b"\xEF\xBB\xBFalpha\r\nbeta\r\nUNIQUE \xe8\xa1\x8c\r\nomega\r\n".to_vec();
+        std::fs::write(&path, &raw).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        record_read_snapshot(&path, &meta, &raw);
+        let proposal = EditProposal {
+            id: "test".into(),
+            path: path.to_string_lossy().to_string(),
+            search: "UNIQUE 行".into(),
+            replacement: "CHANGED\nline".into(),
+            read_mtime_nanos: mtime_nanos(&meta),
+            read_hash: content_hash64(&raw),
+        };
+        let grants = grant_for(&dir);
+        apply_proposal(&proposal, &grants).expect("apply");
+        let after = std::fs::read(&path).unwrap();
+        assert!(after.starts_with(&[0xEF, 0xBB, 0xBF]), "BOM must survive");
+        let text = String::from_utf8(after[3..].to_vec()).unwrap();
+        assert!(text.contains("CHANGED\r\nline"), "replacement must inherit CRLF: {:?}", text);
+        assert!(!text.contains("UNIQUE 行"));
+        // Session-level undo restores the exact pre-image.
+        undo_last_edit(&grants).expect("undo");
+        assert_eq!(std::fs::read(&path).unwrap(), raw, "pre-image must be byte-identical");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_proposal_refuses_when_file_changed_after_read() {
+        let dir = f2_file("before unique\nsecond\n");
+        let path = dunce::canonicalize(dir.join("target.txt")).unwrap();
+        let proposer_meta = std::fs::metadata(&path).unwrap();
+        let proposer_bytes = std::fs::read(&path).unwrap();
+        let proposal = EditProposal {
+            id: "test".into(),
+            path: path.to_string_lossy().to_string(),
+            search: "before unique".into(),
+            replacement: "after".into(),
+            read_mtime_nanos: mtime_nanos(&proposer_meta),
+            read_hash: content_hash64(&proposer_bytes),
+        };
+        // External edit between read and apply (same length even — mtime catches
+        // it, hash comparison is the second line of defense).
+        std::fs::write(&path, "foreign edit now!\n").unwrap();
+        let err = apply_proposal(&proposal, &grant_for(&dir)).unwrap_err();
+        assert!(err.contains("改过"), "optimistic lock must refuse: {err}");
+        // Backstop when mtime got aliased: the uniqueness check still refuses.
+        let now_meta = std::fs::metadata(&path).unwrap();
+        let mut p2 = proposal.clone();
+        p2.read_mtime_nanos = mtime_nanos(&now_meta);
+        let err2 = apply_proposal(&p2, &grant_for(&dir)).unwrap_err();
+        assert!(err2.contains("0 次"), "uniqueness backstop must refuse: {err2}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

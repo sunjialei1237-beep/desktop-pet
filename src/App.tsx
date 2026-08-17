@@ -36,6 +36,20 @@ interface ProactiveAction {
   message_hint: string;
 }
 
+// F2 修改提案确认卡（plan §3.6：回复即提案，Rust 在用户确认后才写文件）。
+interface EditProposalInfo {
+  id: string;
+  path: string;
+  diff_preview: string;
+  search_len: number;
+}
+
+interface EditApplyOutcome {
+  status: string; // saved | declined | failed | undone
+  message: string;
+  path: string | null;
+}
+
 // 首次见面访谈问题（顺序即提问顺序）。答案存入 app_config，注入 system prompt 的 [Persona]。
 const ONBOARD_QUESTIONS = [
   { key: "user_nickname", ask: "初次见面！我该怎么称呼你呀？" },
@@ -86,6 +100,9 @@ const SLEEP_AFTER_IDLE_MS = 10 * 60 * 1000;
   const [bubblePos, setBubblePos] = useState("");
   const [inputVisible, setInputVisible] = useState(false);
   const [inputText, setInputText] = useState("");
+  // F2 edit proposal confirm card (plan §3.6) and its apply/undo outcome.
+  const [editProposal, setEditProposal] = useState<EditProposalInfo | null>(null);
+  const [editOutcome, setEditOutcome] = useState<EditApplyOutcome | null>(null);
   const [isThinking, setIsThinking] = useState(false);
   const [moodLabel, setMoodLabel] = useState("平静");
   const [showSettings, setShowSettings] = useState(false);
@@ -110,7 +127,6 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     bubbleIdRef.current += 1;
     return bubbleIdRef.current;
   }, []);
-  const welcomeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [behavior, setBehavior] = useState<BehaviorState>(BehaviorState.Idle);
   const fsmRef = useRef<AnimationFSM | null>(null);
   const petRef = useRef<HTMLDivElement>(null);
@@ -355,10 +371,6 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 启动首次见面访谈：问第一题 + 显示输入框。访谈期间屏蔽其它气泡，避免 welcome 覆盖第一题。
   const startOnboarding = useCallback(() => {
     onboardingActiveRef.current = true;
-    if (welcomeTimerRef.current) {
-      clearTimeout(welcomeTimerRef.current);
-      welcomeTimerRef.current = null;
-    }
     setOnboarding({ active: true, step: 0, answers: {} });
     showBubble(ONBOARD_QUESTIONS[0].ask, 120000, "bubble-calm");
     setInputVisible(true);
@@ -500,7 +512,6 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
    listen<string>("bubble-show", (event) => {
       // 访谈进行中：只允许访谈气泡，忽略后端 welcome 等其它气泡以免覆盖当前问题。
       if (onboardingActiveRef.current) return;
-      if (welcomeTimerRef.current) { clearTimeout(welcomeTimerRef.current); welcomeTimerRef.current = null; }
       showBubble(event.payload, 8000, "bubble-calm");
    }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
@@ -529,7 +540,6 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     listen<{ away_secs: number }>("welcome-back", (event) => {
       if (onboardingActiveRef.current) return;
       if (awayMode) return;
-      if (welcomeTimerRef.current) { clearTimeout(welcomeTimerRef.current); welcomeTimerRef.current = null; }
       invoke<string | null>("welcome_back_bubble", { awaySecs: event.payload.away_secs })
         .then((reply) => {
           if (reply) showBubble(reply, 10000, bubbleClassForMood(moodLabel));
@@ -572,6 +582,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     listen<{ status: string; elapsed_secs: number }>("app-status", (event) => {
       if (event.payload.status === "resumed") {
+        // 与其它问候监听器同一套守卫（onboarding / away / sleeping）：重启
+        // 问候不得覆盖访谈第一问，也不打扰睡着的璃（单问候原则 2026-08-15/17）。
+        if (onboardingActiveRef.current) return;
+        if (awayMode) return;
+        if (fsmRef.current?.state === BehaviorState.Sleeping) return;
         // Diversified local greeting pool (zero LLM, cost control — replaces
         // the old single hardcoded "我睡了N个小时" template). Bucketed by
         // away duration + time-of-day flavor, no immediate repeats.
@@ -613,19 +628,10 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       })
       .catch(() => {});
 
-    // FIX-J: frontend welcome fallback (2s) if backend bubble-show not received.
-    // Vary the line so repeated triggers (restart / restore) don't feel canned.
-    const WELCOME_FALLBACKS = [
-      "嗯…你回来啦。",
-      "嘿，刚好想到你。",
-      "啊，你在了。",
-      "咦，什么时候到的？",
-    ];
-    welcomeTimerRef.current = setTimeout(() => {
-      const line = WELCOME_FALLBACKS[Math.floor(Math.random() * WELCOME_FALLBACKS.length)];
-      showBubble(line, 8000, "bubble-calm");
-      welcomeTimerRef.current = null;
-    }, 2000);
+    // 重启问候统一走后端协调的 app-status / ritual-bubble（首 tick ~5s 到达，
+    // 单问候原则 2026-08-15/17）。曾经的后端 2s 硬编码欢迎已删除（续⁴¹·5），
+    // 此处的 FIX-J 2s 兜底随之失去触发方——留着会让每次启动都比后端问候先
+    // 抢发一条无协调的随机问候（"重启三连"的元凶之一），故一并移除。
 
     const proactiveTimer = setInterval(async () => {
       if (awayMode) return;
@@ -653,7 +659,6 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       clearInterval(emotionTimer);
       clearInterval(proactiveTimer);
       if (bubbleTimerRef.current) clearTimeout(bubbleTimerRef.current);
-      if (welcomeTimerRef.current) clearTimeout(welcomeTimerRef.current);
     };
   }, [showBubble, awayMode]);
 
@@ -1452,6 +1457,42 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   }, []);
 
   // overrideText lets Escape submit an empty answer during onboarding (see onKeyDown).
+  const handleApplyEdit = useCallback(async (approve: boolean) => {
+    const proposal = editProposal;
+    if (!proposal) return;
+    setEditProposal(null);
+    setEditOutcome(null);
+    try {
+      const outcome = await invoke<EditApplyOutcome>("apply_edit_proposal", {
+        id: proposal.id,
+        approve,
+      });
+      setEditOutcome(outcome);
+      showBubble(
+        outcome.status === "saved"
+          ? "已经改好啦，就动了你说的那一处~"
+          : outcome.message,
+        12000,
+        outcome.status === "failed" ? "bubble-worried" : "bubble-calm",
+      );
+    } catch (e) {
+      console.error("[edit_file] apply_edit_proposal failed:", e);
+      showBubble("……这个确认卡没能处理，先算了吧", 5000, "bubble-worried");
+    }
+  }, [editProposal]);
+
+  const handleUndoEdit = useCallback(async () => {
+    setEditOutcome(null);
+    try {
+      const outcome = await invoke<EditApplyOutcome>("undo_last_edit");
+      setEditOutcome(outcome);
+      showBubble(outcome.message, 12000, outcome.status === "failed" ? "bubble-worried" : "bubble-calm");
+    } catch (e) {
+      console.error("[edit_file] undo_last_edit failed:", e);
+      showBubble("……撤销没成功", 5000, "bubble-worried");
+    }
+  }, []);
+
   const handleSend = useCallback(async (overrideText?: string) => {
     markInteraction();
     const text = (overrideText !== undefined ? overrideText : inputText).trim();
@@ -1481,6 +1522,9 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     if (!text) { setInputVisible(false); return; }
     setInputText("");
     setInputVisible(false); // 轮次制：发送后立即收起输入框，让桌宠回复气泡独占显示
+    // A new speech act supersedes any unanswered edit card / apply result.
+    setEditProposal(null);
+    setEditOutcome(null);
     sound.play("send");
    setIsThinking(true);
    fsmRef.current?.forceState(BehaviorState.Thinking);
@@ -1544,7 +1588,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
          }, pacing.intervalMs);
        }
      };
-     const res = await invoke<{ reply: string; transient_expression: string | null }>(
+     const res = await invoke<{ reply: string; transient_expression: string | null; edit_proposal: EditProposalInfo | null }>(
        "send_message",
        { text, onChunk },
      );
@@ -1565,6 +1609,11 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
        else showBubble("…", 2500, "bubble-glyph", "", "surprise");
        setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 2000);
      }
+      // F2: surface the confirm card when the reply carried a valid proposal.
+      if (res.edit_proposal) {
+        setEditProposal(res.edit_proposal);
+        setEditOutcome(null);
+      }
       // Refresh emotion immediately so the expression changes right after the
       // reply, instead of waiting up to 5s for the next poll.
       invoke<EmotionData>("get_emotion_state")
@@ -1800,6 +1849,35 @@ const handleBodyClick = useCallback(() => {
             onBlur={() => {}}
           />
       </div>
+
+      {editProposal && (
+        <div className="edit-confirm-card" role="dialog" aria-label="修改文件确认">
+          <div className="edit-confirm-title">要按这样改这段吗？</div>
+          <div className="edit-confirm-path" title={editProposal.path}>{editProposal.path}</div>
+          <pre className="edit-confirm-diff">{editProposal.diff_preview}</pre>
+          <div className="edit-confirm-actions">
+            <button className="edit-confirm-btn edit-confirm-no" onClick={() => handleApplyEdit(false)}>先不改</button>
+            <button className="edit-confirm-btn edit-confirm-yes" onClick={() => handleApplyEdit(true)}>就这样改</button>
+          </div>
+        </div>
+      )}
+      {!editProposal && editOutcome && (
+        <div className="edit-confirm-card edit-confirm-card--done" role="status">
+          <div className="edit-confirm-title">文件修改</div>
+          <div className="edit-confirm-message">{editOutcome.message}</div>
+          {editOutcome.status === "saved" && (
+            <div className="edit-confirm-actions">
+              <button className="edit-confirm-btn edit-confirm-no" onClick={() => setEditOutcome(null)}>知道了</button>
+              <button className="edit-confirm-btn edit-confirm-yes" onClick={handleUndoEdit}>撤销刚才修改</button>
+            </div>
+          )}
+          {editOutcome.status !== "saved" && (
+            <div className="edit-confirm-actions">
+              <button className="edit-confirm-btn edit-confirm-no" onClick={() => setEditOutcome(null)}>知道了</button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* PetBubble: the pet's speech surface (Motion-animated). bubbleId = one
           speech act identity; a new id exits the old bubble and enters the new

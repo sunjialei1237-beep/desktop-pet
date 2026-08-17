@@ -133,6 +133,7 @@ pub fn run() {
             last_decision: std::sync::Mutex::new(None),
             pending_forget: std::sync::Mutex::new(None),
             pending_authorization: std::sync::Mutex::new(None),
+            edit_proposals: std::sync::Mutex::new(std::collections::HashMap::new()),
             clickthrough_diag: std::sync::Mutex::new(None),
         })
         .manage(db_state)
@@ -279,6 +280,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::send_message,
+            commands::apply_edit_proposal,
+            commands::undo_last_edit,
             commands::get_emotion_state,
             commands::get_perception,
             commands::trigger_reflection_if_due, 

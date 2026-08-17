@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
@@ -16,6 +17,27 @@ use crate::mind::working::WorkingMemory;
 pub struct SendMessageResult {
     pub reply: String,
     pub transient_expression: Option<String>,
+    /// F2 confirm card payload when the reply carried a valid edit proposal.
+    /// `reply` is already the stripped natural-language explanation.
+    pub edit_proposal: Option<EditProposalInfo>,
+}
+
+/// Frontend-facing view of a pending edit proposal (plan §3.6 F2 confirm card).
+#[derive(Debug, Clone, Serialize)]
+pub struct EditProposalInfo {
+    pub id: String,
+    pub path: String,
+    /// Verbose remove/add preview for the card.
+    pub diff_preview: String,
+    pub search_len: usize,
+}
+
+/// Apply/decline/undo outcome for the edit-proposal commands.
+#[derive(Debug, Clone, Serialize)]
+pub struct EditApplyOutcome {
+    pub status: String, // saved | declined | failed | undone
+    pub message: String,
+    pub path: Option<String>,
 }
 
 /// Shared application state.
@@ -37,6 +59,9 @@ pub struct AppState {
     /// armed when an Observe tool hits an unauthorized root, resolved by the
     /// user's next short reply (once / always / deny).
     pub pending_authorization: std::sync::Mutex<Option<crate::mind::consent::PendingAuthorization>>,
+    /// Pending F2 edit proposals (id → proposal). Armed by send_message when
+    /// the reply contained a valid patch block; consumed by apply_edit_proposal.
+    pub edit_proposals: std::sync::Mutex<HashMap<String, crate::tools::fs::EditProposal>>,
     /// Click-through diagnostics written by the main window's frontend
     /// (global-cursor listener) and read by the Debug Panel's separate window.
     /// The Debug Panel lives in its own OS window (open_debug_window), so it
@@ -291,10 +316,129 @@ pub async fn send_message(
         );
     }
 
+    // F2: register the stripped proposal in process memory (confirm card →
+    // apply_edit_proposal). One card at a time is the safest UX: newest wins
+    // and older unconfirmed proposals drop.
+    let edit_proposal = match result.edit_proposal {
+        Some(p) => {
+            let info = EditProposalInfo {
+                id: p.id.clone(),
+                path: p.path.clone(),
+                diff_preview: crate::tools::fs::preview_diff(&p.search, &p.replacement),
+                search_len: p.search.len(),
+            };
+            if let Ok(mut map) = state.edit_proposals.lock() {
+                let stale: Vec<String> = map
+                    .iter()
+                    .filter(|(_, old)| old.path == p.path)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in stale {
+                    map.remove(&id);
+                }
+                let registered_id = p.id.clone();
+                map.insert(registered_id.clone(), p);
+                log::info!("[edit_file] proposal registered: {}", registered_id);
+                Some(info)
+            } else {
+                log::warn!("[edit_file] edit_proposals lock poisoned");
+                None
+            }
+        }
+        None => None,
+    };
+
     Ok(SendMessageResult {
         reply: result.response,
         transient_expression: transient,
+        edit_proposal,
     })
+}
+
+/// F2 confirm card answer (plan §3.6): approve applies the proposal under the
+/// CURRENT grant snapshot + optimistic lock, decline drops it. The proposal
+/// always leaves the sheet in every branch — one decision per card.
+#[tauri::command]
+pub async fn apply_edit_proposal(
+    id: String,
+    approve: bool,
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<EditApplyOutcome, String> {
+    let proposal = state
+        .edit_proposals
+        .lock()
+        .map_err(|e| format!("edit_proposals lock error: {}", e))?
+        .remove(&id)
+        .ok_or_else(|| "这个修改提案已经不在了（可能过期或已处理）。".to_string())?;
+    if state.config.tools.enable_fs_mutate == false {
+        return Ok(EditApplyOutcome {
+            status: "failed".into(),
+            message: "文件修改功能在设置里还没有打开（tools.enable_fs_mutate）。".into(),
+            path: None,
+        });
+    }
+    if !approve {
+        log::info!("[edit_file] proposal {} declined", id);
+        return Ok(EditApplyOutcome {
+            status: "declined".into(),
+            message: "好，那就不动这个文件。".into(),
+            path: None,
+        });
+    }
+    let grants: Vec<crate::db::grants::FsGrant> = db
+        .with_conn(|conn| crate::db::grants::list(conn))
+        .unwrap_or_default();
+    match crate::tools::fs::apply_proposal(&proposal, &grants) {
+        Ok(path) => {
+            log::info!("[edit_file] proposal {} applied to {}", id, path.display());
+            Ok(EditApplyOutcome {
+                status: "saved".into(),
+                message: format!(
+                    "已经改好啦。改动很小也很确定，我没动别的任何地方。",
+                ),
+                path: Some(path.to_string_lossy().to_string()),
+            })
+        }
+        Err(why) => {
+            log::warn!("[edit_file] apply {} failed: {}", id, why);
+            Ok(EditApplyOutcome {
+                status: "failed".into(),
+                message: why,
+                path: None,
+            })
+        }
+    }
+}
+
+/// Session-level single-step undo for the last applied edit (plan §3.6).
+#[tauri::command]
+pub async fn undo_last_edit(
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<EditApplyOutcome, String> {
+    if !state.config.tools.enable_fs_mutate {
+        return Ok(EditApplyOutcome {
+            status: "failed".into(),
+            message: "文件修改功能没有打开。".into(),
+            path: None,
+        });
+    }
+    let grants: Vec<crate::db::grants::FsGrant> = db
+        .with_conn(|conn| crate::db::grants::list(conn))
+        .unwrap_or_default();
+    match crate::tools::fs::undo_last_edit(&grants) {
+        Ok(path) => Ok(EditApplyOutcome {
+            status: "undone".into(),
+            message: "已经撤销刚才那处修改，恢复成我改之前的样子。".into(),
+            path: Some(path.to_string_lossy().to_string()),
+        }),
+        Err(why) => Ok(EditApplyOutcome {
+            status: "failed".into(),
+            message: why,
+            path: None,
+        }),
+    }
 }
 
 /// Triggers a reflection cycle if due (> 20 hours since last).

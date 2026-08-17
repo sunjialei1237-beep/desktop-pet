@@ -54,6 +54,10 @@ pub struct ConversationResult {
     /// How many tool rounds ran this turn (0 = no tools / answered directly).
     /// Observability for the Tool Layer (#11) + Golden Conversations tests.
     pub tool_rounds: usize,
+    /// F2 edit proposal stripped out of the reply (plan §3.6), if the LLM
+    /// produced a valid, unique patch block. The command layer registers it
+    /// and shows the confirm card; apply never happens in-converse.
+    pub edit_proposal: Option<crate::tools::fs::EditProposal>,
 }
 
 /// Bundled inputs for one conversation turn — Architecture Principle #2
@@ -325,6 +329,25 @@ const TOOL_MODE_PROMPT: &str = "\
 - 用中文回复，像平时一样自然，不要过分肯定搜索结果。
 - 查到的信息只是你刚查到的参考，不要当成你一直记得的事。";
 
+/// F2 proposal-format directive (plan §3.6), appended only when the write
+/// switch is on: after a normal read round, the modify request is answered
+/// with an explanation plus a structured patch block. Rust strips the block —
+/// it never reaches the bubble and never executes without confirmation.
+const EDIT_PROPOSAL_PROMPT: &str = "\
+[Edit Proposal]
+如果用户这轮是想修改某个已授权文件：先 read_text_file 看清楚目标内容，再在最终回复里\
+先写一句自然的说明，然后单独附一个代码块（不要在气泡里复述 patch 内容，气泡只会显示说明文字），格式严格如下：
+```edit_file
+path: <你刚才读的那个文件的绝对路径>
+<<<<< SEARCH
+<文件中现在真实存在的唯一一段原文，必须逐字精确>
+=====
+<替换成的新内容>
+>>>>> END
+```
+要求：SEARCH 必须与文件当前内容精确一致且只出现恰好一次；不要顺手改别的部分；\
+没有把握时就只给建议，不要输出代码块。";
+
 /// Full conversation pipeline:
 /// Ingest -> Trigger -> Retrieve -> Plan -> Budget -> LLM -> Grounding.
 pub async fn converse(
@@ -543,6 +566,7 @@ pub async fn converse(
             retrieved_scores,
             prompt_tokens: None,
             tool_rounds: 0,
+            edit_proposal: None,
         });
     }
 
@@ -861,6 +885,9 @@ pub async fn converse(
             tool_kinds.iter().map(|k| k.name()).collect::<Vec<_>>()
         );
         messages.push(ChatMessage::system(TOOL_MODE_PROMPT));
+        if ctx.tools_cfg.enable_fs_mutate {
+            messages.push(ChatMessage::system(EDIT_PROPOSAL_PROMPT));
+        }
         let mut recent_queries: Vec<(String, std::time::Instant)> = Vec::new();
         let run_id = turn as u64; // MVP: synchronous turns, no concurrent runs
         // Per-turn authorization snapshot for fs tools (plan §3.2): loaded
@@ -960,6 +987,21 @@ pub async fn converse(
         (chat_result.content, 0)
     };
 
+    // F2 proposal strip: the patch block never enters the bubble or the
+    // persisted conversation; only the natural explanation does. A valid
+    // proposal is carried on ConversationResult for the command layer to
+    // register behind a confirm card. Stripping happens in both the tool and
+    // the plain-chat branch (the model may propose after any Observation round).
+    let (response, edit_proposal) = crate::tools::fs::extract_edit_proposal(&response);
+    let edit_proposal = if ctx.tools_cfg.enable_fs_mutate {
+        edit_proposal
+    } else {
+        if edit_proposal.is_some() {
+            log::warn!("[converse] edit proposal produced but enable_fs_mutate is off — dropped");
+        }
+        None
+    };
+
     // Step 10: Grounding check. Skipped in QA mode — retrieval has no
     // episodes/facts there, so the check could only false-positive against a
     // direct factual answer (no memories to ground claims against).
@@ -1021,5 +1063,6 @@ pub async fn converse(
         retrieved_scores,
         prompt_tokens: Some(prompt_debug),
         tool_rounds,
+        edit_proposal,
     })
 }
