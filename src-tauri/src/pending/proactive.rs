@@ -235,10 +235,19 @@ fn fresh_anchorable_facts<'a>(facts: &'a [Fact], now: &DateTime<Utc>) -> Vec<&'a
     fresh
 }
 
+/// Candidate age line: "3天前记下" / "31天前记下" — feeds the selector's
+/// staleness judgment (小愿望超过两周没下文就翻篇). Degrades to "记下时间不明"
+/// on unparseable input, never panics.
+fn age_clause(iso: &str, now: &DateTime<Utc>) -> String {
+    match chrono::DateTime::parse_from_rfc3339(iso) {
+        Ok(d) => format!("{}天前记下", now.signed_duration_since(d.with_timezone(&Utc)).num_days().max(0)),
+        Err(_) => "记下时间不明".to_string(),
+    }
+}
+
 /// Whether an episode is inside the surfacing cooldown window (mirror of
 /// `sample_surface_anchor`'s filter, exposed for candidate-pool building).
-fn episode_in_cooldown(ep: &crate::db::episodes::Episode, now: &DateTime<Utc>) -> bool {
-    ep.last_recalled_at
+fn episode_in_cooldown(ep: &crate::db::episodes::Episode, now: &DateTime<Utc>) -> bool {    ep.last_recalled_at
         .as_deref()
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| {
@@ -303,11 +312,16 @@ fn build_candidate_pool<'a>(
                 id: format!("F{}", i + 1),
                 kind: "fact",
                 text: present_anchor(&format!("{}: {}", f.key, f.value), Some(&f.created_at)),
+                // Age is a first-class signal (user design note 2026-08-17):
+                // "上个月说想健身" surfacing this month is archive-keeping,
+                // not chatting — the selector needs the age to judge whether
+                // an "ongoing thing" has gone stale.
                 hint: format!(
-                    "事实｜{}｜用户提过 {} 次，她主动提起过 {} 次",
+                    "事实｜{}｜用户提过 {} 次，她主动提起过 {} 次，{}",
                     fact_surface_reason(f),
                     f.mention_count,
-                    f.surfaced_count
+                    f.surfaced_count,
+                    age_clause(&f.created_at, now),
                 ),
             },
             PoolRef::Fact(f),
@@ -331,9 +345,10 @@ fn build_candidate_pool<'a>(
                     &se.episode,
                 ),
                 hint: format!(
-                    "经历｜{}｜检索相关度 {:.2}",
+                    "经历｜{}｜检索相关度 {:.2}，{}",
                     episode_surface_reason(&se.episode, now),
-                    se.score
+                    se.score,
+                    age_clause(&se.episode.time, now),
                 ),
             },
             PoolRef::Episode(&se.episode),
@@ -826,14 +841,19 @@ fn due_bubble_prompt(anchor: &str, is_pet_promise: bool, anchor_reason: &str) ->
     // voices it — never invents a reason). Lets her open with "我突然想起你
     // 之前说…" instead of reciting the anchor cold.
     let reason_clause = format!("你想起它的由头：{anchor_reason}——自然带出这个感觉，但别照搬这句话。");
+    // No date attribution in the VOICE (user design note 2026-08-17): real
+    // people don't open with "上个月你提到…" — the anchor's bracketed date is
+    // background for her, never a line to speak. Only time-pegged reasons
+    // (临近面试/纪念日) may reference timing.
+    let no_date = "提起时自然带过，不要报时间出处——不说「上个月你提过」「之前你说」这类话，锚点括号里的日期只是给你的背景信息；除非由头本身就是个日子（临近面试、纪念日之类）。";
     if is_pet_promise {
         format!(
-            "（现在是兑现你自己承诺的时刻：{}。这是你亲口答应 ta 的事，时间到了。以「我说过要…」的口吻自然地兑现或提起，像一个说到做到的人，不是闹钟式提醒，也不要道歉式检讨。只能围绕它原意来聊，绝不能换成别的项目、事件或名字，更不能编出记忆里没有的具体事；实在没什么好接的，就说句简单的招呼。{reason_clause}{no_question}按规则回复，尤其规则 8。）",
+            "（现在是兑现你自己承诺的时刻：{}。这是你亲口答应 ta 的事，时间到了。以「我说过要…」的口吻自然地兑现或提起，像一个说到做到的人，不是闹钟式提醒，也不要道歉式检讨。只能围绕它原意来聊，绝不能换成别的项目、事件或名字，更不能编出记忆里没有的具体事；实在没什么好接的，就说句简单的招呼。{reason_clause}{no_date}{no_question}按规则回复，尤其规则 8。）",
             anchor
         )
     } else {
         format!(
-            "（你刚刚突然想起了这件事，想主动跟用户说。你想起来的只有这一件：{}。只能围绕它原意来聊，它是什么就说什么，绝不能换成别的项目、事件或名字，更不能编出记忆里没有的具体事；实在没什么好接的，就说句简单的招呼。{reason_clause}{no_question}按规则回复，尤其规则 8。）",
+            "（你刚刚突然想起了这件事，想主动跟用户说。你想起来的只有这一件：{}。只能围绕它原意来聊，它是什么就说什么，绝不能换成别的项目、事件或名字，更不能编出记忆里没有的具体事；实在没什么好接的，就说句简单的招呼。{reason_clause}{no_date}{no_question}按规则回复，尤其规则 8。）",
             anchor
         )
     }
@@ -1074,7 +1094,7 @@ pub async fn generate_welcome_back(
             .as_deref()
             .map(|r| format!("你想起它的由头：{r}——自然带出这个感觉，但别照搬这句话。"))
             .unwrap_or_default();
-        format!("你想起 ta 之前跟你提过的事：{memory_anchor}。{reason_clause}可以顺便轻轻关心一句，但只能围绕这件事的原意，别把它换成别的话题、别编出没提过的项目或细节，别像在完成任务。")
+        format!("你想起 ta 之前跟你提过的事：{memory_anchor}。{reason_clause}可以顺便轻轻关心一句，但只能围绕这件事的原意，别把它换成别的话题、别编出没提过的项目或细节，别像在完成任务。别报时间出处——不说「上个月你提过」，锚点里的日期只是背景。")
     } else {
         String::new()
     };
@@ -1232,7 +1252,7 @@ pub async fn generate_lonely_bubble(
             .as_deref()
             .map(|r| format!("你想起它的由头：{r}——自然带出这个感觉，但别照搬这句话。"))
             .unwrap_or_default();
-        format!("你刚好想起 ta 之前跟你提过的事：{memory_anchor}。{reason_clause}可以顺便轻轻带一句，像真的惦记着这件事，但只能围绕它原意，别换成别的话题、别编出没提过的细节。")
+        format!("你刚好想起 ta 之前跟你提过的事：{memory_anchor}。{reason_clause}可以顺便轻轻带一句，像真的惦记着这件事，但只能围绕它原意，别换成别的话题、别编出没提过的细节。别报时间出处——不说「上个月你提过」，锚点里的日期只是背景。")
     } else {
         String::new()
     };
@@ -1375,6 +1395,7 @@ mod tests {
         assert!(!p.contains("兑现"), "user events are not promises");
         assert!(p.contains("明天有个实习面试"));
         assert!(p.contains("由头"), "recall_reason is injected");
+        assert!(p.contains("不要报时间出处"), "no date attribution in the voice");
     }
 
     #[test]
@@ -1781,6 +1802,7 @@ mod tests {
         let (fresh_fact_candidate, _) = pool.iter().find(|(c, _)| c.text.contains("k0: value")).unwrap();
         assert!(fresh_fact_candidate.text.contains("k0: value"));
         assert!(fresh_fact_candidate.text.contains("7月1日"), "date reference attached");
+        assert!(fresh_fact_candidate.hint.contains("天前记下"), "candidate hint carries age: {:?}", fresh_fact_candidate.hint);
     }
 
     #[test]
