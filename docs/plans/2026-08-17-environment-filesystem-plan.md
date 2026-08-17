@@ -278,12 +278,17 @@ DebugPanel 新增 section：Environment Snapshot / [Environment] 注入与否及
 | **P3** Observe 工具 | §3.4 五工具 + §3.2 路径管线 + §3.3 内容限制 | "看看我在写什么"基于真实环境回答；穿越/UNC/denylist/二进制拒绝全过单测 |
 | **P4** Gate + 注入 | planner 两层 relevance；[Environment] section 追加 | "今天星期几"→ 无环境注入；care 轮 → 无注入；闲聊 token 与基线持平 |
 | **P5** 授权流 | pending 复用 + fs_grants + Settings 开关 | 首次访问未授权项目自然申请；deny 后 24h 不再问 |
-| **P6** 评测 | §6 全量 | 成本/安全/人格三线达标 |
-| **F1** create_note | Phase 2 | 能写笔记；路径注入/配额/原子写测试过 |
-| **F2** edit_file | Phase 3 回复即提案 | 确认卡 + 乐观锁 + CRLF/BOM 保留测试过；mtime 冲突正确拒绝 |
+| **P6** 评测 | §6 全量 | ✅ `611a5e1`：A/B/C 成本三线；注入黑盒；人格双跑；顺带修 DeepSeek thinking-off 缺口 + M7 |
+| **E3** open_file | 挂 ComputerAction，§3.5 扩展名 allowlist | ✅ `6fca230`：canonicalize-first 重检 + `.bat/.exe/.lnk/.ps1/.vbs/.msi/.reg/宏` 拒绝 + explorer 执行 |
+| **F1** create_note | Phase 2 | ✅ `6fca230`：提案/确认分离；文件名校验；1MB/50MB 配额；temp+rename；同名词递增 |
+| **F2** edit_file | Phase 3 回复即提案 | ✅ `e7278d2`：diff 卡；mtime+hash 乐观锁；CRLF/BOM 保留；会话 undo；坏块剥除不武装 |
+| **U1–U7** | §8.4 七项 UX 候选 | ✅ `dfb25cc`：U1 同轮续做 / U2 借题发挥+诚实降级 / U3 首授权注册 / U4 deny 后悔 / U5 Settings 工作区权限页；U6 确认已有；U7 = F2 验收 |
+| **M7/M8/M10** | §8.5 三延期项 | ✅ `611a5e1`(M7) / `3c4b076`(M8 优先级环, M10 审计指标) |
 | ~~F3~~ | move/rename/run_command | 无限期延后 |
 
 **测试基建**：环境工具黑名单用例直接进 `tool_conversations.rs`（"哈哈哈"/"今天星期几"/回忆语境 → 0 环境注入 0 工具）；路径管线纯函数单测（canonicalize/denylist/UNC/8.3/大小写）。
+
+**E5 裁决（§8.3）**：P6 实测环境 section 成本 65 token/轮且 C 线闲谈与 A 线完全相同（prompt cache 生效）→ git cache 10s TTL 直接验收，不接事件失效；延迟性业务需求出现时再接线。
 
 ---
 
@@ -365,9 +370,11 @@ DebugPanel 新增 section：Environment Snapshot / [Environment] 注入与否及
 6. **git 转译成人话**：cache 旁路时先由 Rust 转成"你的 {name} 有 3 处没提交、最近提交了 xxx"，再给 LLM，降低她的"术语味"；
 7. **Mutate 确认卡角色化**：最终气泡只留她的话（"我改了 3 行，看看行不行"），diff 卡独立存在——实施 F 阶段时作为验收项。
 
+> **UX 候选状态（2026-08-18）**：U1/U2/U3/U4/U5 已实现（`dfb25cc`）——同轮续做带 followup 重跑 agent loop；[Environment Use] 只注入在 section 实际存在时；授权 Granted/Always 同步注册项目；"改主意/解锁/撤销拒绝"即时解冻全部 deny→once；Settings 增工具开关+授权列表撤销。U6 核验无需改码（git 已是中文人话）；U7 = F2 验收通过（气泡剥 patch 块）。
+
 ### 8.5 Medium 处置台账（2026-08-17 小轮后状态）
 
-> **裁决记录（用户裁定「修小轮 + 更新方案状态」）**：M2/M3/M11 已随 C/H 轮完成；M1（限容）/M4/M5/M6/M9 小轮完成（`5596010`，lib 509 绿）；M1 的 PID 复用错判与 M7/M8/M10 推迟到 P6/感知轮；M12 设计容忍。
+> **裁决记录（最终状态 2026-08-18，`dfb25cc` 前全清）**：M2/M3/M11 已随 C/H 轮完成；M1/M4/M5/M6/M9 小轮完成（`5596010`）；M7 随 P6 轮完成（`611a5e1`，自窗采样回落到 last_non_pet_foreground + focus 轮询 30s→5s）；M8/M10 随后续轮完成（`3c4b076`）；M12 容忍；M1 的 PID 复用错判仍仅内置限容防御、真机日志观察。
 
 | # | 位置 | 问题 | 处置 |
 |---|---|---|---|
@@ -377,10 +384,10 @@ DebugPanel 新增 section：Environment Snapshot / [Environment] 注入与否及
 | M4 | deny 冷却查重 | `grants::get(root)` raw 字符串精确匹配，拼写/大小写变体漏过 24h 冷却 | ✅ `equivalent_roots`（canonicalize 双方，缺失时 normalized fallback）+ `any_deny_in_cooldown`，converse 冷却查询走新函数 |
 | M5 | `workspace.rs::resolve_scope` | `active_project` 项目名大小写敏感匹配 | ✅ `project_by_name_ci`：name/id 统一 normalize 比较，禁用项目仍被忽略 |
 | M6 | `fs.rs::note_denied_root` | 多工具轮只保留最后一个未授权 root | ✅ `denied_roots_slot: Vec` 去重记录；`PendingAuthorization.roots` 同轮多 root，一次答复统一 resolve，确认措辞支持 1/2/N 处 |
-| M7 | 环境观测自我窗口 | 璃自己被聚焦时 `desktop-pet` 覆盖真实前台 | ⏸ 推迟 P6/感知轮（C2 已堵住标题注入，非安全面） |
-| M8 | 事件容量饥饿 | 高频 AppChanged 可挤掉 file 事件 | ⏸ 推迟 P6：需先实测事件频率再定分级/去重策略 |
+| M7 | 环境观测自我窗口 | 璃自己被聚焦时 `desktop-pet` 覆盖真实前台 | ✅ `611a5e1`：`last_non_pet_foreground()` 回退采样 + `resolve_own_window_sample` 单测；focus 轮询 30s→5s |
+| M8 | 事件容量饥饿 | 高频 AppChanged 可挤掉 file 事件 | ✅ `3c4b076`：环满先牺牲 AppChanged；无 AppChanged 可挤时新 AppChanged 直接丢弃——project/file/presence 永不被挤 |
 | M9 | `commands.rs::fs_grant_access` | Settings 通道可写入注定 hard-deny 的自身 AppData 授权 | ✅ `path::probe_own_grant`：合成 self-grant 过 `authorize`，硬策略/UNC/不存在路径一律拒绝入库 |
-| M10 | 审计指标 | §3.8 的部分字段（bytes/截断统计/grants 决策明细）只在日志，未进 DebugPanel 指标 | ⏸ 推迟 P6（DebugPanel 同批） |
+| M10 | 审计指标 | §3.8 的部分字段（bytes/截断统计/grants 决策明细）只在日志，未进 DebugPanel 指标 | ✅ `3c4b076`：`FsAuditMetrics` 14 字段进 DebugSnapshot，DebugPanel Environment 区审计行 |
 | M11 | `recent_summary`/`file/project` 无截断 | 归入 C2 修复 | ✅ 随 C2（`dfce832`）：sanitize + 分字段截断 |
 | M12 | 标题解析边界 | 本地化/自定义 titlebar 下保守 None（已按设计容忍） | 不修，观察真机日志 |
 
