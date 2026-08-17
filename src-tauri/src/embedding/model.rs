@@ -156,10 +156,11 @@ impl EmbeddingModel {
             MODEL_KEY_FP32.to_string()
         }
     }
-    /// Embeds a single text string into a 1024-dim normalized vector.
+    /// Embeds a single text string into a normalized embedding vector.
     pub fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
-        let (input_ids, attention_mask) = self.tokenize_single(text)?;
-        let hidden = self.run_inference(&input_ids, &attention_mask)?;
+        let (input_ids, attention_mask, token_type_ids) = self.tokenize_single(text)?;
+        let hidden =
+            self.run_inference(&input_ids, &attention_mask, Some(&token_type_ids))?;
         let pooled = mean_pool(&hidden.view(), &attention_mask);
         Ok(l2_normalize(&pooled))
     }
@@ -169,8 +170,14 @@ impl EmbeddingModel {
         texts.iter().map(|t| self.embed(t)).collect()
     }
 
-    /// Tokenizes a single text, returning (input_ids, attention_mask) as i64 tensors.
-    fn tokenize_single(&self, text: &str) -> Result<(Array2<i64>, Array2<i64>)> {
+    /// Tokenizes a single text into (input_ids, attention_mask, token_type_ids)
+    /// i64 tensors. token_type_ids is only consumed by models whose graph
+    /// declares it (e.g. bge-*-zh-v1.5 exports); single-sentence embedding is
+    /// segment 0 throughout.
+    fn tokenize_single(
+        &self,
+        text: &str,
+    ) -> Result<(Array2<i64>, Array2<i64>, Array2<i64>)> {
         let encoding = self
             .tokenizer
             .encode(text, true)
@@ -182,14 +189,21 @@ impl EmbeddingModel {
             .iter()
             .map(|&v| v as i64)
             .collect();
+        let types: Vec<i64> = encoding
+            .get_type_ids()
+            .iter()
+            .map(|&v| v as i64)
+            .collect();
 
         let seq_len = ids.len();
         let input_ids = Array2::from_shape_vec((1, seq_len), ids)
             .map_err(|e| EmbeddingError::Tokenizer(format!("Shape input_ids: {}", e)))?;
         let attention_mask = Array2::from_shape_vec((1, seq_len), mask)
             .map_err(|e| EmbeddingError::Tokenizer(format!("Shape attention_mask: {}", e)))?;
+        let token_type_ids = Array2::from_shape_vec((1, seq_len), types)
+            .map_err(|e| EmbeddingError::Tokenizer(format!("Shape token_type_ids: {}", e)))?;
 
-        Ok((input_ids, attention_mask))
+        Ok((input_ids, attention_mask, token_type_ids))
     }
 
     /// Runs the ONNX session and extracts the last_hidden_state output.
@@ -198,6 +212,7 @@ impl EmbeddingModel {
         &mut self,
         input_ids: &Array2<i64>,
         attention_mask: &Array2<i64>,
+        token_type_ids: Option<&Array2<i64>>,
     ) -> Result<Array2<f32>> {
         // Pass Array2<i64> directly: ort 2.0.0-rc.12 accepts owned arrays.
         // but we must avoid into_dyn() which causes ndarray version conflicts.
@@ -208,7 +223,28 @@ impl EmbeddingModel {
         let mask_value = Value::from_array(attention_mask.clone())
             .map_err(|e| EmbeddingError::Onnx(format!("Create attention_mask tensor: {}", e)))?;
 
-        let inputs = ort::inputs!["input_ids" => ids_value, "attention_mask" => mask_value];
+        // Input contract varies by export: BGE-M3 takes ids+mask only; the
+        // bge-*-zh-v1.5 exports additionally REQUIRE token_type_ids (their
+        // token_type_embeddings/Gather node errors on a missing input). Feed
+        // it only when the session's graph declares it.
+        let wants_type_ids = self
+            .session
+            .inputs()
+            .iter()
+            .any(|i| i.name() == "token_type_ids");
+        let inputs = match (wants_type_ids, token_type_ids) {
+            (true, Some(types)) => {
+                let types_value = Value::from_array(types.clone()).map_err(|e| {
+                    EmbeddingError::Onnx(format!("Create token_type_ids tensor: {}", e))
+                })?;
+                ort::inputs![
+                    "input_ids" => ids_value,
+                    "attention_mask" => mask_value,
+                    "token_type_ids" => types_value
+                ]
+            }
+            _ => ort::inputs!["input_ids" => ids_value, "attention_mask" => mask_value],
+        };
 
         let outputs = self
             .session
