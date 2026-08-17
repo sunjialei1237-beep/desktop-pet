@@ -648,6 +648,11 @@ pub async fn converse(
         messages.push(ChatMessage::system(TOOL_MODE_PROMPT));
         let mut recent_queries: Vec<(String, std::time::Instant)> = Vec::new();
         let run_id = turn as u64; // MVP: synchronous turns, no concurrent runs
+        // Per-turn authorization snapshot for fs tools (plan §3.2): loaded
+        // once; mid-turn consent changes apply on the next turn by design.
+        let fs_grants: Vec<crate::db::grants::FsGrant> = db
+            .with_conn(|conn| crate::db::grants::list(conn))
+            .unwrap_or_default();
         let outcome = crate::mind::agent::run_agent_loop(
             &mut messages,
             intent.capability,
@@ -656,6 +661,7 @@ pub async fn converse(
             run_id,
             &mut on_token,
             &mut recent_queries,
+            &fs_grants,
         )
         .await?;
         log::info!(

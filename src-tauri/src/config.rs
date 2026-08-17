@@ -193,6 +193,11 @@ impl Default for ProactiveConfig {
 pub struct ToolsConfig {
     pub enable_search_web: bool,
     pub enable_open_application: bool,
+    /// Read-only filesystem observation tools (plan 2026-08-17 §2.7).
+    /// Capability switch only — per-path authorization is the fs_grants
+    /// table. Defaults OFF: V1 policy is Inspect = explicit opt-in.
+    #[serde(default)]
+    pub enable_fs_observe: bool,
 }
 
 impl Default for ToolsConfig {
@@ -200,6 +205,7 @@ impl Default for ToolsConfig {
         ToolsConfig {
             enable_search_web: true,
             enable_open_application: true,
+            enable_fs_observe: false,
         }
     }
 }

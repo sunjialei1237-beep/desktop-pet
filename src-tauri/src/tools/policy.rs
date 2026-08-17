@@ -65,6 +65,54 @@ pub fn check(kind: super::ToolKind, args: &Value, cfg: &ToolsConfig) -> PolicyDe
             Some(_) => PolicyDecision::Deny("non_https_blocked"),
             None => PolicyDecision::Deny("invalid_url"),
         },
+        // Filesystem Observe tools: schema sanity ONLY here. Path
+        // authorization (canonicalize + grants + denylist) runs at execute
+        // time in path.rs — policy is stateless and has no DB/fs access.
+        super::ToolKind::ReadTextFile => {
+            if !cfg.enable_fs_observe {
+                return PolicyDecision::Deny("fs_observe_disabled");
+            }
+            match args.get("path").and_then(|p| p.as_str()) {
+                Some(p) if !p.trim().is_empty() => PolicyDecision::Allow,
+                _ => PolicyDecision::Deny("invalid_path"),
+            }
+        }
+        super::ToolKind::SearchFiles => {
+            if !cfg.enable_fs_observe {
+                return PolicyDecision::Deny("fs_observe_disabled");
+            }
+            match args.get("query").and_then(|q| q.as_str()) {
+                Some(q) if !q.trim().is_empty() => PolicyDecision::Allow,
+                _ => PolicyDecision::Deny("invalid_query"),
+            }
+        }
+        super::ToolKind::ListDirectory => {
+            if !cfg.enable_fs_observe {
+                return PolicyDecision::Deny("fs_observe_disabled");
+            }
+            match args.get("path").and_then(|p| p.as_str()) {
+                Some(p) if !p.trim().is_empty() => PolicyDecision::Allow,
+                _ => PolicyDecision::Deny("invalid_path"),
+            }
+        }
+        super::ToolKind::GetFileMetadata => {
+            if !cfg.enable_fs_observe {
+                return PolicyDecision::Deny("fs_observe_disabled");
+            }
+            match args.get("path").and_then(|p| p.as_str()) {
+                Some(p) if !p.trim().is_empty() => PolicyDecision::Allow,
+                _ => PolicyDecision::Deny("invalid_path"),
+            }
+        }
+        super::ToolKind::GetGitContext => {
+            if !cfg.enable_fs_observe {
+                return PolicyDecision::Deny("fs_observe_disabled");
+            }
+            match args.get("project_id").and_then(|s| s.as_str()) {
+                Some(s) if !s.trim().is_empty() => PolicyDecision::Allow,
+                _ => PolicyDecision::Deny("invalid_project"),
+            }
+        }
     }
 }
 
@@ -77,6 +125,15 @@ mod tests {
         ToolsConfig {
             enable_search_web: search,
             enable_open_application: app,
+            enable_fs_observe: false,
+        }
+    }
+
+    fn cfg_fs() -> ToolsConfig {
+        ToolsConfig {
+            enable_search_web: false,
+            enable_open_application: false,
+            enable_fs_observe: true,
         }
     }
 
@@ -177,6 +234,39 @@ mod tests {
         assert!(matches!(
             check(ToolKind::OpenUrl, &serde_json::json!({}), &cfg(true, true)),
             PolicyDecision::Deny("invalid_url")
+        ));
+    }
+
+    #[test]
+    fn fs_tools_denied_when_observe_disabled() {
+        let args = serde_json::json!({"path": "D:\\some\\file.rs"});
+        assert!(matches!(
+            check(ToolKind::ReadTextFile, &args, &cfg(true, true)),
+            PolicyDecision::Deny("fs_observe_disabled")
+        ));
+        assert!(matches!(
+            check(ToolKind::GetGitContext, &serde_json::json!({"project_id": "x"}), &cfg(true, true)),
+            PolicyDecision::Deny("fs_observe_disabled")
+        ));
+    }
+
+    #[test]
+    fn fs_tools_schema_checked_when_enabled() {
+        assert!(matches!(
+            check(ToolKind::ReadTextFile, &serde_json::json!({"path": "D:\\a.rs"}), &cfg_fs()),
+            PolicyDecision::Allow
+        ));
+        assert!(matches!(
+            check(ToolKind::ReadTextFile, &serde_json::json!({"path": "  "}), &cfg_fs()),
+            PolicyDecision::Deny("invalid_path")
+        ));
+        assert!(matches!(
+            check(ToolKind::SearchFiles, &serde_json::json!({"query": "fn main"}), &cfg_fs()),
+            PolicyDecision::Allow
+        ));
+        assert!(matches!(
+            check(ToolKind::SearchFiles, &serde_json::json!({}), &cfg_fs()),
+            PolicyDecision::Deny("invalid_query")
         ));
     }
 }

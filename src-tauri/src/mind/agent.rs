@@ -55,6 +55,7 @@ pub async fn run_agent_loop(
     run_id: u64,
     on_token: &mut impl FnMut(&str),
     recent_queries: &mut Vec<(String, Instant)>,
+    fs_grants: &[crate::db::grants::FsGrant],
 ) -> Result<AgentOutcome, String> {
     let kinds = tools::capability_to_tools(cap, cfg);
     let tool_defs = tools::tool_defs_for(&kinds);
@@ -112,7 +113,7 @@ pub async fn run_agent_loop(
 
         // Execute each requested tool call.
         for tc in &tool_calls {
-            execute_one_tool(tc, &kind_by_name, cfg, run_id, messages, recent_queries).await;
+            execute_one_tool(tc, &kind_by_name, cfg, run_id, messages, recent_queries, fs_grants).await;
         }
     }
 
@@ -137,6 +138,7 @@ async fn execute_one_tool(
     run_id: u64,
     messages: &mut Vec<ChatMessage>,
     recent_queries: &mut Vec<(String, Instant)>,
+    fs_grants: &[crate::db::grants::FsGrant],
 ) {
     let name = &tc.function.name;
     let args: serde_json::Value =
@@ -188,7 +190,7 @@ async fn execute_one_tool(
             let start = Instant::now();
             let exec = tokio::time::timeout(
                 Duration::from_secs(TOOL_TIMEOUT_SECS),
-                tools::execute(kind, &args, cfg),
+                tools::execute(kind, &args, cfg, fs_grants),
             )
             .await;
             let (status, content) = match exec {
