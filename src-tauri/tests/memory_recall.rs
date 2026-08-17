@@ -55,6 +55,8 @@ async fn cross_session_recall_works() {
     let pacing = Mutex::new(QuestionPacing::default());
     let pending_forget: Mutex<Option<desktop_pet_lib::mind::forget::PendingForget>> =
         Mutex::new(None);
+    let pending_authorization: Mutex<Option<desktop_pet_lib::mind::consent::PendingAuthorization>> =
+        Mutex::new(None);
     let tools_cfg = desktop_pet_lib::config::ToolsConfig::default();
 
     let facts_before = snapshot_fact_keys(&db);
@@ -70,6 +72,7 @@ async fn cross_session_recall_works() {
             wm_context: &seed_wm_ctx, llm: &llm, db: &db,
             embedding: None, pacing: &pacing,
             pending_forget: &pending_forget,
+                pending_authorization: &pending_authorization,
             tools_cfg: &tools_cfg,
         },
         |_|{},
@@ -98,6 +101,7 @@ async fn cross_session_recall_works() {
             wm_context: &noise_wm_ctx, llm: &llm, db: &db,
             embedding: None, pacing: &pacing,
             pending_forget: &pending_forget,
+                pending_authorization: &pending_authorization,
             tools_cfg: &tools_cfg,
         },
         |_|{},
@@ -121,6 +125,7 @@ async fn cross_session_recall_works() {
             wm_context: &recall_wm_ctx, llm: &llm, db: &db,
             embedding: None, pacing: &pacing,
             pending_forget: &pending_forget,
+                pending_authorization: &pending_authorization,
             tools_cfg: &tools_cfg,
         },
         |_|{},

@@ -48,6 +48,66 @@ fn failed(msg: String) -> ToolResult {
     }
 }
 
+// --- Consent arming (plan §3.7) --------------------------------------------------
+
+/// Root that a tool wanted but was NOT authorized for, recorded so converse
+/// can arm a pending authorization after the loop. Take-and-clear semantics.
+fn denied_root_slot() -> &'static std::sync::Mutex<Option<String>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// The root a consent ask should cover for a denied path: the owning
+/// registered project when there is one, else the file's parent directory
+/// (the directory itself for directory requests).
+fn grant_root_for(canonical: &Path) -> String {
+    let registry = super::workspace::WorkspaceRegistry::load();
+    if let Some(proj) = super::workspace::owning_project(&registry, canonical) {
+        return proj.path.clone();
+    }
+    if canonical.is_dir() {
+        canonical.to_string_lossy().to_string()
+    } else {
+        canonical
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| canonical.to_string_lossy().to_string())
+    }
+}
+
+/// Record a NotAuthorized denial for the consent flow (called by every tool
+/// below when the path pipeline rejects with NotAuthorized).
+fn note_denied_root(canonical: &Path) {
+    let root = grant_root_for(canonical);
+    if let Ok(mut g) = denied_root_slot().lock() {
+        *g = Some(root);
+    }
+}
+
+/// Converse reads (and clears) this after the agent loop to arm the pending
+/// authorization slot.
+pub fn take_denied_root() -> Option<String> {
+    denied_root_slot().lock().ok().and_then(|mut g| g.take())
+}
+
+/// Shared pipeline wrapper for the tools below: on NotAuthorized it both
+/// returns the rejection AND records the consent root.
+fn authorize_path(raw: &str, grants: &[crate::db::grants::FsGrant]) -> Result<PathBuf, ToolResult> {
+    match path::resolve_and_authorize(raw, grants) {
+        Ok(p) => Ok(p),
+        Err(path::PathDeny::NotAuthorized) => {
+            // Best effort: record the root even though the raw path didn't
+            // canonicalize cleanly (it may still exist; resolve only failed
+            // for uniform-denial reasons on OTHER deny kinds).
+            if let Ok(c) = path::resolve(raw) {
+                note_denied_root(&c);
+            }
+            Err(rejected(&path::PathDeny::NotAuthorized.message()))
+        }
+        Err(deny) => Err(rejected(&deny.message())),
+    }
+}
+
 // --- read_text_file ----------------------------------------------------------
 
 /// Read a text file fragment. Lines are 1-based, inclusive; the window is
@@ -57,9 +117,9 @@ pub async fn read_text_file(args: &serde_json::Value, grants: &[crate::db::grant
         Some(p) if !p.trim().is_empty() => p,
         _ => return rejected("没有指定要读取的文件路径。"),
     };
-    let canonical = match path::resolve_and_authorize(raw_path, grants) {
+    let canonical = match authorize_path(raw_path, grants) {
         Ok(p) => p,
-        Err(deny) => return rejected(&deny.message()),
+        Err(r) => return r,
     };
 
     let meta = match std::fs::metadata(&canonical) {
@@ -149,9 +209,9 @@ pub async fn search_files(args: &serde_json::Value, grants: &[crate::db::grants:
         Some(r) => r,
         None => return rejected("没有找到这个项目（scope 需是 workspace registry 里的 project id，或 active_project）。"),
     };
-    let root = match path::resolve_and_authorize(&root_raw.to_string_lossy(), grants) {
+    let root = match authorize_path(&root_raw.to_string_lossy(), grants) {
         Ok(p) => p,
-        Err(deny) => return rejected(&deny.message()),
+        Err(r) => return r,
     };
 
     let needle = query.to_lowercase();
@@ -236,9 +296,9 @@ pub async fn list_directory(args: &serde_json::Value, grants: &[crate::db::grant
         Some(p) if !p.trim().is_empty() => p,
         _ => return rejected("没有指定要列出的目录路径。"),
     };
-    let canonical = match path::resolve_and_authorize(raw_path, grants) {
+    let canonical = match authorize_path(raw_path, grants) {
         Ok(p) => p,
-        Err(deny) => return rejected(&deny.message()),
+        Err(r) => return r,
     };
     if !canonical.is_dir() {
         return rejected("这个路径不是目录。");
@@ -282,9 +342,9 @@ pub async fn get_file_metadata(args: &serde_json::Value, grants: &[crate::db::gr
         Some(p) if !p.trim().is_empty() => p,
         _ => return rejected("没有指定文件路径。"),
     };
-    let canonical = match path::resolve_and_authorize(raw_path, grants) {
+    let canonical = match authorize_path(raw_path, grants) {
         Ok(p) => p,
-        Err(deny) => return rejected(&deny.message()),
+        Err(r) => return r,
     };
     let meta = match std::fs::metadata(&canonical) {
         Ok(m) => m,
@@ -345,9 +405,9 @@ pub async fn get_git_context(args: &serde_json::Value, grants: &[crate::db::gran
         Some(r) => r,
         None => return rejected("没有找到这个项目。"),
     };
-    let root = match path::resolve_and_authorize(&root_raw.to_string_lossy(), grants) {
+    let root = match authorize_path(&root_raw.to_string_lossy(), grants) {
         Ok(p) => p,
-        Err(deny) => return rejected(&deny.message()),
+        Err(r) => return r,
     };
     let key = root.to_string_lossy().to_string();
 

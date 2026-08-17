@@ -22,7 +22,7 @@ pub mod search;
 mod system;
 pub mod workspace;
 pub mod path;
-mod fs;
+pub mod fs;
 
 /// What *category* of external capability the Brain grants this turn. The
 /// Planner emits this (not a tool name) — Brain never sees tool names. `None`

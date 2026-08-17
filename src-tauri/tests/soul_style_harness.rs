@@ -212,6 +212,8 @@ async fn run_turn(
     let pacing = Mutex::new(QuestionPacing::default());
     let pending_forget: Mutex<Option<desktop_pet_lib::mind::forget::PendingForget>> =
         Mutex::new(None);
+    let pending_authorization: Mutex<Option<desktop_pet_lib::mind::consent::PendingAuthorization>> =
+        Mutex::new(None);
     let tools_cfg = config::ToolsConfig::default();
     let conv_id = format!("soul_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
     let result = converse::converse(
@@ -225,6 +227,7 @@ async fn run_turn(
             embedding: emb,
             pacing: &pacing,
             pending_forget: &pending_forget,
+                pending_authorization: &pending_authorization,
             tools_cfg: &tools_cfg,
         },
         |_| {},

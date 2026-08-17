@@ -118,6 +118,7 @@ async fn tool_rounds_for(llm: &LlmClient, db: &DbState, text: &str) -> (usize, S
     let wm_ctx = wm.get_context();
     let pacing = Mutex::new(QuestionPacing::default());
     let pending_forget: Mutex<Option<PendingForget>> = Mutex::new(None);
+    let pending_authorization: Mutex<Option<desktop_pet_lib::mind::consent::PendingAuthorization>> = Mutex::new(None);
     let tools_cfg = config::ToolsConfig::default();
     let result = converse(
         &ConverseCtx {
@@ -130,6 +131,7 @@ async fn tool_rounds_for(llm: &LlmClient, db: &DbState, text: &str) -> (usize, S
             embedding: None,
             pacing: &pacing,
             pending_forget: &pending_forget,
+                pending_authorization: &pending_authorization,
             tools_cfg: &tools_cfg,
         },
         |_| {},

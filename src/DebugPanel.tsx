@@ -48,8 +48,9 @@ interface DebugSnapshot {
   llm_configured: boolean;
   continuous_work_secs: number;
   is_deep_focus: boolean;
-  env_hints: { title: string | null; file_hint: string | null; project_hint: string | null };
+  env_hints: { app: string | null; title: string | null; file_hint: string | null; project_hint: string | null };
   env_recent: string | null;
+  fs_grants: { root: string; mode: string; created_at: string; source: string }[];
   last_bubble_at: string | null;
   next_bubble_in_secs: number;
 }
@@ -309,6 +310,14 @@ export function DebugPanel({ anim, onClose, onQuit }: {
             <span>Recently: {snapshot.env_recent}</span>
           </div>
         )}
+        <div className="debug-bar">
+          <span>
+            FS 授权:{" "}
+            {snapshot.fs_grants.length === 0
+              ? "（无）"
+              : snapshot.fs_grants.map((g) => `${g.root} [${g.mode}]`).join(" | ")}
+          </span>
+        </div>
       </div>
 
       <div className="debug-section">

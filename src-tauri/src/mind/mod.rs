@@ -1,6 +1,7 @@
 pub mod correction;
 pub mod extractor;
 pub mod forget;
+pub mod consent;
 pub mod gate;
 pub mod memory_gate;
 pub mod store;

@@ -93,6 +93,8 @@ async fn run_50_turn_conversation() {
     let pacing = Mutex::new(QuestionPacing::default());
     let pending_forget: Mutex<Option<desktop_pet_lib::mind::forget::PendingForget>> =
         Mutex::new(None);
+    let pending_authorization: Mutex<Option<desktop_pet_lib::mind::consent::PendingAuthorization>> =
+        Mutex::new(None);
     let tools_cfg = desktop_pet_lib::config::ToolsConfig::default();
 
     let mut aligned = 0usize;
@@ -110,6 +112,7 @@ async fn run_50_turn_conversation() {
                 wm_context: &wm_ctx, llm: &llm, db: &db,
                 embedding: None, pacing: &pacing,
                 pending_forget: &pending_forget,
+                pending_authorization: &pending_authorization,
                 tools_cfg: &tools_cfg,
             },
             |_|{},

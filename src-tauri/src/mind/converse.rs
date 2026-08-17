@@ -77,6 +77,10 @@ pub struct ConverseCtx<'a> {
     /// here until their next reply resolves one (or they move on). Mirrors
     /// `pacing` as a turn-spanning Mutex slot (Architecture #2).
     pub pending_forget: &'a std::sync::Mutex<Option<crate::mind::forget::PendingForget>>,
+    /// Pending cross-turn filesystem authorization (plan §3.7). Armed by
+    /// Rust when an Observe tool is denied for an unauthorized root; the
+    /// user's next short reply resolves it (once / always / deny).
+    pub pending_authorization: &'a std::sync::Mutex<Option<crate::mind::consent::PendingAuthorization>>,
     /// Tool-layer config (Phase 6): drives the tool branch's capability gate.
     pub tools_cfg: &'a crate::config::ToolsConfig,
 }
@@ -165,6 +169,75 @@ fn resolve_pending_forget(
     }
 }
 
+/// Inspect the cross-turn authorization slot and resolve the user's reply
+/// (plan §3.7). Take-and-clear in every branch; stale (>90s) slots drop.
+/// Granted/Denied write the fs_grants row HERE, before ingest, so the
+/// reply ("可以") is never stored as a memory.
+fn resolve_pending_authorization(
+    ctx: &ConverseCtx<'_>,
+    text: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<crate::mind::consent::ConsentState, String> {
+    use crate::mind::consent::{classify_reply, ConsentReply, ConsentState, PendingAuthorization, STALE_AFTER_SECS};
+
+    let pending: Option<PendingAuthorization> = {
+        let mut guard = ctx
+            .pending_authorization
+            .lock()
+            .map_err(|e| format!("pending_authorization lock error: {}", e))?;
+        match guard.as_ref() {
+            Some(pa) if (now - pa.created_at).num_seconds() > STALE_AFTER_SECS => {
+                *guard = None;
+                None
+            }
+            Some(pa) => {
+                let v = pa.clone();
+                *guard = None;
+                Some(v)
+            }
+            None => None,
+        }
+    };
+    let Some(pa) = pending else {
+        return Ok(ConsentState::Proceed);
+    };
+
+    match classify_reply(text) {
+        ConsentReply::Always => {
+            let _ = db_write_grant(ctx, &pa.root, crate::db::grants::GrantMode::Always);
+            log::info!("[converse] fs consent: ALWAYS grant for {}", pa.root);
+            Ok(ConsentState::Granted {
+                root: pa.root,
+                always: true,
+            })
+        }
+        ConsentReply::Once => {
+            let _ = db_write_grant(ctx, &pa.root, crate::db::grants::GrantMode::Once);
+            log::info!("[converse] fs consent: ONCE grant for {}", pa.root);
+            Ok(ConsentState::Granted { root: pa.root, always: false })
+        }
+        ConsentReply::Deny => {
+            let _ = db_write_grant(ctx, &pa.root, crate::db::grants::GrantMode::Deny);
+            log::info!("[converse] fs consent: DENY for {}", pa.root);
+            Ok(ConsentState::Denied { root: pa.root })
+        }
+        ConsentReply::Unrelated => {
+            // The ask is abandoned — no grant change, proceed normally.
+            log::info!("[converse] fs consent: reply unrelated, ask abandoned");
+            Ok(ConsentState::Proceed)
+        }
+    }
+}
+
+fn db_write_grant(
+    ctx: &ConverseCtx<'_>,
+    root: &str,
+    mode: crate::db::grants::GrantMode,
+) -> Result<(), String> {
+    ctx.db
+        .with_conn(|conn| crate::db::grants::upsert(conn, root, mode, "conversation"))
+}
+
 /// System hint listing the candidate memories so she asks "which one?"
 /// naturally (cites the real summaries instead of inventing different ones).
 fn disambig_prompt(candidates: &[crate::mind::forget::ForgetCandidate]) -> String {
@@ -229,8 +302,12 @@ pub async fn converse(
     // already happened in resolve_pending_forget. (Architecture #1: Rust erased
     // it; ingest would only pollute.)
     let pending_res = resolve_pending_forget(ctx, text, chrono::Utc::now())?;
+    // FS consent resolution (plan §3.7): must also run BEFORE ingest — the
+    // grant/deny row is written here and the short reply ("可以") must never
+    // be stored as a memory.
+    let consent_res = resolve_pending_authorization(ctx, text, chrono::Utc::now())?;
     let outcome = match &pending_res {
-        PendingResolution::Proceed => {
+        PendingResolution::Proceed if matches!(consent_res, crate::mind::consent::ConsentState::Proceed) => {
             crate::mind::ingest(text, conversation_id, turn, &known_facts, llm, db, embedding)
                 .await?
         }
@@ -523,6 +600,26 @@ pub async fn converse(
     //     STARTS a disambiguation: store the candidates in the slot and ask back.
     //     (Architecture Principle #1: Rust decided what/whether to erase; the LLM
     //     only acknowledges or asks — never deletes, and never repeats content.)
+    // FS consent acknowledgment (plan §3.7): Granted → thank + offer to
+    // look (the NEXT environment request now passes the policy — retry is
+    // natural conversation, no machinery); Denied → accept gracefully and
+    // never nag (the deny row's cooldown enforces the 24h silence).
+    match &consent_res {
+        crate::mind::consent::ConsentState::Granted { root, always } => {
+            log::info!("[converse] fs consent granted (always={}): {}", always, root);
+            let scope_word = if *always { "以后" } else { "这一次" };
+            messages.push(ChatMessage::system(&format!(
+                "（系统提示：用户刚才同意了你访问「{}」{}。自然地、简短地道谢。如果用户之前正想让你看什么东西，可以顺势说现在可以看了，让 ta 再说一次想看什么。不要复述路径原文，用地道口语。）",
+                root, scope_word
+            )));
+        }
+        crate::mind::consent::ConsentState::Denied { .. } => {
+            messages.push(ChatMessage::system(
+                "（系统提示：用户拒绝了这个访问请求。理解并且不再追问，轻轻带过就好——比如「好～那就不看啦」。之后一段时间不要再主动提起这个请求。）",
+            ));
+        }
+        crate::mind::consent::ConsentState::Proceed => {}
+    }
     match &pending_res {
         PendingResolution::Resolved => {
             log::info!("[converse] forget resolved this turn (cross-turn disambig)");
@@ -688,6 +785,44 @@ pub async fn converse(
             outcome.tool_rounds,
             outcome.total_tool_tokens
         );
+
+        // Arm the consent ask when an Observe tool was denied for an
+        // unauthorized root (plan §3.7). Respect the deny cooldown — after
+        // an explicit "no" the same root is not re-asked for 24h.
+        if let Some(root) = crate::tools::fs::take_denied_root() {
+            let cooling = ctx.db.with_conn(|conn| crate::db::grants::get(conn, &root))
+                .ok()
+                .flatten()
+                .filter(|g| g.mode == "deny" && crate::db::grants::deny_in_cooldown(&g.created_at))
+                .is_some();
+            if cooling {
+                log::info!("[converse] fs consent ask suppressed (deny cooldown): {}", root);
+            } else if ctx
+                .pending_authorization
+                .lock()
+                .map(|mut g| {
+                    *g = Some(crate::mind::consent::PendingAuthorization {
+                        root,
+                        created_at: chrono::Utc::now(),
+                    });
+                    true
+                })
+                .unwrap_or(false)
+            {
+                log::info!("[converse] fs consent ask armed");
+            }
+        }
+
+        // Consume once-grants: they authorized THIS interaction only. Any
+        // successful tool round under SystemObservation spends them.
+        if outcome.tool_rounds > 0
+            && intent.capability == crate::tools::CapabilityMode::SystemObservation
+        {
+            for g in fs_grants.iter().filter(|g| g.mode == "once") {
+                let _ = ctx.db.with_conn(|conn| crate::db::grants::revoke(conn, &g.root));
+                log::info!("[converse] once-grant consumed: {}", g.root);
+            }
+        }
         (outcome.reply, outcome.tool_rounds)
     } else {
         // Step 9: normal streamed reply. Thinking OFF for first-token latency.

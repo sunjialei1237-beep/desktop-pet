@@ -33,6 +33,10 @@ pub struct AppState {
     /// candidate memories from a "忘掉X" that matched several, awaiting the
     /// user's clarifying reply. Mirrors `question_pacing` as a Mutex slot.
     pub pending_forget: std::sync::Mutex<Option<crate::mind::forget::PendingForget>>,
+    /// Pending cross-turn filesystem authorization (plan 2026-08-17 §3.7):
+    /// armed when an Observe tool hits an unauthorized root, resolved by the
+    /// user's next short reply (once / always / deny).
+    pub pending_authorization: std::sync::Mutex<Option<crate::mind::consent::PendingAuthorization>>,
     /// Click-through diagnostics written by the main window's frontend
     /// (global-cursor listener) and read by the Debug Panel's separate window.
     /// The Debug Panel lives in its own OS window (open_debug_window), so it
@@ -159,6 +163,7 @@ pub async fn send_message(
         embedding: Some(&state.embedding),
         pacing: &state.question_pacing,
         pending_forget: &state.pending_forget,
+        pending_authorization: &state.pending_authorization,
         tools_cfg: &state.config.tools,
     };
     let result = crate::mind::converse::converse(
@@ -1172,6 +1177,8 @@ pub struct DebugSnapshot {
     /// activity summary. Debug Panel only — never auto-injected into LLM.
     pub env_hints: crate::perception::environment::EnvHints,
     pub env_recent: Option<String>,
+    /// Filesystem grants (plan 2026-08-17 §2.7) — authorization observability.
+    pub fs_grants: Vec<crate::db::grants::FsGrant>,
     /// Proactive-bubble budget observability (2026-08-14): when the last bubble
     /// fired and how long until the next is allowed (Architecture #11).
     pub last_bubble_at: Option<String>,
@@ -1237,6 +1244,40 @@ pub async fn export_memory_both(
         .map_err(|e| format!("Failed to write {}: {}", json_path, e))?;
     let md = crate::mind::export::build_markdown(&db)?;
     std::fs::write(&md_path, md).map_err(|e| format!("Failed to write {}: {}", md_path, e))
+}
+
+/// Grant filesystem access to a root (Settings / power-user path; the
+/// conversational flow writes these too via converse). The root is
+/// canonicalized before storing so the pipeline's prefix matching is exact.
+#[tauri::command]
+pub async fn fs_grant_access(
+    db: State<'_, DbState>,
+    root: &str,
+    mode: &str,
+) -> Result<(), String> {
+    let canonical = crate::tools::path::resolve(root)
+        .map_err(|d| format!("路径无法访问（{}）", d.message()))?;
+    let mode = match mode {
+        "once" => crate::db::grants::GrantMode::Once,
+        "project" | "always" => crate::db::grants::GrantMode::Always,
+        "deny" => crate::db::grants::GrantMode::Deny,
+        other => return Err(format!("未知授权模式：{}", other)),
+    };
+    db.with_conn(|conn| {
+        crate::db::grants::upsert(conn, &canonical.to_string_lossy(), mode, "settings")
+    })
+}
+
+/// Revoke a filesystem grant.
+#[tauri::command]
+pub async fn fs_revoke_access(db: State<'_, DbState>, root: &str) -> Result<(), String> {
+    db.with_conn(|conn| crate::db::grants::revoke(conn, root))
+}
+
+/// List filesystem grants (Debug Panel / Settings display).
+#[tauri::command]
+pub async fn list_fs_grants(db: State<'_, DbState>) -> Result<Vec<crate::db::grants::FsGrant>, String> {
+    db.with_conn(crate::db::grants::list)
 }
 
 /// Returns a full debug snapshot for the debug panel.
@@ -1389,6 +1430,7 @@ pub async fn get_debug_snapshot(
             } else {
                 None
             },
+            fs_grants: crate::db::grants::list(conn).unwrap_or_default(),
             // Proactive-bubble budget observability (2026-08-14): when the last
             // bubble fired + seconds until the next is allowed (#11).
             last_bubble_at: crate::db::onboarding::get(

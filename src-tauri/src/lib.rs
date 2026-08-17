@@ -132,6 +132,7 @@ pub fn run() {
             question_pacing: Default::default(),
             last_decision: std::sync::Mutex::new(None),
             pending_forget: std::sync::Mutex::new(None),
+            pending_authorization: std::sync::Mutex::new(None),
             clickthrough_diag: std::sync::Mutex::new(None),
         })
         .manage(db_state)
@@ -317,6 +318,9 @@ pub fn run() {
            commands::export_memory_json,
            commands::export_memory_markdown,
            commands::export_memory_both,
+           commands::fs_grant_access,
+           commands::fs_revoke_access,
+           commands::list_fs_grants,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
