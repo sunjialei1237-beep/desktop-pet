@@ -238,6 +238,56 @@ fn resolve_pending_authorization(
     }
 }
 
+/// Inspect the pending create_note proposal and resolve the user's reply
+/// (F1 confirmation, Principle #11). Take-and-clear in every branch. The write
+/// happens HERE — before ingest, so "可以" is never stored as a memory; the
+/// LLM only acknowledges it (Architecture Principle #1: Rust already wrote).
+fn resolve_pending_note(
+    text: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> crate::mind::consent::NoteState {
+    use crate::mind::consent::{classify_reply, ConsentReply, NoteState, STALE_AFTER_SECS};
+
+    let Some(pending) = crate::tools::fs::take_pending_note() else {
+        return NoteState::Proceed;
+    };
+    if (now - pending.created_at).num_seconds() > STALE_AFTER_SECS {
+        log::info!("[converse] create_note proposal expired ({}) — dropped", pending.filename);
+        return NoteState::Proceed;
+    }
+    match classify_reply(text) {
+        ConsentReply::Always | ConsentReply::Once => {
+            match crate::tools::fs::commit_pending_note(&pending) {
+                Ok(path) => {
+                    let filename = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| pending.filename.clone());
+                    log::info!("[converse] create_note confirmed → saved {}", path.display());
+                    NoteState::Saved { filename }
+                }
+                Err(e) => {
+                    log::warn!("[converse] create_note commit failed: {}", e);
+                    NoteState::SaveFailed {
+                        filename: pending.filename,
+                        why: e,
+                    }
+                }
+            }
+        }
+        ConsentReply::Deny => {
+            log::info!("[converse] create_note declined — dropped");
+            NoteState::Declined {
+                filename: pending.filename,
+            }
+        }
+        ConsentReply::Unrelated => {
+            log::info!("[converse] create_note reply unrelated — proposal dropped");
+            NoteState::Proceed
+        }
+    }
+}
+
 fn db_write_grant(
     ctx: &ConverseCtx<'_>,
     root: &str,
@@ -315,8 +365,13 @@ pub async fn converse(
     // grant/deny row is written here and the short reply ("可以") must never
     // be stored as a memory.
     let consent_res = resolve_pending_authorization(ctx, text, chrono::Utc::now())?;
+    // F1 note confirmation (plan §3.6): same ordering rule — Rust writes the
+    // file here, the reply ("可以/算了") must never become a memory.
+    let note_res = resolve_pending_note(text, chrono::Utc::now());
     let outcome = match &pending_res {
-        PendingResolution::Proceed if matches!(consent_res, crate::mind::consent::ConsentState::Proceed) => {
+        PendingResolution::Proceed
+            if matches!(consent_res, crate::mind::consent::ConsentState::Proceed)
+                && matches!(note_res, crate::mind::consent::NoteState::Proceed) => {
             crate::mind::ingest(text, conversation_id, turn, &known_facts, llm, db, embedding)
                 .await?
         }
@@ -638,6 +693,31 @@ pub async fn converse(
             ));
         }
         crate::mind::consent::ConsentState::Proceed => {}
+    }
+    // F1 note-resolution acknowledgment. Saved/SaveFailed were already applied
+    // by Rust — the LLM only voices the outcome, never re-writes.
+    match &note_res {
+        crate::mind::consent::NoteState::Saved { filename } => {
+            messages.push(ChatMessage::system(&format!(
+                "（系统提示：用户刚确认保存笔记，你已经把它写进 .liri/NOTES/{} 了（Rust 已经写好）。\
+                 简短自然地说一声保存好了，比如「好，已经放进你的笔记啦」。不要复述笔记内容。）",
+                filename
+            )));
+        }
+        crate::mind::consent::NoteState::Declined { filename } => {
+            messages.push(ChatMessage::system(&format!(
+                "（系统提示：用户拒绝保存笔记「{}」，提案已经丢弃，什么都没写。轻轻带过，不要追问。）",
+                filename
+            )));
+        }
+        crate::mind::consent::NoteState::SaveFailed { filename, why } => {
+            messages.push(ChatMessage::system(&format!(
+                "（系统提示：你想保存笔记「{}」，但刚才写入失败了（原因：{}），文件没有被创建。\
+                 诚实告诉用户没保存成功。）",
+                filename, why
+            )));
+        }
+        crate::mind::consent::NoteState::Proceed => {}
     }
     match &pending_res {
         PendingResolution::Resolved => {

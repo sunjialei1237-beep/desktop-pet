@@ -600,6 +600,198 @@ pub async fn get_git_context(args: &serde_json::Value, grants: &[crate::db::gran
     }
 }
 
+// --- F1 create_note (plan §3.6, §8.3-F1) -----------------------------------------
+//
+// Mutation never happens inside the tool round that proposed it: create_note
+// only ARMS a pending proposal; the user's explicit "可以/不行" on a later
+// turn resolves it (Principle #11), and only then does `commit_pending_note`
+// write atomically into `.liri/NOTES/`.
+
+/// Single note cap (1MB) and directory quota (50MB), plan §3.6.
+pub const NOTE_MAX_BYTES: usize = 1024 * 1024;
+const NOTES_QUOTA_BYTES: u64 = 50 * 1024 * 1024;
+
+/// .liri/NOTES — the only directory mutation may write (plan §3.6).
+pub fn notes_dir() -> PathBuf {
+    crate::tools::workspace::liri_dir().join("NOTES")
+}
+
+fn pending_note_slot() -> &'static std::sync::Mutex<Option<crate::mind::consent::PendingNote>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<crate::mind::consent::PendingNote>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Write-path filename rules (§3.2): pure basename, no separators/dots-pairs,
+/// no NUL/control chars, ≤64 chars, safe charset (alphanumeric incl. CJK plus
+/// `-_. `), no Windows reserved names, no sensitive-looking name. `.md` is
+/// appended when the caller gave no extension. Returns the normalized name.
+pub fn validate_note_filename(raw: &str) -> Result<String, &'static str> {
+    let name = raw.trim();
+    if name.is_empty() || name == "." || name == ".." {
+        return Err("empty_filename");
+    }
+    if name.chars().count() > 64 {
+        return Err("filename_too_long");
+    }
+    if name.starts_with('.') {
+        return Err("leading_dot");
+    }
+    for c in name.chars() {
+        if !(c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ')) {
+            return Err("invalid_char");
+        }
+    }
+    if name.contains("..") {
+        return Err("dot_dot");
+    }
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    const RESERVED: [&str; 18] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+    ];
+    if RESERVED.contains(&stem.as_str()) {
+        return Err("reserved_name");
+    }
+    if path::is_sensitive_name(name) {
+        return Err("sensitive_name");
+    }
+    let normalized = if name.contains('.') {
+        name.to_string()
+    } else {
+        format!("{}.md", name)
+    };
+    Ok(normalized)
+}
+
+/// Pre-check the NOTES quota: existing bytes + new bytes must stay ≤50MB.
+fn notes_total_bytes(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// First free path for a filename (foo.md → foo_2.md) so a confirmed note can
+/// never silently overwrite an existing one.
+fn free_note_path(dir: &Path, filename: &str) -> PathBuf {
+    let candidate = dir.join(filename);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let stem_ext: Vec<&str> = filename.splitn(2, '.').collect();
+    let (stem, ext) = match stem_ext.as_slice() {
+        [s, e] => (*s, format!(".{}", e)),
+        _ => (filename, String::new()),
+    };
+    for i in 2u32..10000 {
+        let candidate = dir.join(format!("{}_{}{}", stem, i, ext));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(format!("{}_{}", stem, "overflow"))
+}
+
+/// Atomic write (same-directory temp + rename) with quota + name validation.
+/// The caller must already hold the user's confirmation. Returns the canonical
+/// path actually written (may differ from `filename` when a same-name note
+/// already exists).
+fn write_note_into(dir: &Path, filename: &str, content: &str) -> Result<PathBuf, String> {
+    let name = validate_note_filename(filename).map_err(|k| format!("文件名不合格（{}）", k))?;
+    if content.is_empty() || content.len() > NOTE_MAX_BYTES {
+        return Err("笔记内容为空或超过 1MB".to_string());
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("建不了 NOTES 目录：{}", e))?;
+    let total = notes_total_bytes(dir);
+    if total + content.len() as u64 > NOTES_QUOTA_BYTES {
+        return Err("笔记空间已满（.liri/NOTES 50MB 上限），先清理一些旧笔记吧".to_string());
+    }
+
+    let tmp = dir.join(format!(
+        ".liri-note-{}-{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let target = free_note_path(dir, &name);
+    std::fs::write(&tmp, content).map_err(|e| format!("写临时文件失败：{}", e))?;
+    match std::fs::rename(&tmp, &target) {
+        Ok(_) => Ok(target),
+        // Retry once: another process may have taken the free path between
+        // free_note_path and rename.
+        Err(e) => {
+            let target2 = free_note_path(dir, &name);
+            match std::fs::rename(&tmp, &target2) {
+                Ok(_) => Ok(target2),
+                Err(e2) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    Err(format!("保存失败（{} / {}）", e, e2))
+                }
+            }
+        }
+    }
+}
+
+/// Arm the pending proposal after a create_note tool call. One slot — a newer
+/// proposal replaces an unanswered older one.
+pub fn arm_pending_note(note: crate::mind::consent::PendingNote) {
+    if let Ok(mut slot) = pending_note_slot().lock() {
+        *slot = Some(note);
+    }
+}
+
+/// Take (and CLEAR) the pending proposal — call once at the start of each
+/// converse turn so "可以/不行" resolves before memory ingest.
+pub fn take_pending_note() -> Option<crate::mind::consent::PendingNote> {
+    pending_note_slot()
+        .lock()
+        .map(|mut g| g.take())
+        .unwrap_or(None)
+}
+
+/// Write the confirmed note. Only called after the user said yes.
+pub fn commit_pending_note(note: &crate::mind::consent::PendingNote) -> Result<PathBuf, String> {
+    write_note_into(&notes_dir(), &note.filename, &note.content)
+}
+
+/// F1 tool body: validate + arm the proposal. No file is written here.
+pub async fn create_note(args: &serde_json::Value) -> ToolResult {
+    let filename = match validate_note_filename(args.get("filename").and_then(|f| f.as_str()).unwrap_or("")) {
+        Ok(f) => f,
+        Err(k) => {
+            return rejected(&format!(
+                "文件名不合格（{}）：只用纯文件名，不带路径，64 个字符以内。",
+                k
+            ))
+        }
+    };
+    let content = args.get("content").and_then(|c| c.as_str()).unwrap_or("");
+    if content.is_empty() || content.len() > NOTE_MAX_BYTES {
+        return rejected("笔记内容为空，或超过 1MB。");
+    }
+    arm_pending_note(crate::mind::consent::PendingNote {
+        filename: filename.clone(),
+        content: content.to_string(),
+        created_at: chrono::Utc::now(),
+    });
+    ToolResult {
+        status: ToolStatus::Success,
+        content: format!(
+            "笔记「{}」我已整理好（{} 字），但还没有写任何文件。请你在回复里问用户：\
+             “要保存到 .liri/NOTES 里吗？”用户明确答应后才能保存。",
+            filename,
+            content.chars().count()
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,5 +1005,91 @@ mod tests {
             "duplicate roots must collapse into one ask"
         );
         assert!(got.contains(&"D:\\pet_m6_test\\docs".to_string()));
+    }
+
+    // --- F1 create_note ----------------------------------------------------
+
+    #[test]
+    fn note_filename_validation_matches_write_rules() {
+        // Accepted: CJK, extension, no-extension normalization, spaces.
+        assert_eq!(validate_note_filename("体检提醒.md").unwrap(), "体检提醒.md");
+        assert_eq!(validate_note_filename("todo").unwrap(), "todo.md");
+        assert_eq!(validate_note_filename("  本周 计划_1  ").unwrap(), "本周 计划_1.md");
+        assert_eq!(validate_note_filename("a-b_c.md").unwrap(), "a-b_c.md");
+
+        // Rejected: traversal / separators / reserved / sensitive / length.
+        for bad in [
+            "",
+            "   ",
+            ".",
+            "..",
+            "a..b",
+            "a/b.md",
+            "a\\b.md",
+            "../x",
+            "..\\x.md",
+            ".hidden",
+            ".env",
+            "id_rsa",
+            "CON",
+            "com1.txt",
+            "a*b.md",
+            "a?b.md",
+            "a<b.md",
+            "a\"b.md",
+            "a:b.md",
+            "a|b.md",
+        ] {
+            assert!(validate_note_filename(bad).is_err(), "should reject: {bad:?}");
+        }
+        let long: String = "a".repeat(65);
+        assert!(validate_note_filename(&long).is_err());
+    }
+
+    #[test]
+    fn note_atomic_write_is_quota_and_overwrite_safe() {
+        let dir = std::env::temp_dir().join(format!(
+            "pet_f1_note_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // UNCONFIRMED write attempt must be impossible at the API surface:
+        // write_note_into is private; only commit_pending_note (called after
+        // user confirmation) can reach it. Here we exercise atomic + collision
+        // behavior through the same helper tests use.
+        let _ = std::fs::create_dir_all(&dir);
+        let first = write_note_into(&dir, "购物清单.md", "苹果\n牛奶\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "苹果\n牛奶\n");
+        // Same name again must never overwrite — free path gets a suffix.
+        let second = write_note_into(&dir, "购物清单.md", "第二条").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "苹果\n牛奶\n");
+        assert!(second.file_name().unwrap().to_string_lossy().contains("购物清单_2"));
+        // No temp files may remain after rename.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files leaked after rename: {leftovers:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn note_slot_arms_takes_and_clears() {
+        let _ = take_pending_note();
+        arm_pending_note(crate::mind::consent::PendingNote {
+            filename: "a.md".into(),
+            content: "1".into(),
+            created_at: chrono::Utc::now(),
+        });
+        let got = take_pending_note().expect("arm then take");
+        assert_eq!(got.filename, "a.md");
+        // Take-and-clear: a second take returns nothing.
+        assert!(take_pending_note().is_none());
     }
 }

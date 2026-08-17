@@ -41,6 +41,10 @@ pub enum CapabilityMode {
     ComputerAction,
     /// Needs to observe the user's real environment / files (read-only).
     SystemObservation,
+    /// Needs to write to the user's file system (notes / proposals).
+    /// Distinct enum — never advertised together with observation (structural
+    /// block against read-then-write episodes inside one tool loop).
+    SystemMutation,
 }
 
 impl Default for CapabilityMode {
@@ -55,12 +59,14 @@ pub enum ToolKind {
     GetTime,
     SearchWeb,
     OpenApplication,
+    OpenFile,
     OpenUrl,
     ReadTextFile,
     SearchFiles,
     ListDirectory,
     GetFileMetadata,
     GetGitContext,
+    CreateNote,
 }
 
 impl ToolKind {
@@ -70,12 +76,14 @@ impl ToolKind {
             ToolKind::GetTime => "get_time",
             ToolKind::SearchWeb => "search_web",
             ToolKind::OpenApplication => "open_application",
+            ToolKind::OpenFile => "open_file",
             ToolKind::OpenUrl => "open_url",
             ToolKind::ReadTextFile => "read_text_file",
             ToolKind::SearchFiles => "search_files",
             ToolKind::ListDirectory => "list_directory",
             ToolKind::GetFileMetadata => "get_file_metadata",
             ToolKind::GetGitContext => "get_git_context",
+            ToolKind::CreateNote => "create_note",
         }
     }
 }
@@ -106,6 +114,9 @@ pub fn capability_to_tools(cap: CapabilityMode, cfg: &ToolsConfig) -> Vec<ToolKi
             let mut v = vec![];
             if cfg.enable_open_application {
                 v.push(ToolKind::OpenApplication);
+                // plan §3.5 / §8.3-E3: file launch rides the same switch,
+                // extension allowlist hard-enforced in policy.rs.
+                v.push(ToolKind::OpenFile);
             }
             v.push(ToolKind::OpenUrl); // https-only, harmless
             v
@@ -122,6 +133,13 @@ pub fn capability_to_tools(cap: CapabilityMode, cfg: &ToolsConfig) -> Vec<ToolKi
                     ToolKind::GetFileMetadata,
                     ToolKind::GetGitContext,
                 ]
+            } else {
+                vec![]
+            }
+        }
+        CapabilityMode::SystemMutation => {
+            if cfg.enable_fs_mutate {
+                vec![ToolKind::CreateNote]
             } else {
                 vec![]
             }
@@ -164,6 +182,18 @@ fn tool_def(kind: ToolKind) -> ToolDef {
                     "app": {"type": "string", "description": "程序名（如 网易云音乐 / VSCode / Chrome）"}
                 },
                 "required": ["app"]
+            }),
+        ),
+        ToolKind::OpenFile => ToolDef::new(
+            "open_file",
+            "用系统默认方式打开一个已存在的本地文件（文档/图片/音视频/代码文本等，按扩展名白名单）。\
+             要打开程序请用 open_application；注意不要替用户乱打开文件。",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "文件的绝对路径（必须已存在）"}
+                },
+                "required": ["path"]
             }),
         ),
         ToolKind::OpenUrl => ToolDef::new(
@@ -237,6 +267,19 @@ fn tool_def(kind: ToolKind) -> ToolDef {
                 "required": ["project_id"]
             }),
         ),
+        ToolKind::CreateNote => ToolDef::new(
+            "create_note",
+            "把用户口述的一条笔记保存到 .liri/NOTES/。只能写笔记，不能改代码、不能删东西；\
+             保存前必须先问用户确认。filename 是纯文件名（不带路径）；content 是笔记正文。",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "纯文件名，如 体检提醒.md"},
+                    "content": {"type": "string", "description": "笔记正文"}
+                },
+                "required": ["filename", "content"]
+            }),
+        ),
     }
 }
 
@@ -255,12 +298,14 @@ pub async fn execute(
         ToolKind::GetTime => system::get_time(args).await,
         ToolKind::SearchWeb => search::search_web(args).await,
         ToolKind::OpenApplication => system::open_application(args).await,
+        ToolKind::OpenFile => system::open_file(args),
         ToolKind::OpenUrl => system::open_url(args).await,
         ToolKind::ReadTextFile => fs::read_text_file(args, fs_grants).await,
         ToolKind::SearchFiles => fs::search_files(args, fs_grants).await,
         ToolKind::ListDirectory => fs::list_directory(args, fs_grants).await,
         ToolKind::GetFileMetadata => fs::get_file_metadata(args, fs_grants).await,
         ToolKind::GetGitContext => fs::get_git_context(args, fs_grants).await,
+        ToolKind::CreateNote => fs::create_note(args).await,
     }
 }
 
@@ -273,7 +318,33 @@ mod tests {
             enable_search_web: search,
             enable_open_application: app,
             enable_fs_observe: false,
+            enable_fs_mutate: false,
         }
+    }
+
+    fn cfg_mutate(enabled: bool) -> ToolsConfig {
+        ToolsConfig {
+            enable_search_web: false,
+            enable_open_application: false,
+            enable_fs_observe: false,
+            enable_fs_mutate: enabled,
+        }
+    }
+
+    #[test]
+    fn system_mutation_advertises_create_note_when_enabled() {
+        assert!(capability_to_tools(CapabilityMode::SystemMutation, &cfg_mutate(true))
+            .contains(&ToolKind::CreateNote));
+        // Switch off → no tools advertised at all (铁律 #1/Opt-in v1 policy).
+        assert!(capability_to_tools(CapabilityMode::SystemMutation, &cfg_mutate(false)).is_empty());
+        // Observation NEVER advertises mutation (exclusive modes, plan §3.1).
+        let mut obs = ToolsConfig {
+            enable_fs_observe: true,
+            ..cfg_mutate(true)
+        };
+        obs.enable_fs_observe = true;
+        assert!(!capability_to_tools(CapabilityMode::SystemObservation, &obs)
+            .contains(&ToolKind::CreateNote));
     }
 
     #[test]
@@ -301,6 +372,7 @@ mod tests {
     fn computer_action_includes_apps_and_url() {
         let tools = capability_to_tools(CapabilityMode::ComputerAction, &cfg(true, true));
         assert!(tools.contains(&ToolKind::OpenApplication));
+        assert!(tools.contains(&ToolKind::OpenFile));
         assert!(tools.contains(&ToolKind::OpenUrl));
         // get_time / search not in a computer-action turn.
         assert!(!tools.contains(&ToolKind::SearchWeb));
@@ -310,6 +382,8 @@ mod tests {
     fn computer_action_drops_apps_when_disabled() {
         let tools = capability_to_tools(CapabilityMode::ComputerAction, &cfg(true, false));
         assert!(!tools.contains(&ToolKind::OpenApplication));
+        // launch switch governs BOTH app launch and file launch.
+        assert!(!tools.contains(&ToolKind::OpenFile));
         assert!(tools.contains(&ToolKind::OpenUrl)); // url always on
     }
 

@@ -86,6 +86,7 @@ async fn injected_file_content_cannot_hijack_tool_loop() {
         enable_search_web: false,
         enable_open_application: false,
         enable_fs_observe: true,
+        enable_fs_mutate: false,
     };
     let mut recent: Vec<(String, Instant)> = Vec::new();
     let mut tokens_out = 0usize;

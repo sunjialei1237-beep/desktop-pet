@@ -109,6 +109,30 @@ pub enum ConsentState {
     Denied { roots: Vec<String> },
 }
 
+/// A create_note proposal waiting for the user's explicit "可以/不行"
+/// (plan §3.6 F1 + Principle #11: mutation is never applied in the same
+/// tool round that proposed it).
+#[derive(Debug, Clone)]
+pub struct PendingNote {
+    pub filename: String,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Resolution outcome for the pending note this turn.
+#[derive(Debug, Clone)]
+pub enum NoteState {
+    /// No pending note, or it timed out — normal pipeline.
+    Proceed,
+    /// User confirmed; the file was already written atomically.
+    Saved { filename: String },
+    /// User declined; the proposal was dropped, nothing written.
+    Declined { filename: String },
+    /// User confirmed but the atomic write failed (quota / IO) — nothing was
+    /// written; tell the user honestly.
+    SaveFailed { filename: String, why: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

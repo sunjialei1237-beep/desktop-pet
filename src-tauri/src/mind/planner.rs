@@ -93,6 +93,16 @@ const COMPUTER_ACTION_KEYWORDS: &[&str] = &[
     "open ", "launch", "run ",
 ];
 
+/// Write-capability candidate keywords (plan §3.6 F1). LOWEST priority so
+/// "打开笔记文件夹" stays a computer action and "搜一下笔记" stays search;
+/// hits only arm the create_note candidate — the LLM decides (tool_choice=auto)
+/// and Rust never writes without the user's later confirmation.
+const SYSTEM_MUTATION_KEYWORDS: &[&str] = &[
+    "写个笔记", "记个笔记", "记笔记", "写笔记", "做笔记", "存个笔记",
+    "保存笔记", "帮我记下", "帮我备忘", "记一条备忘", "写备忘录",
+    "note down", "take a note", "save a note", "create a note",
+];
+
 /// Shared-statement markers: the user is telling us something about
 /// themselves, their day, or their preferences. These warrant a genuine
 /// follow-up question (the "engage" goal), not a flat acknowledgment.
@@ -139,6 +149,10 @@ pub fn plan(brain: &BrainState) -> Intent {
         // Read-only environment tools (plan §3.4). Lowest priority: action
         // and external-info phrases win when they co-occur.
         CapabilityMode::SystemObservation
+    } else if SYSTEM_MUTATION_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+        // F1 candidate (plan §3.6). Even lower priority than observation:
+        // explicit read phrases win; tool_choice=auto still decides.
+        CapabilityMode::SystemMutation
     } else {
         CapabilityMode::None
     };

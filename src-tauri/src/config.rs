@@ -198,6 +198,11 @@ pub struct ToolsConfig {
     /// table. Defaults OFF: V1 policy is Inspect = explicit opt-in.
     #[serde(default)]
     pub enable_fs_observe: bool,
+    /// Write tools (plan 2026-08-17 §3.6 F1 create_note, F2 edit_file).
+    /// Defaults OFF: Mutation = explicit opt-in, every write still gets a
+    /// per-call confirmation (Principle #11).
+    #[serde(default)]
+    pub enable_fs_mutate: bool,
 }
 
 impl Default for ToolsConfig {
@@ -206,6 +211,7 @@ impl Default for ToolsConfig {
             enable_search_web: true,
             enable_open_application: true,
             enable_fs_observe: false,
+            enable_fs_mutate: false,
         }
     }
 }

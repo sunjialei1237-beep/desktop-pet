@@ -190,6 +190,50 @@ pub async fn open_application(args: &serde_json::Value) -> ToolResult {
     }
 }
 
+/// `open_file` (plan §3.5 / §8.3-E3): launch an EXISTING local file through the
+/// shell's default association. The dangerous part — which extensions may reach
+/// the association — is enforced in policy; this only re-checks existence and
+/// hands the canonical path to explorer (explorer returns 1 by design, spawn
+/// success is the only useful signal).
+pub fn open_file(args: &serde_json::Value) -> ToolResult {
+    let raw = args.get("path").and_then(|p| p.as_str()).unwrap_or("");
+    if raw.trim().is_empty() {
+        return ToolResult {
+            status: ToolStatus::Rejected,
+            content: "没有指定要打开的文件。".to_string(),
+        };
+    }
+    let canonical = match dunce::canonicalize(raw) {
+        Ok(c) if c.is_file() => c,
+        _ => {
+            return ToolResult {
+                status: ToolStatus::Rejected,
+                content: "这个文件不存在，我没法打开。".to_string(),
+            }
+        }
+    };
+    match std::process::Command::new("explorer").arg(&canonical).spawn() {
+        Ok(_) => {
+            let name = canonical
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            log::info!("[tools] open_file: launched {}", canonical.display());
+            ToolResult {
+                status: ToolStatus::Success,
+                content: format!("已经帮你打开 {} 了。", name),
+            }
+        }
+        Err(e) => {
+            log::warn!("[tools] open_file {} failed: {}", canonical.display(), e);
+            ToolResult {
+                status: ToolStatus::Failed,
+                content: format!("没能打开这个文件：{}", e),
+            }
+        }
+    }
+}
+
 /// `open_url`: open an https URL in the default browser. Bypasses `cmd` (whose
 /// `&` splitting mangles query strings) by calling `explorer.exe` directly —
 /// `explorer <https-url>` forwards to the default browser, and CreateProcess
