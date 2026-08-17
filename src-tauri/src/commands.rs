@@ -429,7 +429,6 @@ pub async fn apply_edit_proposal(
 #[tauri::command]
 pub async fn undo_last_edit(
     state: State<'_, AppState>,
-    db: State<'_, DbState>,
 ) -> Result<EditApplyOutcome, String> {
     let mutation_on = state
         .tools_config
@@ -443,10 +442,7 @@ pub async fn undo_last_edit(
             path: None,
         });
     }
-    let grants: Vec<crate::db::grants::FsGrant> = db
-        .with_conn(|conn| crate::db::grants::list(conn))
-        .unwrap_or_default();
-    match crate::tools::fs::undo_last_edit(&grants) {
+    match crate::tools::fs::undo_last_edit() {
         Ok(path) => Ok(EditApplyOutcome {
             status: "undone".into(),
             message: "已经撤销刚才那处修改，恢复成我改之前的样子。".into(),

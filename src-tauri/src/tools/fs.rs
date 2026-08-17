@@ -1,4 +1,4 @@
-//! Observe tools (plan 2026-08-17 §3.4): read-only filesystem access for
+﻿//! Observe tools (plan 2026-08-17 §3.4): read-only filesystem access for
 //! `CapabilityMode::SystemObservation`. Every path goes through the
 //! canonicalize-first pipeline (`path.rs`); content is line-truncated (NOT
 //! char-truncated mid-line) with a `path:start-end` header so the model
@@ -755,6 +755,14 @@ pub struct EditProposal {
     pub replacement: String,
     pub read_mtime_nanos: u64,
     pub read_hash: u64,
+    /// True when this proposal's path was actually read successfully by an
+    /// authorized fs tool in the same round (its canonical path is in
+    /// `used_roots`). The confirm card itself is then sufficient for the
+    /// write — re-querying live grants at apply time breaks "就这次":
+    /// the read already spent the once ticket, so apply would be denied even
+    /// though the user just clicked 确认. False only in legacy/crafted
+    /// proposals, which still go through the full re-authorization pipeline.
+    pub read_authorized: bool,
 }
 
 /// Strip the FIRST structured patch block from `reply` and (when valid) return
@@ -770,7 +778,7 @@ pub struct EditProposal {
 /// replacement lines
 /// >>>>> END
 /// ```
-pub fn extract_edit_proposal(reply: &str) -> (String, Option<EditProposal>) {
+pub fn extract_edit_proposal(reply: &str, used_roots: &[PathBuf]) -> (String, Option<EditProposal>) {
     let Some(block) = find_patch_block(reply) else {
         return (reply.trim().to_string(), None);
     };
@@ -833,6 +841,20 @@ pub fn extract_edit_proposal(reply: &str) -> (String, Option<EditProposal>) {
         log::warn!("[edit_file] path is pet-config/sensitive — no proposal");
         return (clean, None);
     }
+    // F2 authorization capsule: only a path that an fs tool actually read
+    // successfully this round may become a proposal. This is stricter than
+    // the old "any canonical path" behavior AND makes the later confirm card
+    // sufficient for apply (once-grants are already spent by that read).
+    let covered = used_roots
+        .iter()
+        .any(|used| used == &canonical || crate::tools::path::root_contains(used, &canonical));
+    if !covered {
+        log::warn!(
+            "[edit_file] patch path {} was never successfully read by an authorized tool — no proposal",
+            canonical.display()
+        );
+        return (clean, None);
+    }
     let snapshot = take_read_snapshot(&canonical).unwrap_or_else(|| {
         log::info!("[edit_file] no read snapshot for {} — using parse-time lock", canonical.display());
         missing_snapshot_warning(&canonical)
@@ -866,6 +888,7 @@ pub fn extract_edit_proposal(reply: &str) -> (String, Option<EditProposal>) {
         replacement: replacement.to_string(),
         read_mtime_nanos: snapshot.mtime_nanos,
         read_hash: snapshot.content_hash,
+        read_authorized: true,
     };
     (clean, Some(proposal))
 }
@@ -949,8 +972,18 @@ pub fn apply_proposal(
     proposal: &EditProposal,
     grants: &[crate::db::grants::FsGrant],
 ) -> Result<PathBuf, String> {
-    let canonical = path::resolve_and_authorize(&proposal.path, grants)
-        .map_err(|d| format!("授权检查没通过：{}", d.message()))?;
+    // Authorized read capsule: the proposal was only armed because an fs tool
+    // successfully read this exact path under grants (incl. a since-spent
+    // once-grant). The user has now clicked 确认 on a card showing the path —
+    // that is the write authorization. Only legacy/crafted proposals (never
+    // armed by extract) fall back to a fresh grant check.
+    let canonical = if proposal.read_authorized {
+        dunce::canonicalize(&proposal.path)
+            .map_err(|e| format!("目标文件现在打不开了：{}", e))?
+    } else {
+        path::resolve_and_authorize(&proposal.path, grants)
+            .map_err(|d| format!("授权检查没通过：{}", d.message()))?
+    };
     let bytes = std::fs::read(&canonical).map_err(|e| format!("读文件失败：{}", e))?;
     let meta = std::fs::metadata(&canonical).map_err(|e| format!("取文件状态失败：{}", e))?;
     let mtime_now = mtime_nanos(&meta);
@@ -1046,14 +1079,14 @@ fn remember_undo(canonical: &Path, pre_image: Vec<u8>) {
 }
 
 /// Session-level single-step undo: restores the pre-image of the LAST edit.
-pub fn undo_last_edit(grants: &[crate::db::grants::FsGrant]) -> Result<PathBuf, String> {
+/// The pre-image only exists because the same proposal was authorized at read
+/// time and confirmed by the user, so undo needs no fresh grant snapshot.
+pub fn undo_last_edit() -> Result<PathBuf, String> {
     let (canonical, pre) = undo_slot()
         .lock()
         .ok()
         .and_then(|mut g| g.take())
         .ok_or_else(|| "这一会儿还没有可以撤销的修改。".to_string())?;
-    path::resolve_and_authorize(&canonical.to_string_lossy(), grants)
-        .map_err(|d| format!("撤销也要重新授权：{}", d.message()))?;
     let parent = canonical
         .parent()
         .ok_or_else(|| "文件没有父目录".to_string())?;
@@ -1596,7 +1629,8 @@ mod tests {
             "我把第一句的「目标」调整了一下，预览在下面。\n```edit_file\npath: {}\n<<<<< SEARCH\n独一无二的目标\n=====\n改好的目标\n>>>>> END\n```\n其他文字不要动。",
             path.display()
         );
-        let (clean, proposal) = extract_edit_proposal(&reply);
+        let used = vec![dunce::canonicalize(&path).unwrap()];
+        let (clean, proposal) = extract_edit_proposal(&reply, &used);
         assert_eq!(clean, "我把第一句的「目标」调整了一下，预览在下面。\n其他文字不要动。");
         let p = proposal.expect("valid patch must arm");
         assert_eq!(p.search, "独一无二的目标");
@@ -1614,15 +1648,16 @@ mod tests {
         // Missing path line.
         let (clean, p) = extract_edit_proposal(
             "explain\n```edit_file\n<<<<< SEARCH\nsame\n=====\nx\n>>>>> END\n```",
+            &[],
         );
         assert_eq!(clean, "explain");
         assert!(p.is_none());
-        // Search appears twice → no proposal, block still stripped.
+        // Searching a path this turn never read → no proposal; block still stripped.
         let reply = format!(
             "explain\n```edit_file\npath: {}\n<<<<< SEARCH\nsame\n=====\nx\n>>>>> END\n```",
             path.display()
         );
-        let (clean, p) = extract_edit_proposal(&reply);
+        let (clean, p) = extract_edit_proposal(&reply, &[]);
         assert_eq!(clean, "explain");
         assert!(p.is_none());
         std::fs::remove_dir_all(&dir).ok();
@@ -1644,6 +1679,7 @@ mod tests {
             replacement: "CHANGED\nline".into(),
             read_mtime_nanos: mtime_nanos(&meta),
             read_hash: content_hash64(&raw),
+            read_authorized: true,
         };
         let grants = grant_for(&dir);
         apply_proposal(&proposal, &grants).expect("apply");
@@ -1653,7 +1689,7 @@ mod tests {
         assert!(text.contains("CHANGED\r\nline"), "replacement must inherit CRLF: {:?}", text);
         assert!(!text.contains("UNIQUE 行"));
         // Session-level undo restores the exact pre-image.
-        undo_last_edit(&grants).expect("undo");
+        undo_last_edit().expect("undo");
         assert_eq!(std::fs::read(&path).unwrap(), raw, "pre-image must be byte-identical");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1671,6 +1707,7 @@ mod tests {
             replacement: "after".into(),
             read_mtime_nanos: mtime_nanos(&proposer_meta),
             read_hash: content_hash64(&proposer_bytes),
+            read_authorized: true,
         };
         // External edit between read and apply (same length even — mtime catches
         // it, hash comparison is the second line of defense).
@@ -1686,3 +1723,4 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+

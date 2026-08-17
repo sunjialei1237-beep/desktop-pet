@@ -85,6 +85,12 @@ const ENVIRONMENT_KEYWORDS: &[&str] = &[
     "看看这个", "这个项目", "这个文件", "这段代码", "我在改", "我打开的", "现在的项目",
     "当前项目", "我在调试", "我在忙什么", "look at this", "what am i", "what i'm doing",
     "current project", "this project", "this file",
+    // F2 edit requests must land in SystemObservation first: the model has to
+    // READ the real file (and snapshot lock) before it can arm a patch block
+    // (§3.6 — edit tools are never advertised; observe+patch is the loop).
+    // Runtime finding 2026-08-17: "帮我改 …" routed None → LLM never read the
+    // file and could not propose; these explicit markers close the gap.
+    "帮我改", "改成", "改一下", "改回", "修改", "编辑", "edit this", "edit the file",
 ];
 
 /// Computer-action intent keywords (open app / open url).
@@ -660,6 +666,22 @@ mod tests {
         ));
         assert!(!environment_relevant("哈哈哈哈", &intent));
         assert_eq!(intent.capability, CapabilityMode::None);
+    }
+
+    #[test]
+    fn test_edit_request_routes_observation_for_patch_loop() {
+        // F2: "帮我改 …" must give the LLM read-only tools FIRST — the edit
+        // proposal comes from its final reply, never from an advertised edit
+        // tool (§3.6). Regression for the 2026-08-17 live-test miss.
+        for text in [
+            "帮我改 D:\\environment-demo\\今天要交的报告.md，把「今日事项」改成「今日头等事项」",
+            "把这行的 TODO 改成 DONE",
+            "修改一下这个文件",
+            "edit this file's first line",
+        ] {
+            let intent = plan(&brain(text, &calm_emotion(), None, &[], &empty_retrieval()));
+            assert_eq!(intent.capability, CapabilityMode::SystemObservation, "for: {text}");
+        }
     }
 
     #[test]

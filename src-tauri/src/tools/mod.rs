@@ -275,8 +275,9 @@ fn tool_def(kind: ToolKind) -> ToolDef {
         ),
         ToolKind::CreateNote => ToolDef::new(
             "create_note",
-            "把用户口述的一条笔记保存到 .liri/NOTES/。只能写笔记，不能改代码、不能删东西；\
-             保存前必须先问用户确认。filename 是纯文件名（不带路径）；content 是笔记正文。",
+            "整理用户口述的笔记。此工具本身不写任何文件，只在内部暂存一条待确认提案，\
+             所以需要记笔记时直接调用，不要只口头答应；调用后按返回结果的说明询问用户是否保存。\
+             filename 是纯文件名（不带路径）；content 是用户要记的完整笔记正文。",
             serde_json::json!({
                 "type": "object",
                 "properties": {
