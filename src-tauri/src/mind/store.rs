@@ -57,8 +57,10 @@ pub fn reconcile_vectors_for_model(db: &DbState, model_key: &str) -> Result<bool
 /// memories. Embeds the summary of every episode that has no vector yet and
 /// stores it, so old memories benefit from semantic retrieval too.
 ///
-/// No-op (returns 0) if the model isn't ready. Best-effort per episode: a
-/// single embed failure is logged and skipped, not fatal.
+/// No-op (returns 0) if no usable model files exist on disk. Best-effort per
+/// episode: a single embed failure is logged and skipped, not fatal. With a
+/// lazy service (P2) the first embed loads the model on demand — but only
+/// when there is actual backfill work (the missing-vectors query runs first).
 ///
 /// Architecture: #1 (Rust drives, embedding only computes), #10 (old memories
 /// deserve retrieval too), #11 (progress + counts logged).
@@ -66,7 +68,7 @@ pub fn backfill_missing_vectors(
     db: &DbState,
     embedding: &EmbeddingService,
 ) -> Result<usize, String> {
-    if !embedding.is_ready() {
+    if !embedding.files_present() {
         return Ok(0);
     }
 
@@ -161,19 +163,18 @@ pub fn store(
 
         db.with_conn(|conn| db_episodes::insert(conn, &episode))?;
 
-        // Generate and store embedding if model is ready.
+        // Generate and store embedding if the service is available. Lazy
+        // services (P2) load on demand; failure is logged and skipped.
         if let Some(emb) = embedding {
-            if emb.is_ready() {
-                match emb.embed(&ep.summary) {
-                    Ok(vector) => {
-                        log::info!("Generated embedding for episode {} ({} dim)", ep_id, vector.len());
-                        if let Err(e) = db.with_conn(|conn| db_vectors::insert(conn, &ep_id, &vector)) {
-                            log::warn!("Failed to store vector for episode {}: {}", ep_id, e);
-                        }
+            match emb.embed(&ep.summary) {
+                Ok(vector) => {
+                    log::info!("Generated embedding for episode {} ({} dim)", ep_id, vector.len());
+                    if let Err(e) = db.with_conn(|conn| db_vectors::insert(conn, &ep_id, &vector)) {
+                        log::warn!("Failed to store vector for episode {}: {}", ep_id, e);
                     }
-                    Err(e) => {
-                        log::warn!("Failed to embed episode {}: {}", ep_id, e);
-                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to embed episode {}: {}", ep_id, e);
                 }
             }
         }

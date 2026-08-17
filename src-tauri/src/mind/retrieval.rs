@@ -91,15 +91,12 @@ pub fn retrieve(
 ) -> Result<RetrievalResult, String> {
     let now = Utc::now();
 
-    // Generate query embedding if model is available.
-    let query_vec = if let Some(emb) = embedding {
-        if emb.is_ready() {
-            emb.embed(query).ok()
-        } else {
-            None
-        }
-    } else {
-        None
+    // Generate query embedding if model is available. Lazy services (P2)
+    // load on demand inside embed(); a hard load failure degrades to the
+    // keyword fallback below via `.ok()`.
+    let query_vec = match embedding {
+        Some(emb) => emb.embed(query).ok(),
+        None => None,
     };
 
     // Get candidate episodes from DB.

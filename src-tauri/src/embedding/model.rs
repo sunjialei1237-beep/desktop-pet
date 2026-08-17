@@ -29,6 +29,19 @@ pub fn choose_model_file(model_dir: &Path) -> String {
     }
 }
 
+/// App-config vector-space key for whichever model file WOULD be loaded from
+/// `model_dir` — computable without loading the ONNX into memory. Startup
+/// reconciliation uses this so a lazy-loaded service can still align stored
+/// vectors with the active model at boot (P2).
+pub fn current_model_key(model_dir: &Path) -> String {
+    let file = choose_model_file(model_dir);
+    if file == QUANTIZED_MODEL_FILE {
+        MODEL_KEY_INT8.to_string()
+    } else {
+        MODEL_KEY_FP32.to_string()
+    }
+}
+
 /// Holds the loaded ONNX session + tokenizer.
 /// Thread-safe to share via `Arc<EmbeddingModel>` for inference.
 pub struct EmbeddingModel {
@@ -143,7 +156,6 @@ impl EmbeddingModel {
             MODEL_KEY_FP32.to_string()
         }
     }
-
     /// Embeds a single text string into a 1024-dim normalized vector.
     pub fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
         let (input_ids, attention_mask) = self.tokenize_single(text)?;

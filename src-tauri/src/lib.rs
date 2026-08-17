@@ -73,15 +73,28 @@ pub fn run() {
 
     let working_memory = Mutex::new(crate::mind::working::WorkingMemory::new());
 
-    // Initialize embedding service. Try to load if model files already exist.
+    // Initialize embedding service. Eager mode loads now; lazy mode (P2
+    // memory reduction, default) defers the ~570 MB model to the first embed
+    // and the idle watcher unloads it after idle_unload_minutes.
     let model_dir = config::resolve_model_dir(&config);
-    let embedding_service = crate::embedding::EmbeddingService::new(&model_dir);
+    let embedding_service = crate::embedding::EmbeddingService::new(&model_dir).with_lazy(
+        config.embedding.lazy_load,
+        config.embedding.idle_unload_minutes,
+    );
     {
         let downloader = crate::embedding::ModelDownloader::new(&model_dir);
         if downloader.check_complete() {
-            match embedding_service.load() {
-                Ok(()) => log::info!("Embedding model loaded from {:?}", model_dir),
-                Err(e) => log::warn!("Failed to load embedding model: {}", e),
+            if config.embedding.lazy_load {
+                log::info!(
+                    "Embedding model lazy-load enabled (files at {:?}); loads on first use, unloads after {} idle minute(s)",
+                    model_dir,
+                    config.embedding.idle_unload_minutes
+                );
+            } else {
+                match embedding_service.load() {
+                    Ok(()) => log::info!("Embedding model loaded from {:?}", model_dir),
+                    Err(e) => log::warn!("Failed to load embedding model: {}", e),
+                }
             }
         } else {
             log::info!(
@@ -140,17 +153,21 @@ pub fn run() {
             // (fp32 -> int8 transition clears the table; see store.rs), then
             // backfill embeddings for episodes stored before the model was
             // available (first time BGE-M3 is enabled on an existing DB). Runs
-            // on a background thread so it never blocks startup.
+            // on a background thread so it never blocks startup. The model key
+            // comes from inspecting the model FILES (P2: the model itself may
+            // be lazily absent at this point); backfill only wakes the model
+            // when there is actual re-embed work.
             if let Some(app_state) = app.try_state::<crate::commands::AppState>() {
-                if app_state.embedding.is_ready() {
+                if app_state.embedding.files_present() {
                     if let Some(db_state) = app.try_state::<db::DbState>() {
-                        if let Some(model_key) = app_state.embedding.model_key() {
-                            if let Err(e) = crate::mind::store::reconcile_vectors_for_model(
-                                &db_state,
-                                &model_key,
-                            ) {
-                                log::warn!("[startup] embedding vector reconciliation failed: {}", e);
-                            }
+                        let model_key = crate::embedding::current_model_key(
+                            app_state.embedding.model_dir(),
+                        );
+                        if let Err(e) = crate::mind::store::reconcile_vectors_for_model(
+                            &db_state,
+                            &model_key,
+                        ) {
+                            log::warn!("[startup] embedding vector reconciliation failed: {}", e);
                         }
                     }
                     let h = app.handle().clone();
@@ -191,6 +208,28 @@ pub fn run() {
             // Work-app foreground time so proactive bubbles stay quiet during
             // deep focus. Independent of Mind/LLM (Principle 5).
             perception::focus::start();
+
+            // P2 memory reduction: embedding idle watcher. Drops the resident
+            // ~570 MB model after the configured idle window so an all-day
+            // pet doesn't hold it while the user is away; the next embed
+            // lazy-loads it back (~1s, absorbed by LLM reply latency). No-op
+            // when lazy/unload is disabled in config. A dedicated thread (not
+            // a life-loop job) keeps embedding lifecycle self-contained.
+            if let Some(app_state) = app.try_state::<crate::commands::AppState>() {
+                let emb = &app_state.embedding;
+                if emb.is_lazy() && emb.idle_unload_minutes() > 0 {
+                    let h = app.handle().clone();
+                    std::thread::spawn(move || loop {
+                        std::thread::sleep(std::time::Duration::from_secs(60));
+                        let state = h.state::<crate::commands::AppState>();
+                        state.embedding.unload_if_idle();
+                    });
+                    log::info!(
+                        "[embedding] idle watcher started (unload after {} minute(s))",
+                        emb.idle_unload_minutes()
+                    );
+                }
+            }
 
             // System tray icon. Lets the pet hide to the tray ("暂时离开" in
             // the right-click menu -> hide_to_tray) and restore on click. The

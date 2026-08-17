@@ -24,6 +24,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [embFilesPresent, setEmbFilesPresent] = useState(false);
   const [embDownloading, setEmbDownloading] = useState(false);
   const [embProgress, setEmbProgress] = useState<string>("");
+  // P2 lazy lifecycle: "Standby" = files on disk, model not resident (loads on
+  // first use, unloads after idle). Null until the status query resolves.
+  const [embLazy, setEmbLazy] = useState<boolean | null>(null);
+  const [embLoaded, setEmbLoaded] = useState(true);
+  const [embLoadCount, setEmbLoadCount] = useState(0);
+  const [embUnloadCount, setEmbUnloadCount] = useState(0);
 
   useEffect(() => {
     invoke<LlmConfig>("get_llm_config")
@@ -33,10 +39,21 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         setReflectionModel(c.reflection_model);
       })
       .catch(() => {});
-    invoke<{ ready: boolean; files_present: boolean }>("get_embedding_status")
+    invoke<{
+      ready: boolean;
+      files_present: boolean;
+      lazy_load: boolean;
+      loaded: boolean;
+      load_count: number;
+      unload_count: number;
+    }>("get_embedding_status")
       .then((s) => {
         setEmbReady(s.ready);
         setEmbFilesPresent(s.files_present);
+        setEmbLazy(s.lazy_load);
+        setEmbLoaded(s.loaded);
+        setEmbLoadCount(s.load_count);
+        setEmbUnloadCount(s.unload_count);
       })
       .catch(() => {});
   }, []);
@@ -60,6 +77,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       await invoke<boolean>("download_embedding_model");
       setEmbReady(true);
       setEmbFilesPresent(true);
+      setEmbLoaded(true);
       setEmbProgress("");
     } catch (e) {
       setEmbProgress(`Error: ${String(e)}`);
@@ -138,16 +156,26 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           <span>Memory Model</span>
         </div>
         <div className="emb-status">
-          {embReady ? (
+          {embReady && (!embLazy || embLoaded) ? (
             <span className="emb-badge emb-ok">Ready</span>
+          ) : embReady && embLazy ? (
+            <span className="emb-badge emb-warn">
+              Standby (lazy load, unloads when idle)
+            </span>
           ) : embFilesPresent ? (
             <span className="emb-badge emb-warn">Files present (not loaded)</span>
           ) : (
             <span className="emb-badge emb-missing">Not downloaded</span>
           )}
+          {embLazy && embLoadCount + embUnloadCount > 0 && (
+            <span className="emb-hint">
+              {" "}
+              loads: {embLoadCount} / unloads: {embUnloadCount}
+            </span>
+          )}
         </div>
         {embProgress && <p className="emb-progress-text">{embProgress}</p>}
-        {!embReady && (
+        {!embFilesPresent && (
           <button
             className="settings-save emb-download-btn"
             onClick={handleDownloadModel}
@@ -156,7 +184,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {embDownloading ? "Downloading..." : "Download BGE-M3 Model"}
           </button>
         )}
-        <p className="emb-hint">Local semantic search for better memory recall (~2 GB)</p>
+        <p className="emb-hint">Local semantic search for memory recall (int8, ~570 MB; lazy-loaded)</p>
       </div>
     </div>
   );

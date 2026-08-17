@@ -426,7 +426,7 @@ pub async fn get_emotion_state(db: State<'_, DbState>) -> Result<EmotionResponse
 pub async fn get_debug_data(state: State<'_, AppState>) -> Result<DebugData, String> {
     Ok(DebugData {
         llm_configured: state.llm.lock().map(|g| g.is_some()).unwrap_or(false),
-        embedding_configured: state.embedding.is_ready(),
+        embedding_configured: state.embedding.files_present(),
         db_path: crate::config::resolve_db_path(&state.config)
             .to_string_lossy()
             .to_string(),
@@ -977,6 +977,13 @@ pub struct EmbeddingStatus {
     pub files_present: bool,
     pub model_dir: String,
     pub missing_files: Vec<String>,
+    /// P2 lifecycle observability (Architecture #11): whether the resident
+    /// model is currently loaded (lazy services unload when idle).
+    pub loaded: bool,
+    pub lazy_load: bool,
+    pub idle_unload_minutes: i64,
+    pub load_count: u32,
+    pub unload_count: u32,
 }
 
 #[tauri::command]
@@ -987,11 +994,17 @@ pub async fn get_embedding_status(
     let downloader = ModelDownloader::new(&model_dir);
     let missing = downloader.missing_files();
     let files_present = missing.is_empty();
+    let (load_count, unload_count) = state.embedding.lifecycle_stats();
     Ok(EmbeddingStatus {
-        ready: state.embedding.is_ready(),
+        ready: files_present,
         files_present,
         model_dir: model_dir.to_string_lossy().to_string(),
         missing_files: missing,
+        loaded: state.embedding.is_ready(),
+        lazy_load: state.embedding.is_lazy(),
+        idle_unload_minutes: state.embedding.idle_unload_minutes(),
+        load_count,
+        unload_count,
     })
 }
 

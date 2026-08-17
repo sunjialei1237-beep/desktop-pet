@@ -45,13 +45,18 @@
   - 内存复测：主进程 WS 应下降 ~800 MB 以上。
   - 质量抽检：重嵌入后，取真实 DB 的若干 query 对比 fp32 旧向量与 int8 新向量的 top-5 召回一致性（一次性诊断，不落库）。
 
-### P2（进一步，按需实施）：embedding 模型懒加载 + 空闲卸载
+### P2（✅ 已实施并实跑验证，2026-08-17）：embedding 模型懒加载 + 空闲卸载
 - **做法**：模型不随启动加载，改为首次需要 embedding 时加载；空闲 N 分钟（默认 30，可配）后卸载，下次用时再加载。
-- **⚠️ 修正②：预期调整为"锯齿"而非稳态，且实现比计划更简单**。
-  - **调度器会周期性把卸载的模型拉起来**：`soul/ritual.rs`、`soul/landmark.rs`、`proactive.rs`（记忆气泡/欢迎/孤单招呼）的 retrieve 都传 embedding 服务，60min 冒泡窗口一到就触发重载。所以"闲置 100-200MB"不是稳态，而是**卸载 30min 后又被拉回**的锯齿。可接受（重载发生在调度线程，用户无感）；若想真稳态，需让 lively/身份检索路径容忍关键词兜底（它们只求身份上下文，不求深度语义召回）。
-  - **实现最小改动**：`EmbeddingService.model` 已是 `Mutex<Option<Arc<...>>>`，在 `embed()` 里加"未加载则同步加载"即可，不需要大改异步。
-  - **延迟顾虑被高估**：检索发生在 DeepSeek reasoning 响应之前（reasoning 5-20s 才出首字），int8 570MB 从磁盘加载的 +1~2s 基本被吞掉。
-- **配置**：`[embedding] lazy_load = true`、`idle_unload_minutes = 30`（实施时定默认值）。
+- **落地（commit 见 HANDOFF）**：
+  - `EmbeddingService` 加生命周期：`with_lazy(lazy_load, idle_unload_minutes)` 构造链、`ensure_loaded()`（双重检查防并发双载）、`unload_if_idle()`（锁下二次校验 last_used 防 mark-then-clone 竞态）、load/unload 计数器（#11）。
+  - `embed()/embed_batch()` 懒模式下自动 `ensure_loaded`；`retrieval.rs`/`store.rs` 的 `is_ready()` 前置门全部移除（否则懒加载永远不触发）；`backfill` 改用 `files_present()` 门 + 先查缺再嵌入（无活不加载）。
+  - 启动 reconcile 改用免加载的 `embedding::current_model_key(dir)`（文件探测），模型缺席也能对齐向量空间。
+  - 独立看护线程（60s tick）执行 `unload_if_idle`，不挂 life-loop（保持 embedding 生命周期自包含）。
+  - config `[embedding] lazy_load`（默认 true）/`idle_unload_minutes`（默认 30，0=常驻）；老配置缺键自动启用。
+  - Settings 状态显示三态：Ready / Standby (lazy) / Not downloaded + loads/unloads 计数。
+- **实跑验证（dev，2026-08-17）**：启动 64MB 不加载 → 用户真实消息触发 `lazy-loaded in 3385ms (load #1)`（对话管线正常继续，延迟被 reasoning 吞掉）→ 空闲 138s（测试阈值 2min）后 `idle-unloaded (unload #1)` → 闲置 WS **84.5MB**。release 重启闲置态 **49.5MB**。
+- **⚠️ 修正②（已证实）：锯齿而非稳态**。调度器路径（60min 冒泡窗口的 retrieve）会周期性拉起模型——设计如此，重载在调度线程用户无感。
+- **测试**：lib 单测（懒缺文件报错/卸载三重 no-op/访问器）+ `tests/embedding_lifecycle.rs` 真模型全周期（懒启动→首嵌加载→卸载→重载→向量跨周期一致 <1e-5 + current_model_key 与实载 key 一致）。
 
 ### P3（备选，质量有取舍）：换更小的 embedding 模型
 - 若 P1+P2 后仍想压"加载时"占用，可评估 `bge-base-zh-v1.5`（int8 ~100 MB，768 维）或 `bge-small-zh-v1.5`（int8 ~25 MB，512 维）。
@@ -85,5 +90,5 @@
 |---|---|---|---|
 | 现状 | 1500 MB | ~1929 MB | — |
 | P1 量化 + ORT 调优（✅ 已实测） | **870 MB** | **1318 MB** | 极低（重嵌入后消除混合空间） |
-| P1+P2 | 锯齿：闲置卸载后 ~100-200 MB，调度器拉起后回到 P1 水平 | 锯齿 ~500-1300 MB | 低（加载延迟被 reasoning 吞掉） |
+| P1+P2（✅ 已实测） | 锯齿：闲置卸载后 **50-85 MB**，调度器拉起后回到 P1 水平 | 锯齿 ~480-1320 MB | 低（加载延迟 3.4s 实测被 reasoning 吞掉） |
 | P1+P2+P3（如需） | 加载时 ~300 MB 级 | ~700 MB 级 | 需评测 |

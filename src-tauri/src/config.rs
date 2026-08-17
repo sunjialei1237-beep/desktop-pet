@@ -34,6 +34,24 @@ pub struct LlmConfig {
 pub struct EmbeddingConfig {
     pub model_dir: String,
     pub model_name: String,
+    /// P2 memory reduction: load the model on the first embed instead of at
+    /// startup. Old configs without this key default to ON.
+    #[serde(default = "default_lazy_load")]
+    pub lazy_load: bool,
+    /// P2 memory reduction: unload the model after this many idle minutes so
+    /// an all-day-running pet doesn't hold ~870 MB while the user is away.
+    /// 0 = keep resident once loaded. Scheduler paths (60min proactive window)
+    /// will sawtooth reload — that is expected and harmless.
+    #[serde(default = "default_idle_unload_minutes")]
+    pub idle_unload_minutes: i64,
+}
+
+fn default_lazy_load() -> bool {
+    true
+}
+
+fn default_idle_unload_minutes() -> i64 {
+    30
 }
 
 /// General application settings.
@@ -115,6 +133,8 @@ impl Default for AppConfig {
             embedding: EmbeddingConfig {
                 model_dir: String::new(),
                 model_name: "bge-m3".to_string(),
+                lazy_load: default_lazy_load(),
+                idle_unload_minutes: default_idle_unload_minutes(),
             },
             app: AppConfigData {
                 db_path: String::new(),
@@ -309,6 +329,42 @@ mod tests {
         assert_eq!(config.llm.main_model, "deepseek-v4-pro");
         assert_eq!(config.embedding.model_name, "bge-m3");
         assert!(config.app.debug);
+        // P2 memory reduction defaults: lazy on, unload after 30 idle minutes.
+        assert!(config.embedding.lazy_load);
+        assert_eq!(config.embedding.idle_unload_minutes, 30);
+    }
+
+    #[test]
+    fn test_embedding_lazy_keys_optional_and_overridable() {
+        // Old config (pre-P2) has no lazy keys -> serde defaults kick in.
+        let old = r#"
+[llm]
+base_url = "https://api.deepseek.com/v1"
+api_key = "k"
+main_model = "m"
+reflection_model = "m"
+
+[embedding]
+model_dir = "D:\\models"
+model_name = "bge-m3"
+
+[app]
+db_path = ""
+debug = true
+log_level = "info"
+"#;
+        let config: AppConfig = toml::from_str(old).unwrap();
+        assert!(config.embedding.lazy_load);
+        assert_eq!(config.embedding.idle_unload_minutes, 30);
+
+        // Explicit opt-out (eager + resident) parses.
+        let eager = old.replace(
+            "model_name = \"bge-m3\"",
+            "model_name = \"bge-m3\"\nlazy_load = false\nidle_unload_minutes = 0",
+        );
+        let config: AppConfig = toml::from_str(&eager).unwrap();
+        assert!(!config.embedding.lazy_load);
+        assert_eq!(config.embedding.idle_unload_minutes, 0);
     }
 
     #[test]
