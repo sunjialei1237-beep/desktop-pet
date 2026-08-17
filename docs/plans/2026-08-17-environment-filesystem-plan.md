@@ -281,7 +281,7 @@ DebugPanel 新增 section：Environment Snapshot / [Environment] 注入与否及
 | **P6** 评测 | §6 全量 | ✅ `611a5e1`：A/B/C 成本三线；注入黑盒；人格双跑；顺带修 DeepSeek thinking-off 缺口 + M7 |
 | **E3** open_file | 挂 ComputerAction，§3.5 扩展名 allowlist | ✅ `6fca230`：canonicalize-first 重检 + `.bat/.exe/.lnk/.ps1/.vbs/.msi/.reg/宏` 拒绝 + explorer 执行 |
 | **F1** create_note | Phase 2 | ✅ `6fca230`：提案/确认分离；文件名校验；1MB/50MB 配额；temp+rename；同名词递增 |
-| **F2** edit_file | Phase 3 回复即提案 | ✅ `e7278d2`：diff 卡；mtime+hash 乐观锁；CRLF/BOM 保留；会话 undo；坏块剥除不武装 |
+| **F2** edit_file | Phase 3 回复即提案 | ✅ `e7278d2`：diff 卡；mtime+hash 乐观锁；CRLF/BOM 保留；会话 undo。真机修复 `31d3bd5`：提案仅对"本轮成功读取过的路径"武装（`read_authorized`），apply/undo 凭"读过+确认卡"授权、不再反查已烧的 once 票 |
 | **U1–U7** | §8.4 七项 UX 候选 | ✅ `dfb25cc`：U1 同轮续做 / U2 借题发挥+诚实降级 / U3 首授权注册 / U4 deny 后悔 / U5 Settings 工作区权限页；U6 确认已有；U7 = F2 验收 |
 | **M7/M8/M10** | §8.5 三延期项 | ✅ `611a5e1`(M7) / `3c4b076`(M8 优先级环, M10 审计指标) |
 | ~~F3~~ | move/rename/run_command | 无限期延后 |
@@ -289,6 +289,8 @@ DebugPanel 新增 section：Environment Snapshot / [Environment] 注入与否及
 **测试基建**：环境工具黑名单用例直接进 `tool_conversations.rs`（"哈哈哈"/"今天星期几"/回忆语境 → 0 环境注入 0 工具）；路径管线纯函数单测（canonicalize/denylist/UNC/8.3/大小写）。
 
 **E5 裁决（§8.3）**：P6 实测环境 section 成本 65 token/轮且 C 线闲谈与 A 线完全相同（prompt cache 生效）→ git cache 10s TTL 直接验收，不接事件失效；延迟性业务需求出现时再接线。
+
+**真机验收补丁（2026-08-18，`31d3bd5`）**：部署时实际运行暴露 ① 环境关键词缺"改"系表达（编辑请求 negotiation None，永不进入读→patch 循环）→ `ENVIRONMENT_KEYWORDS` 补词；② once-grant 被读文件烧掉后 apply 反查必然失败 → `EditProposal.read_authorized` 授权胶囊；③ create_note 描述"先问再调用"诱导模型不调用工具，pending 永不武装 → 改"调用不落盘、按返回结果再问"。以上均为真机实测发现，已用真实 pet + 真实文件/DB 复验。
 
 ---
 
