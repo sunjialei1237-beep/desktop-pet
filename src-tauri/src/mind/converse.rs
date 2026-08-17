@@ -448,6 +448,25 @@ pub async fn converse(
     // and the LLM always answers *this* turn (not a stale history entry).
     let mut messages = messages;
 
+    // P4 (plan §2.4): [Environment] section — DESCRIPTIVE context appended
+    // after the prescriptive near-end directive, injected ONLY when the
+    // planner's two-layer relevance gate fired (keyword + intent) AND the
+    // state layer (freshness/degradation) passes inside the builder.
+    // Chitchat turns never pay for it; the section never enters the static
+    // prefix (cache discipline).
+    if crate::mind::planner::environment_relevant(text, &intent) {
+        match crate::perception::environment::build_environment_section() {
+            Some(section) => {
+                log::info!(
+                    "[converse] environment section injected ({} chars)",
+                    section.chars().count()
+                );
+                messages.push(ChatMessage::system(section));
+            }
+            None => log::info!("[converse] environment section skipped (stale/empty state)"),
+        }
+    }
+
     // If this turn just scheduled a reminder (extracted in Step 1), tell the
     // expression LLM so it naturally confirms it ("好的，3分钟后提醒你").
     // Extractor and converse are separate LLM calls; without this bridge she

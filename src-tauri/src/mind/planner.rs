@@ -76,6 +76,17 @@ const EXTERNAL_INFO_KEYWORDS: &[&str] = &[
     "search", "look up", "news", "weather", "latest",
 ];
 
+/// Environment-relevance keywords (plan 2026-08-17 §2.3, layer 1). A hit
+/// makes the turn an environment candidate — layer 2 (state freshness +
+/// intent compatibility) is applied by `environment_relevant` and at
+/// injection time. Deictic phrases ("看看这个") are the core target.
+const ENVIRONMENT_KEYWORDS: &[&str] = &[
+    "帮我看看", "看看我", "我在写", "我在做什么", "我在干嘛", "在写什么", "在做什么",
+    "看看这个", "这个项目", "这个文件", "这段代码", "我在改", "我打开的", "现在的项目",
+    "当前项目", "我在调试", "我在忙什么", "look at this", "what am i", "what i'm doing",
+    "current project", "this project", "this file",
+];
+
 /// Computer-action intent keywords (open app / open url).
 const COMPUTER_ACTION_KEYWORDS: &[&str] = &[
     "打开", "启动", "运行", "开一下",
@@ -124,6 +135,10 @@ pub fn plan(brain: &BrainState) -> Intent {
         CapabilityMode::ComputerAction
     } else if EXTERNAL_INFO_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
         CapabilityMode::ExternalInfo
+    } else if ENVIRONMENT_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+        // Read-only environment tools (plan §3.4). Lowest priority: action
+        // and external-info phrases win when they co-occur.
+        CapabilityMode::SystemObservation
     } else {
         CapabilityMode::None
     };
@@ -225,6 +240,20 @@ pub fn plan(brain: &BrainState) -> Intent {
         action: "normal".to_string(),
         capability,
     }
+}
+
+/// Two-layer environment relevance (plan §2.3), PURE — no globals, no LLM:
+/// layer 1 keyword candidate AND layer 2a intent compatibility (care /
+/// proactive_check turns never carry environment context — an anxiety turn
+/// must not be polluted with file talk). Layer 2b (state freshness:
+/// presence/app availability) is applied at injection time in
+/// `environment::build_environment_section`.
+pub fn environment_relevant(text: &str, intent: &Intent) -> bool {
+    if intent.goal == "care" || intent.action == "proactive_check" {
+        return false;
+    }
+    let lower = text.to_lowercase();
+    ENVIRONMENT_KEYWORDS.iter().any(|kw| lower.contains(kw))
 }
 
 /// Checks if the user text contains anxiety-related keywords.
@@ -591,6 +620,60 @@ mod tests {
             &empty_retrieval(),
         ));
         assert_eq!(intent.capability, CapabilityMode::ExternalInfo);
+    }
+
+    #[test]
+    fn test_environment_relevant_keyword_hit() {
+        let intent = plan(&brain(
+            "帮我看看这个项目",
+            &calm_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert!(environment_relevant("帮我看看这个项目", &intent));
+        assert_eq!(intent.capability, CapabilityMode::SystemObservation);
+    }
+
+    #[test]
+    fn test_environment_not_relevant_for_chitchat() {
+        let intent = plan(&brain(
+            "哈哈哈哈",
+            &calm_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert!(!environment_relevant("哈哈哈哈", &intent));
+        assert_eq!(intent.capability, CapabilityMode::None);
+    }
+
+    #[test]
+    fn test_environment_suppressed_on_care_route() {
+        // Anxiety turn matching an env keyword: intent compatibility (layer
+        // 2a) suppresses the injection — comfort first, files later.
+        let intent = plan(&brain(
+            "我在写报告，压力好大好累",
+            &stressed_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert_eq!(intent.goal, "care");
+        assert!(!environment_relevant("我在写报告，压力好大好累", &intent));
+    }
+
+    #[test]
+    fn test_capability_action_beats_observation() {
+        // "打开" wins even though an env keyword is also present.
+        let intent = plan(&brain(
+            "帮我看看然后打开这个项目的README",
+            &calm_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert_eq!(intent.capability, CapabilityMode::ComputerAction);
     }
 
     #[test]

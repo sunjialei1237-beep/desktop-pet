@@ -138,6 +138,7 @@ fn last_sample() -> &'static Mutex<Option<EnvSample>> {
 /// Hints for the perception snapshot / Debug Panel (plan P1 acceptance).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct EnvHints {
+    pub app: Option<String>,
     pub title: Option<String>,
     pub file_hint: Option<String>,
     pub project_hint: Option<String>,
@@ -151,12 +152,64 @@ pub fn current_hints() -> EnvHints {
         .ok()
         .and_then(|g| {
             g.as_ref().map(|s| EnvHints {
+                app: s.app.clone(),
                 title: s.title.clone(),
                 file_hint: s.file_hint.clone(),
                 project_hint: s.project_hint.clone(),
             })
         })
         .unwrap_or_default()
+}
+
+// --- [Environment] prompt section (plan §2.4, P4) --------------------------------
+
+/// Build the descriptive [Environment] section for the near-end message.
+/// Returns None unless injection is warranted — callers (converse) gate on
+/// `planner::environment_relevant` first; this function applies LAYER 2b
+/// (state freshness / degradation), the part that needs perception state:
+///   - LongAway → the whole snapshot is stale → suppress entirely.
+///   - No app/title collected (perception off / pre-first-tick) → suppress.
+///   - Title missing but app known → degraded section without file hints.
+///
+/// The section is DESCRIPTIVE context (what is happening) and deliberately a
+/// separate message from the PRESCRIPTIVE near-end directive (time/mood/
+/// intent) — prescription and description stay distinguishable to the model
+/// and to the A/B/C cost experiment switch. It never enters the static
+/// system prefix (cache killer, see grounding.rs L2a note).
+pub fn build_environment_section() -> Option<String> {
+    let hints = current_hints();
+    let presence = presence::current_presence();
+    if presence == PresenceState::LongAway {
+        log::debug!("[environment] section suppressed: stale snapshot (LongAway)");
+        return None;
+    }
+    if hints.app.is_none() && hints.title.is_none() {
+        log::debug!("[environment] section suppressed: no window data collected");
+        return None;
+    }
+
+    let mut lines = vec!["[Environment]".to_string()];
+    if let Some(app) = &hints.app {
+        lines.push(format!("app={}", app));
+    }
+    if let Some(title) = &hints.title {
+        let t: String = title.chars().take(120).collect();
+        lines.push(format!("window={}", t));
+    }
+    if let Some(file) = &hints.file_hint {
+        let mut f = format!("file={}", file);
+        if let Some(proj) = &hints.project_hint {
+            f.push_str(&format!(" project={}", proj));
+        }
+        lines.push(f);
+    }
+    if crate::perception::focus::is_deep_focus() {
+        lines.push("focus=deep".to_string());
+    }
+    if let Some(summary) = recent_summary() {
+        lines.push(format!("Recently: {}", summary));
+    }
+    Some(lines.join("\n"))
 }
 
 // --- Observer thread ------------------------------------------------------------
