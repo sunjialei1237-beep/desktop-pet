@@ -160,9 +160,41 @@ fn cached_process_name(_pid: u32) -> Option<String> {
     None
 }
 
+/// Memory for the last sample that was NOT one of our own windows
+/// (main pet window + the F12 debug window share this process). Sampling
+/// threads read it when the pet or its debug panel holds the foreground:
+/// self-focus must not zero the deep-focus clock or inject `desktop-pet`
+/// as the active app (plan §8.5-M7).
+fn last_non_pet_foreground(
+) -> &'static std::sync::Mutex<Option<(String, Option<String>)>> {
+    static LAST: std::sync::OnceLock<std::sync::Mutex<Option<(String, Option<String>)>>> =
+        std::sync::OnceLock::new();
+    LAST.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Pure decision: when the sampled pid is our own process, the effective
+/// foreground sample is the last non-pet sample (fall through to None on a
+/// fresh start). Any other pid uses the live sample.
+#[doc(hidden)]
+pub fn resolve_own_window_sample(
+    pid: u32,
+    own_pid: u32,
+    live: Option<&(String, Option<String>)>,
+    last: Option<&(String, Option<String>)>,
+) -> Option<(String, Option<String>)> {
+    if pid == own_pid {
+        last.cloned()
+    } else {
+        live.cloned()
+    }
+}
+
 /// Foreground window info from a single `GetForegroundWindow` call, so the
 /// process name and title always describe the same window (plan P1: no
 /// cross-call race when the foreground switches between the two reads).
+/// Pet-owned windows (main + debug) fall back to the last non-pet sample —
+/// clicking Liri or opening F12 must not turn the environment into
+/// "desktop-pet" / reset the deep-focus clock.
 #[cfg(target_os = "windows")]
 pub fn foreground_info() -> (Option<String>, Option<String>) {
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -190,7 +222,25 @@ pub fn foreground_info() -> (Option<String>, Option<String>) {
             None
         };
 
-        (cached_process_name(pid), title)
+        let live = cached_process_name(pid).map(|name| (name, title));
+        let resolved = match last_non_pet_foreground().lock() {
+            Ok(mut last) => {
+                let r = resolve_own_window_sample(
+                    pid,
+                    std::process::id(),
+                    live.as_ref(),
+                    last.as_ref(),
+                );
+                if let Some(sample) = &r {
+                    *last = Some(sample.clone());
+                }
+                r
+            }
+            Err(_) => live.clone(),
+        };
+        resolved
+            .map(|(name, title)| (Some(name), title))
+            .unwrap_or((None, None))
     }
 }
 
@@ -268,5 +318,24 @@ mod tests {
         insert_bounded(&mut m, 4, "d2".into(), 2);
         assert_eq!(m.len(), 2, "updating an existing key must not clear");
         assert_eq!(m.get(&4).map(String::as_str), Some("d2"));
+    }
+
+    #[test]
+    fn own_window_uses_last_non_pet_sample() {
+        // Clicking Liri or opening the F12 debug panel shares the pet's pid —
+        // the effective sample must fall back to the last real app so the
+        // deep-focus clock (and the environment app hint) survive self-focus.
+        let liri = ("desktop-pet.exe".to_string(), Some("璃".to_string()));
+        let code = ("Code.exe".to_string(), Some("agent.rs — Liri".to_string()));
+        assert_eq!(
+            resolve_own_window_sample(4242, 4242, Some(&liri), Some(&code)),
+            Some(code.clone())
+        );
+        assert_eq!(
+            resolve_own_window_sample(3333, 4242, Some(&code.clone()), Some(&code)),
+            Some(code)
+        );
+        // Fresh start, no prior non-pet sample → none.
+        assert_eq!(resolve_own_window_sample(4242, 4242, Some(&liri), None), None);
     }
 }

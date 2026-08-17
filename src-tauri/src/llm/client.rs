@@ -370,6 +370,12 @@ impl LlmClient {
     /// reply (no tool round); `Some(defs)` enables tool-calling with
     /// `tool_choice:"auto"` (the LLM decides whether to call). Tool rounds are
     /// always non-streaming — see `chat_with_model`.
+    ///
+    /// Thinking is explicitly disabled here, matching every other production
+    /// call: otherwise DeepSeek-v4 returns `reasoning_content` instead of
+    /// `content` and requires the dropped reasoning to be echoed back on the
+    /// next tool round (HTTP 400). The same fix also lets tool-call rounds get
+    /// real answer text under a tight max_tokens budget.
     pub async fn chat(
         &self,
         messages: &[ChatMessage],
@@ -377,8 +383,16 @@ impl LlmClient {
         max_tokens: Option<u32>,
         tools: Option<&[ToolDef]>,
     ) -> Result<ChatResult, LlmError> {
-        self.chat_with_model(&self.main_model, messages, temperature, max_tokens, None, tools)
-            .await
+        let no_thinking = ThinkingConfig::disabled();
+        self.chat_with_model(
+            &self.main_model,
+            messages,
+            temperature,
+            max_tokens,
+            Some(&no_thinking),
+            tools,
+        )
+        .await
     }
 
     /// Sends a chat completion request using the reflection model (cheaper/faster).

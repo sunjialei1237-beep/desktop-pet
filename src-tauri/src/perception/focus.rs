@@ -18,8 +18,11 @@ use std::time::{Duration, Instant};
 /// Sustained same-Work-app time after which we consider the user in deep focus
 /// (plan P14.3: > 25 minutes).
 pub const DEEP_FOCUS_THRESHOLD_SECS: u64 = 25 * 60;
-/// Sample interval — coarse is fine for a 25-minute threshold.
-const POLL_INTERVAL_SECS: u64 = 30;
+/// Sample interval — 5 s keeps the debug panel's "专注 X 分钟" readout
+/// responsive (first minute shows within 60 s) without meaningful overhead:
+/// one Toolhelp cache hit per tick. §8.5-M7 keeps self-window samples from
+/// resetting the accumulators.
+const POLL_INTERVAL_SECS: u64 = 5;
 
 static CONTINUOUS_WORK_SECS: AtomicU64 = AtomicU64::new(0);
 static IS_DEEP_FOCUS: AtomicBool = AtomicBool::new(false);

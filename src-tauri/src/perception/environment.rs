@@ -229,7 +229,24 @@ pub fn build_environment_section() -> Option<String> {
         log::debug!("[environment] section suppressed: no window data collected");
         return None;
     }
+    let recent = recent_summary();
+    Some(render_environment_section(
+        &hints,
+        crate::perception::focus::is_deep_focus(),
+        recent.as_deref(),
+    ))
+}
 
+/// Pure renderer for the exact section body (same format the production
+/// builder emits). Public so the P6 A/B/C cost harness can measure the
+/// incremental prompt cost of the environment section without touching
+/// process-global observer state.
+#[doc(hidden)]
+pub fn render_environment_section(
+    hints: &EnvHints,
+    deep_focus: bool,
+    recent_summary: Option<&str>,
+) -> String {
     let mut lines = vec!["[Environment]".to_string()];
     if let Some(app) = &hints.app {
         lines.push(format!("app={}", sanitize_env_text(app, ENV_APP_MAX_CHARS)));
@@ -250,14 +267,14 @@ pub fn build_environment_section() -> Option<String> {
         }
         lines.push(f);
     }
-    if crate::perception::focus::is_deep_focus() {
+    if deep_focus {
         lines.push("focus=deep".to_string());
     }
-    if let Some(summary) = recent_summary() {
+    if let Some(summary) = recent_summary {
         lines.push(format!("Recently: {}", summary));
     }
     lines.push(ENV_UNTRUSTED_NOTE.to_string());
-    Some(lines.join("\n"))
+    lines.join("\n")
 }
 
 // --- Observer thread ------------------------------------------------------------
