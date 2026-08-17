@@ -106,7 +106,7 @@ fn resolve_pending_forget(
     text: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<PendingResolution, String> {
-    use crate::mind::forget::{execute_candidate, is_off_topic, resolve_candidate};
+    use crate::mind::forget::{execute_candidate_with_sweep, is_off_topic, resolve_candidate};
 
     // Take-and-clear in one lock scope; clone the candidates out so no lock is
     // held across the (synchronous) DB erase below. Stale (>90s) slots drop.
@@ -134,7 +134,12 @@ fn resolve_pending_forget(
     match resolve_candidate(text, &pf.candidates) {
         Some(i) => {
             let summary = pf.candidates[i].summary.clone();
-            let deleted = execute_candidate(&pf.candidates[i], ctx.db);
+            // Sweep execution: the user's answer confirms the TOPIC, so
+            // same-topic siblings (the other hotpot episodes) die with the
+            // picked candidate — the 2026-08-13 incident deleted only the
+            // fact while she claimed "从此不在我记忆里", and both surviving
+            // episodes kept resurfacing.
+            let deleted = execute_candidate_with_sweep(&pf.candidates[i], &pf.candidates, ctx.db);
             if !deleted {
                 log::warn!("[converse] forget disambig: execute_candidate false for {}", i);
             }

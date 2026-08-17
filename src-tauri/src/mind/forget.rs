@@ -189,20 +189,34 @@ fn find_episode_candidate(
     db: &DbState,
     embedding: Option<&EmbeddingService>,
 ) -> Result<Option<ForgetCandidate>, String> {
+    let mut cands = find_episode_candidates(text, db, embedding)?;
+    Ok(if cands.is_empty() { None } else { Some(cands.remove(0)) })
+}
+
+/// ALL gated episode matches (not just top-1). Forgetting a topic means
+/// forgetting its traces: the same event is typically stored as several
+/// episodes (re-told, re-extracted, EN+ZH variants). The 2026-08-13 hotpot
+/// incident: "忘掉我最喜欢吃火锅" matched top-1 only, the confirmed delete
+/// landed on the fact, and BOTH hotpot episodes (07-18 EN + 08-13 ZH)
+/// survived while she said "火锅从此不在我记忆里了" — then kept resurfacing.
+fn find_episode_candidates(
+    text: &str,
+    db: &DbState,
+    embedding: Option<&EmbeddingService>,
+) -> Result<Vec<ForgetCandidate>, String> {
     let emotion = EmotionState::default();
-    let retrieval = retrieve(text, &emotion, embedding, db, 1)?;
-    let Some(scored) = retrieval.episodes.first() else {
-        return Ok(None);
-    };
-    if !should_forget(scored.score_breakdown.semantic, scored.episode.is_landmark) {
-        return Ok(None);
-    }
-    Ok(Some(ForgetCandidate {
-        target: ForgetTarget::Episode,
-        id: scored.episode.id.clone(),
-        summary: scored.episode.summary.clone(),
-        confidence: scored.score_breakdown.semantic,
-    }))
+    let retrieval = retrieve(text, &emotion, embedding, db, 8)?;
+    Ok(retrieval
+        .episodes
+        .iter()
+        .filter(|se| should_forget(se.score_breakdown.semantic, se.episode.is_landmark))
+        .map(|se| ForgetCandidate {
+            target: ForgetTarget::Episode,
+            id: se.episode.id.clone(),
+            summary: se.episode.summary.clone(),
+            confidence: se.score_breakdown.semantic,
+        })
+        .collect())
 }
 
 /// Best active fact match by containment ratio, or None below the gate.
@@ -310,6 +324,48 @@ pub fn execute_candidate(cand: &ForgetCandidate, db: &DbState) -> bool {
     }
 }
 
+/// Executes the confirmed forget, then sweeps same-topic siblings. The user's
+/// "忘掉X" means the MEMORY of X — the fact/episode row split is an
+/// implementation detail they can't see. From the user's perspective, leaving
+/// the episodes alive after expiring the fact (2026-08-13 hotpot incident)
+/// while acknowledging "从此不在我记忆里" is a lie the memory keeps
+/// disproving every time the surviving row resurfaces.
+///
+/// Sweep rules:
+/// - Every OTHER episode candidate dies with the pick: they all cleared the
+///   ≥0.7 semantic gate on the user's own forget text, so they ARE the topic
+///   from the user's perspective (same event retold / re-extracted / EN+ZH).
+/// - Fact/pending siblings only die on a strong summary match with the picked
+///   one (char_overlap ≥ 0.5) — semantic gates over fuzzy categories (e.g.
+///   "雪碧" vs "milk tea", both beverages) can pass wrong facts, so they need
+///   the direct topic check against what the user actually confirmed.
+pub fn execute_candidate_with_sweep(
+    picked: &ForgetCandidate,
+    all: &[ForgetCandidate],
+    db: &DbState,
+) -> bool {
+    if !execute_candidate(picked, db) {
+        return false;
+    }
+    for c in all {
+        let same = c.id == picked.id && c.target == picked.target;
+        if same {
+            continue;
+        }
+        let sweep = match c.target {
+            ForgetTarget::Episode => true,
+            _ => char_overlap(&c.summary, &picked.summary) >= 0.5,
+        };
+        if sweep && execute_candidate(c, db) {
+            log::info!(
+                "[forget] swept related memory: {:?}",
+                c.summary.chars().take(40).collect::<String>()
+            );
+        }
+    }
+    true
+}
+
 /// Top-level forget: scan episodes, facts, and pending reminders for the best
 /// confident match to the user's text and erase that one memory. Replaces
 /// `forget_episode` as the production entry point (episodes are still handled,
@@ -347,6 +403,7 @@ pub fn forget_best_match(
     // 经历" episode). Only when the top two are genuinely close do we surface
     // candidates for an ask-back. Landmarks are already filtered out of the
     // episode leg, so every candidate is safe to erase once picked.
+    let all_cands = cands.clone();
     match pick_winner_or_ambiguous(cands) {
         Pick::Ambiguous(cands) => {
             log::info!(
@@ -359,7 +416,7 @@ pub fn forget_best_match(
         Pick::Winner(w) => {
             let summary = w.summary.clone();
             let target = w.target;
-            if execute_candidate(&w, db) {
+            if execute_candidate_with_sweep(&w, &all_cands, db) {
                 log::info!(
                     "[forget] {} {} ({})",
                     target.as_str(),
@@ -726,6 +783,61 @@ mod tests {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    #[test]
+    fn sweep_kills_related_episodes_spares_unrelated_facts() {
+        // The 2026-08-13 hotpot incident as a regression: picking the FACT
+        // must also delete BOTH same-topic episodes, while a same-category
+        // but different-topic fact (雪碧 vs 火锅) survives.
+        let db = test_db();
+        db.with_conn(|c| {
+            crate::db::episodes::insert(c, &ep("ep_hot1", "用户表示最喜欢吃火锅。", false))?;
+            crate::db::episodes::insert(c, &ep("ep_hot2", "User expresses a desire to eat hotpot.", false))?;
+            insert_fact(c, "f_hot", "火锅")?;
+            insert_fact(c, "f_sprite", "喜欢雪碧")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let picked = ForgetCandidate { target: ForgetTarget::Fact, id: "f_hot".into(), summary: "火锅".into(), confidence: 0.9 };
+        let all = vec![
+            ForgetCandidate { target: ForgetTarget::Episode, id: "ep_hot1".into(), summary: "用户表示最喜欢吃火锅。".into(), confidence: 0.85 },
+            ForgetCandidate { target: ForgetTarget::Episode, id: "ep_hot2".into(), summary: "User expresses a desire to eat hotpot.".into(), confidence: 0.75 },
+            ForgetCandidate { target: ForgetTarget::Fact, id: "f_sprite".into(), summary: "喜欢雪碧".into(), confidence: 0.72 },
+            picked.clone(),
+        ];
+        assert!(execute_candidate_with_sweep(&picked, &all, &db));
+
+        let count_eps: i64 = db
+            .with_conn(|c| Ok(c.query_row("SELECT count(*) FROM episodes", [], |r| r.get(0)).map_err(|e| e.to_string())))
+            .unwrap()
+            .unwrap();
+        assert_eq!(count_eps, 0, "both hotpot episodes swept");
+        let sprite_alive: i64 = db
+            .with_conn(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM facts WHERE id='f_sprite' AND valid_to IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string()))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(sprite_alive, 1, "different-topic fact survives the sweep");
+        let hotpot_fact_expired: i64 = db
+            .with_conn(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM facts WHERE id='f_hot' AND valid_to IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string()))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(hotpot_fact_expired, 1, "picked fact expired");
     }
 
     /// Is a fact with this id still active (valid_to IS NULL)?

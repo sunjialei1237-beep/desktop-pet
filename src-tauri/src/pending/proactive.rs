@@ -1036,6 +1036,18 @@ pub async fn generate_welcome_back(
             anchor_dice(&retrieval, db, &now_utc)
         };
 
+    // Anchorless = pure emotional greeting. Swap to identity-only retrieval
+    // (mirror generate_lively): the full [Memories] pool must NOT stay visible
+    // on the anchorless path — the 2026-08-17 incident had an anchorless
+    // welcome grab a forgotten hotpot memory out of [Memories] and voice it
+    // with a confabulated "昨天". Identity-only also empties grounding_guard's
+    // allowed pool, so any "你之前说过的X" claim gets suppressed.
+    let retrieval = if has_anchor {
+        retrieval
+    } else {
+        crate::mind::retrieval::load_identity(db)
+    };
+
     // Tone tracks mood: a high-mood pet greets playfully, otherwise gentle.
     let tone: &str = if emotion.mood >= 0.65 { "playful" } else { "gentle" };
 
@@ -1188,6 +1200,17 @@ pub async fn generate_lonely_bubble(
         } else {
             anchor_dice(&retrieval, db, &now_utc)
         };
+
+    // Anchorless = pure "just thinking of you". Swap to identity-only
+    // retrieval (mirror generate_lively / welcome-back): the 2026-08-17
+    // incident — an anchorless lonely nudge pulled a forgotten hotpot memory
+    // from [Memories] and voiced it as "你昨天说想吃火锅". Identity-only
+    // empties both the visible pool and grounding_guard's allowed pool.
+    let retrieval = if has_anchor {
+        retrieval
+    } else {
+        crate::mind::retrieval::load_identity(db)
+    };
 
     // Tone tracks mood: a high-mood pet nudges playfully, otherwise gentle.
     let tone: &str = if emotion.mood >= 0.65 { "playful" } else { "gentle" };

@@ -311,6 +311,7 @@ fn format_intent(intent: &Intent) -> String {
 /// relationship anchors rather than one more fact. Regular episodes and
 /// facts stay under [Memories].
 fn format_memories(retrieval: &RetrievalResult) -> String {
+    let now = chrono::Utc::now();
     let mut sections = Vec::new();
 
     // Landmark episodes = relationship ledger (milestones worth anchoring on).
@@ -351,14 +352,14 @@ fn format_memories(retrieval: &RetrievalResult) -> String {
     });
 
     for fact in &sorted_facts {
-        let date = fact.created_at.split('T').next().unwrap_or("?");
+        let when = memory_when(&fact.created_at, &now);
         lines.push(format!(
-            "- [Fact] {} / {}: {} (confidence: {}, source: {})",
+            "- [Fact] {} / {}: {} (confidence: {}, {})",
             fact.category,
             fact.key,
             fact.value,
             confidence_label(fact.confidence),
-            date,
+            when,
         ));
     }
 
@@ -370,13 +371,13 @@ fn format_memories(retrieval: &RetrievalResult) -> String {
         .filter(|se| !se.episode.is_landmark)
     {
         let ep = &scored_ep.episode;
-        let date = ep.time.split('T').next().unwrap_or("?");
+        let when = memory_when(&ep.time, &now);
         lines.push(format!(
-            "- [Episode] {} (importance: {}, emotion: {}, source: {})",
+            "- [Episode] {} (importance: {}, emotion: {}, {})",
             ep.summary,
             importance_label(ep.importance),
             ep.emotion.as_deref().unwrap_or("neutral"),
-            date,
+            when,
         ));
     }
 
@@ -394,17 +395,45 @@ fn format_memories(retrieval: &RetrievalResult) -> String {
         // Inline guard, placed at the point of use (not 1700 tokens away in
         // the system prompt): the model may ONLY cite what is listed above.
         // Targets the G6 failure mode — wrapping a real memory in a fake
-        // "你上次说/提过" source, or inventing extra topics — which a distant
+        // "你上次说/提过/念叨" source, or inventing extra topics — which a distant
         // rule does not stop under thinking-off, but an adjacent note does.
+        // The time clause targets the 2026-08-17 incident: a 4-day-old hotpot
+        // memory voiced as "你昨天说想吃火锅" — the ISO date buried in metadata
+        // was ignored; the salient relative date + explicit rule now carry it.
         lines.push(
             "（以上即全部记忆。只可引用已列出的内容；不得添加未列出的项目、人名、事件，"
                 .to_string()
-                + "也不得编造\"你上次说/提过/念叨\"之类的出处——记着就是记着，没有出处别硬安一个。）",
+                + "也不得编造\"你上次说/提过/念叨\"之类的出处——记着就是记着，没有出处别硬安一个。"
+                + "每条记忆都标了它是多久前的事：提到它的时间必须照标注说——标着「4天前」的绝不能说成「昨天」，不确定就说\"之前\"。）",
         );
         sections.push(lines.join("\n"));
     }
 
     sections.join("\n\n")
+}
+
+/// High-salience relative time for a memory line: "今天" / "昨天" / "前天" /
+/// "N天前（M月D日）" / "M月D日" (stale) / "YYYY年M月D日" (last year or older).
+/// Replaces the old buried ISO "source: 2026-08-13" — the model ignored it and
+/// confabulated "昨天" for a 4-day-old memory (2026-08-17 incident).
+fn memory_when(iso: &str, now: &chrono::DateTime<chrono::Utc>) -> String {
+    use chrono::Datelike;
+    let dt = match chrono::DateTime::parse_from_rfc3339(iso) {
+        Ok(d) => d.with_timezone(&chrono::Utc),
+        Err(_) => return iso.split('T').next().unwrap_or("?").to_string(),
+    };
+    let local = dt.with_timezone(&chrono::Local);
+    let now_local = now.with_timezone(&chrono::Local);
+    let days = (now_local.date_naive() - local.date_naive()).num_days();
+    let md = format!("{}月{}日", local.month(), local.day());
+    match days {
+        0 => "今天".to_string(),
+        1 => "昨天".to_string(),
+        2 => "前天".to_string(),
+        3..=60 => format!("{days}天前（{md}）"),
+        _ if local.year() == now_local.year() => md,
+        _ => format!("{}年{md}", local.year()),
+    }
 }
 
 /// Maps a numeric confidence to a human-readable label.
@@ -552,6 +581,43 @@ mod tests {
     use crate::db::persona::PersonaTrait;
     use crate::db::relationship::Relationship;
     use crate::mind::retrieval::{RetrievalResult, ScoreBreakdown, ScoredEpisode};
+
+    #[test]
+    fn memory_when_buckets_relative_to_now() {
+        let now = chrono::Utc::now();
+        let iso = |d: i64| (now - chrono::Duration::days(d)).to_rfc3339();
+        assert_eq!(memory_when(&iso(0), &now), "今天");
+        assert_eq!(memory_when(&iso(1), &now), "昨天");
+        assert_eq!(memory_when(&iso(2), &now), "前天");
+        let four = memory_when(&iso(4), &now);
+        assert!(four.starts_with("4天前（"), "relative + calendar date: {four}");
+        // Stale memories lose the noisy day count but keep the calendar date.
+        let stale = memory_when(&iso(90), &now);
+        assert!(!stale.contains("天前"), "stale is calendar-only: {stale}");
+        assert!(stale.contains("月"));
+        // Unparseable input degrades to the date part, never panics.
+        assert_eq!(memory_when("garbage", &now), "garbage");
+    }
+
+    #[test]
+    fn memory_lines_carry_salient_relative_date() {
+        // The 2026-08-17 incident: a 4-day-old memory must render a visible
+        // "4天前", not a buried ISO date the model ignores.
+        let now = chrono::Utc::now();
+        let mut r = empty_retrieval();
+        r.facts = vec![Fact {
+            id: "f1".into(), category: "preference".into(), key: "favorite_food".into(),
+            value: "火锅".into(), confidence: 0.9,
+            valid_from: None, valid_to: None, source_episode: None,
+            mention_count: 1,
+            created_at: (now - chrono::Duration::days(4)).to_rfc3339(),
+            updated_at: (now - chrono::Duration::days(4)).to_rfc3339(),
+            surfaced_count: 0, last_surfaced_at: None,
+        }];
+        let s = format_memories(&r);
+        assert!(s.contains("4天前"), "salient relative date present: {s}");
+        assert!(s.contains("绝不能说成「昨天」"), "inline time rule present");
+    }
 
     fn empty_retrieval() -> RetrievalResult {
         RetrievalResult {
