@@ -4,10 +4,11 @@
 //! No keystroke content is recorded (privacy: Principle 14).
 
 /// User presence state, derived from idle time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PresenceState {
     /// Active in the last 30 seconds.
+    #[default]
     Active,
     /// No activity for 30s - 5min (briefly away).
     BriefAway,

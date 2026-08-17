@@ -71,29 +71,26 @@ pub fn classify_process(process_name: &str) -> AppCategory {
     }
 }
 
-/// Gets the current foreground window's process name.
-/// Returns None on non-Windows or if the API call fails.
+/// Process-name cache: pid → exe name. Process names are stable for a pid's
+/// lifetime, so the (relatively expensive) full-process Toolhelp snapshot
+/// walk only runs on cache misses — important now that the environment
+/// observer samples every 3 s (plan P1).
+fn process_name_cache() -> &'static std::sync::Mutex<std::collections::HashMap<u32, String>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, String>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Resolve a pid to its process name via a full Toolhelp snapshot walk.
 #[cfg(target_os = "windows")]
-pub fn foreground_process() -> Option<String> {
+fn process_name_by_snapshot(pid: u32) -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
         PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
     unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.0.is_null() {
-            return None;
-        }
-
-        let mut pid: u32 = 0;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == 0 {
-            return None;
-        }
-
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
         let mut entry = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -104,9 +101,8 @@ pub fn foreground_process() -> Option<String> {
             loop {
                 if entry.th32ProcessID == pid {
                     let name = String::from_utf16_lossy(&entry.szExeFile);
-                    let name = name.trim_end_matches('\0').to_string();
                     let _ = CloseHandle(snapshot);
-                    return Some(name);
+                    return Some(name.trim_end_matches('\0').to_string());
                 }
                 if Process32NextW(snapshot, &mut entry).is_err() {
                     break;
@@ -116,6 +112,71 @@ pub fn foreground_process() -> Option<String> {
         let _ = CloseHandle(snapshot);
     }
     None
+}
+
+#[cfg(target_os = "windows")]
+fn cached_process_name(pid: u32) -> Option<String> {
+    if let Ok(cache) = process_name_cache().lock() {
+        if let Some(name) = cache.get(&pid) {
+            return Some(name.clone());
+        }
+    }
+    let name = process_name_by_snapshot(pid)?;
+    if let Ok(mut cache) = process_name_cache().lock() {
+        cache.insert(pid, name.clone());
+    }
+    Some(name)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cached_process_name(_pid: u32) -> Option<String> {
+    None
+}
+
+/// Foreground window info from a single `GetForegroundWindow` call, so the
+/// process name and title always describe the same window (plan P1: no
+/// cross-call race when the foreground switches between the two reads).
+#[cfg(target_os = "windows")]
+pub fn foreground_info() -> (Option<String>, Option<String>) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+    };
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return (None, None);
+        }
+
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return (None, None);
+        }
+
+        // Title: 512 wchars is the conventional window-title budget.
+        let mut buf = [0u16; 512];
+        let len = GetWindowTextW(hwnd, &mut buf);
+        let title = if len > 0 {
+            Some(String::from_utf16_lossy(&buf[..len as usize]))
+        } else {
+            None
+        };
+
+        (cached_process_name(pid), title)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn foreground_info() -> (Option<String>, Option<String>) {
+    (None, None)
+}
+
+/// Gets the current foreground window's process name.
+/// Returns None on non-Windows or if the API call fails.
+#[cfg(target_os = "windows")]
+pub fn foreground_process() -> Option<String> {
+    foreground_info().0
 }
 
 #[cfg(not(target_os = "windows"))]

@@ -401,6 +401,15 @@ pub async fn get_perception(
         (0, false)
     };
 
+    // Environment observer hints (plan 2026-08-17 P1): window title + parsed
+    // file/project hints. The observer thread only runs when window
+    // perception is enabled, so the gate here is consistent by construction.
+    let env_hints = if cfg.enable_window {
+        crate::perception::environment::current_hints()
+    } else {
+        Default::default()
+    };
+
     Ok(crate::perception::PerceptionSnapshot {
         time_of_day: crate::perception::time::current_time_of_day(),
         since_last_interaction_secs: since_last,
@@ -409,6 +418,9 @@ pub async fn get_perception(
         app_category: category,
         continuous_work_secs,
         is_deep_focus,
+        window_title: env_hints.title,
+        active_file_hint: env_hints.file_hint,
+        active_project_hint: env_hints.project_hint,
     })
 }
 
@@ -1156,6 +1168,10 @@ pub struct DebugSnapshot {
     /// Deep-focus tracking (P14.3): sustained same-Work-app foreground time.
     pub continuous_work_secs: u64,
     pub is_deep_focus: bool,
+    /// Environment observer output (plan 2026-08-17 P1): title + hints +
+    /// activity summary. Debug Panel only — never auto-injected into LLM.
+    pub env_hints: crate::perception::environment::EnvHints,
+    pub env_recent: Option<String>,
     /// Proactive-bubble budget observability (2026-08-14): when the last bubble
     /// fired and how long until the next is allowed (Architecture #11).
     pub last_bubble_at: Option<String>,
@@ -1360,6 +1376,18 @@ pub async fn get_debug_snapshot(
                 crate::perception::focus::is_deep_focus()
             } else {
                 false
+            },
+            // Environment observability (plan 2026-08-17 P1): hints + activity
+            // summary from the observer, empty when window perception is off.
+            env_hints: if state.config.perception.enable_window {
+                crate::perception::environment::current_hints()
+            } else {
+                Default::default()
+            },
+            env_recent: if state.config.perception.enable_window {
+                crate::perception::environment::recent_summary()
+            } else {
+                None
             },
             // Proactive-bubble budget observability (2026-08-14): when the last
             // bubble fired + seconds until the next is allowed (#11).

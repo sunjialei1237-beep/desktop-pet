@@ -48,6 +48,8 @@ interface DebugSnapshot {
   llm_configured: boolean;
   continuous_work_secs: number;
   is_deep_focus: boolean;
+  env_hints: { title: string | null; file_hint: string | null; project_hint: string | null };
+  env_recent: string | null;
   last_bubble_at: string | null;
   next_bubble_in_secs: number;
 }
@@ -291,6 +293,22 @@ export function DebugPanel({ anim, onClose, onQuit }: {
         <div className="debug-bar">
           <span>{snapshot.is_deep_focus ? "🔒 深度专注中（抑制主动气泡）" : `连续工作 ${Math.floor(snapshot.continuous_work_secs / 60)} min（≥25 min 进入专注）`}</span>
         </div>
+      </div>
+
+      <div className="debug-section">
+        <span className="debug-title">Environment</span>
+        <span className="debug-hint">环境观察者（plan 2026-08-17 P1）：标题解析 hints + 内存活动史。仅本地，不进 DB。</span>
+        <div className="debug-bar">
+          <span>窗口: {snapshot.env_hints.title ?? "（未采集）"}</span>
+        </div>
+        <div className="debug-bar">
+          <span>文件: {snapshot.env_hints.file_hint ?? "—"} | 项目: {snapshot.env_hints.project_hint ?? "—"}</span>
+        </div>
+        {snapshot.env_recent && (
+          <div className="debug-bar">
+            <span>Recently: {snapshot.env_recent}</span>
+          </div>
+        )}
       </div>
 
       <div className="debug-section">

@@ -209,6 +209,17 @@ pub fn run() {
             // deep focus. Independent of Mind/LLM (Principle 5).
             perception::focus::start();
 
+            // Environment observer (plan 2026-08-17 P1): samples foreground
+            // app/title every 3s, synthesizes semantic events by snapshot
+            // diff, keeps an in-memory activity ring. Titles are never
+            // collected at all when window perception is off (Principle 6).
+            perception::environment::start(
+                app.state::<crate::commands::AppState>()
+                    .config
+                    .perception
+                    .enable_window,
+            );
+
             // P2 memory reduction: embedding idle watcher. Drops the resident
             // ~570 MB model after the configured idle window so an all-day
             // pet doesn't hold it while the user is away; the next embed
