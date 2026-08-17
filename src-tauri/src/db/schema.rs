@@ -10,7 +10,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     // v6 bubble_log migration was unreachable on real v5 DBs; caught by the
     // 2026-08-16 selector smoke, lib tests never saw it because fresh test
     // DBs run the full chain from version 0).
-    if current_version >= 6 {
+    if current_version >= 7 {
         log::info!("Database schema at version {}, no migration needed", current_version);
         return Ok(());
     }
@@ -68,6 +68,15 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         log::info!("Migration v6 applied successfully");
     }
 
+    let current_version = get_schema_version(conn)?;
+    if current_version < 7 {
+        log::info!("Running migration v7 (fs_grants)...");
+        let sql = include_str!("../../migrations/007_fs_grants.sql");
+        conn.execute_batch(sql)
+            .map_err(|e| format!("Migration v7 failed: {}", e))?;
+        log::info!("Migration v7 applied successfully");
+    }
+
     Ok(())
 }
 
@@ -105,11 +114,11 @@ mod tests {
     fn test_migration_runs_once() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 6);
+        assert_eq!(get_schema_version(&conn).unwrap(), 7);
 
         // Running again should be a no-op
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 6);
+        assert_eq!(get_schema_version(&conn).unwrap(), 7);
     }
 
     #[test]
@@ -124,7 +133,7 @@ mod tests {
         )
         .unwrap();
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 6);
+        assert_eq!(get_schema_version(&conn).unwrap(), 7);
         let has_table: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='bubble_log'",
@@ -133,6 +142,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has_table, 1, "bubble_log must exist after v5→v6 migration");
+    }
+
+    #[test]
+    fn test_v6_database_migrates_to_v7() {
+        // Same regression class as v5→v6: a real DB stamped at version 6 must
+        // run the v7 migration.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+             INSERT INTO schema_migrations (version, applied_at) VALUES (6, datetime('now'));",
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(get_schema_version(&conn).unwrap(), 7);
+        let has_table: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='fs_grants'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_table, 1, "fs_grants must exist after v6→v7 migration");
     }
 
     #[test]
@@ -156,6 +187,7 @@ mod tests {
             "episode_vectors",
             "relationship_reviews",
             "bubble_log",
+            "fs_grants",
         ];
 
         for table in &expected {

@@ -18,8 +18,9 @@ use crate::config::ToolsConfig;
 use crate::llm::client::ToolDef;
 
 pub mod policy;
-mod search;
+pub mod search;
 mod system;
+pub mod workspace;
 
 /// What *category* of external capability the Brain grants this turn. The
 /// Planner emits this (not a tool name) — Brain never sees tool names. `None`

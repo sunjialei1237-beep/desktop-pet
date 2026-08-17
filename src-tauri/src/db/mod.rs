@@ -13,6 +13,7 @@ pub mod vectors;
 pub mod changelog;
 pub mod onboarding;
 pub mod bubble_log;
+pub mod grants;
 
 use rusqlite::Connection;
 use std::sync::Mutex;
