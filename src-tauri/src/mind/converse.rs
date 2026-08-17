@@ -204,22 +204,31 @@ fn resolve_pending_authorization(
 
     match classify_reply(text) {
         ConsentReply::Always => {
-            let _ = db_write_grant(ctx, &pa.root, crate::db::grants::GrantMode::Always);
-            log::info!("[converse] fs consent: ALWAYS grant for {}", pa.root);
+            for root in &pa.roots {
+                let _ = db_write_grant(ctx, root, crate::db::grants::GrantMode::Always);
+                log::info!("[converse] fs consent: ALWAYS grant for {}", root);
+            }
             Ok(ConsentState::Granted {
-                root: pa.root,
+                roots: pa.roots,
                 always: true,
             })
         }
         ConsentReply::Once => {
-            let _ = db_write_grant(ctx, &pa.root, crate::db::grants::GrantMode::Once);
-            log::info!("[converse] fs consent: ONCE grant for {}", pa.root);
-            Ok(ConsentState::Granted { root: pa.root, always: false })
+            for root in &pa.roots {
+                let _ = db_write_grant(ctx, root, crate::db::grants::GrantMode::Once);
+                log::info!("[converse] fs consent: ONCE grant for {}", root);
+            }
+            Ok(ConsentState::Granted {
+                roots: pa.roots,
+                always: false,
+            })
         }
         ConsentReply::Deny => {
-            let _ = db_write_grant(ctx, &pa.root, crate::db::grants::GrantMode::Deny);
-            log::info!("[converse] fs consent: DENY for {}", pa.root);
-            Ok(ConsentState::Denied { root: pa.root })
+            for root in &pa.roots {
+                let _ = db_write_grant(ctx, root, crate::db::grants::GrantMode::Deny);
+                log::info!("[converse] fs consent: DENY for {}", root);
+            }
+            Ok(ConsentState::Denied { roots: pa.roots })
         }
         ConsentReply::Unrelated => {
             // The ask is abandoned — no grant change, proceed normally.
@@ -605,12 +614,22 @@ pub async fn converse(
     // natural conversation, no machinery); Denied → accept gracefully and
     // never nag (the deny row's cooldown enforces the 24h silence).
     match &consent_res {
-        crate::mind::consent::ConsentState::Granted { root, always } => {
-            log::info!("[converse] fs consent granted (always={}): {}", always, root);
+        crate::mind::consent::ConsentState::Granted { roots, always } => {
+            log::info!("[converse] fs consent granted (always={}): {}", always, roots.join(", "));
             let scope_word = if *always { "以后" } else { "这一次" };
+            let label = match roots.as_slice() {
+                [only] => only.clone(),
+                [a, b] => format!("{} 和 {}", a, b),
+                _ => format!(
+                    "{}、{} 等 {} 处",
+                    roots.first().map(String::as_str).unwrap_or(""),
+                    roots.get(1).map(String::as_str).unwrap_or(""),
+                    roots.len()
+                ),
+            };
             messages.push(ChatMessage::system(&format!(
                 "（系统提示：用户刚才同意了你访问「{}」{}。自然地、简短地道谢。如果用户之前正想让你看什么东西，可以顺势说现在可以看了，让 ta 再说一次想看什么。不要复述路径原文，用地道口语。）",
-                root, scope_word
+                label, scope_word
             )));
         }
         crate::mind::consent::ConsentState::Denied { .. } => {
@@ -786,23 +805,30 @@ pub async fn converse(
             outcome.total_tool_tokens
         );
 
-        // Arm the consent ask when an Observe tool was denied for an
-        // unauthorized root (plan §3.7). Respect the deny cooldown — after
-        // an explicit "no" the same root is not re-asked for 24h.
-        if let Some(root) = crate::tools::fs::take_denied_root() {
-            let cooling = ctx.db.with_conn(|conn| crate::db::grants::get(conn, &root))
-                .ok()
-                .flatten()
-                .filter(|g| g.mode == "deny" && crate::db::grants::deny_in_cooldown(&g.created_at))
-                .is_some();
-            if cooling {
-                log::info!("[converse] fs consent ask suppressed (deny cooldown): {}", root);
-            } else if ctx
+        // Arm ONE consent ask covering all roots an Observe tool was denied for
+        // this loop (§8.5-M6). Respect the deny cooldown per root (§8.5-M4,
+        // equivalent-variant aware) — after an explicit "no" a root is not
+        // re-asked for 24h, while non-cooled roots still get their ask.
+        let denied_roots = crate::tools::fs::take_denied_roots();
+        if !denied_roots.is_empty() {
+            let mut askable: Vec<String> = Vec::new();
+            for root in denied_roots {
+                let cooling = ctx
+                    .db
+                    .with_conn(|conn| crate::db::grants::any_deny_in_cooldown(conn, &root))
+                    .unwrap_or(false);
+                if cooling {
+                    log::info!("[converse] fs consent root suppressed (deny cooldown): {}", root);
+                } else {
+                    askable.push(root);
+                }
+            }
+            if !askable.is_empty() && ctx
                 .pending_authorization
                 .lock()
                 .map(|mut g| {
                     *g = Some(crate::mind::consent::PendingAuthorization {
-                        root,
+                        roots: askable,
                         created_at: chrono::Utc::now(),
                     });
                     true

@@ -78,10 +78,36 @@ pub fn classify_process(process_name: &str) -> AppCategory {
 /// lifetime, so the (relatively expensive) full-process Toolhelp snapshot
 /// walk only runs on cache misses — important now that the environment
 /// observer samples every 3 s (plan P1).
+///
+/// Bounded (§8.5-M1): the cache clears itself when it would grow past the cap
+/// with a brand-new pid. Process names are cheap to re-resolve and Windows
+/// reuses pids, so an old unbounded map is strictly worse than a reset.
+const PROCESS_NAME_CACHE_CAP: usize = 256;
+
 fn process_name_cache() -> &'static std::sync::Mutex<std::collections::HashMap<u32, String>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, String>>> =
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Insert with a hard cap: updating an existing key never clears; inserting a
+/// brand-new key at capacity clears the map first (bounded + self-heals pid
+/// reuse). Shared helper so the policy is unit-testable everywhere.
+fn insert_bounded<K, V>(map: &mut std::collections::HashMap<K, V>, key: K, value: V, cap: usize)
+where
+    K: std::hash::Hash + Eq,
+{
+    if map.len() >= cap && !map.contains_key(&key) {
+        map.clear();
+    }
+    map.insert(key, value);
+}
+
+#[cfg(target_os = "windows")]
+fn cache_process_name(pid: u32, name: String) {
+    if let Ok(mut cache) = process_name_cache().lock() {
+        insert_bounded(&mut cache, pid, name, PROCESS_NAME_CACHE_CAP);
+    }
 }
 
 /// Resolve a pid to its process name via a full Toolhelp snapshot walk.
@@ -125,9 +151,7 @@ fn cached_process_name(pid: u32) -> Option<String> {
         }
     }
     let name = process_name_by_snapshot(pid)?;
-    if let Ok(mut cache) = process_name_cache().lock() {
-        cache.insert(pid, name.clone());
-    }
+    cache_process_name(pid, name.clone());
     Some(name)
 }
 
@@ -228,5 +252,21 @@ mod tests {
     fn test_classify_other() {
         assert_eq!(classify_process("explorer.exe"), AppCategory::Other);
         assert_eq!(classify_process("unknown_app.exe"), AppCategory::Other);
+    }
+
+    #[test]
+    fn process_name_cache_is_bounded() {
+        // Brand-new key at capacity clears the map first (bounded memory),
+        // updating an existing key at capacity doesn't.
+        let mut m: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+        insert_bounded(&mut m, 1, "a".into(), 2);
+        insert_bounded(&mut m, 2, "b".into(), 2);
+        insert_bounded(&mut m, 3, "c".into(), 2);
+        assert_eq!(m.len(), 1, "cap overflow must reset the map");
+        assert_eq!(m.get(&3).map(String::as_str), Some("c"));
+        insert_bounded(&mut m, 4, "d".into(), 2);
+        insert_bounded(&mut m, 4, "d2".into(), 2);
+        assert_eq!(m.len(), 2, "updating an existing key must not clear");
+        assert_eq!(m.get(&4).map(String::as_str), Some("d2"));
     }
 }

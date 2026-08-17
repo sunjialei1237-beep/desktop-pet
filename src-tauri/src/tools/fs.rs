@@ -55,11 +55,12 @@ fn failed(msg: String) -> ToolResult {
 
 // --- Consent arming (plan §3.7) --------------------------------------------------
 
-/// Root that a tool wanted but was NOT authorized for, recorded so converse
-/// can arm a pending authorization after the loop. Take-and-clear semantics.
-fn denied_root_slot() -> &'static std::sync::Mutex<Option<String>> {
-    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
-    SLOT.get_or_init(|| std::sync::Mutex::new(None))
+/// Roots that tools wanted but were NOT authorized for, recorded so converse
+/// can arm ONE pending authorization covering all of them after the loop
+/// (§8.5-M6). Take-and-clear semantics; duplicates collapse into one ask.
+fn denied_roots_slot() -> &'static std::sync::Mutex<Vec<String>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
 /// The root a consent ask should cover for a denied path: the owning
@@ -80,19 +81,29 @@ fn grant_root_for(canonical: &Path) -> String {
     }
 }
 
-/// Record a NotAuthorized denial for the consent flow (called by every tool
-/// below when the path pipeline rejects with NotAuthorized).
-fn note_denied_root(canonical: &Path) {
-    let root = grant_root_for(canonical);
-    if let Ok(mut g) = denied_root_slot().lock() {
-        *g = Some(root);
+/// Record one denied root (deduplicated) — extraction separated from the
+/// grant-root-derivation so the slot policy is directly testable.
+fn record_denied_root(root: String) {
+    if let Ok(mut v) = denied_roots_slot().lock() {
+        if !v.contains(&root) {
+            v.push(root);
+        }
     }
 }
 
-/// Converse reads (and clears) this after the agent loop to arm the pending
-/// authorization slot.
-pub fn take_denied_root() -> Option<String> {
-    denied_root_slot().lock().ok().and_then(|mut g| g.take())
+/// Record a NotAuthorized denial for the consent flow (called by every tool
+/// below when the path pipeline rejects with NotAuthorized).
+fn note_denied_root(canonical: &Path) {
+    record_denied_root(grant_root_for(canonical));
+}
+
+/// Converse reads (and clears) all denied roots after the agent loop to arm
+/// the pending authorization slot.
+pub fn take_denied_roots() -> Vec<String> {
+    denied_roots_slot()
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default()
 }
 
 // --- Precise once-grant consumption (plan §8.2-H1) -----------------------------
@@ -783,5 +794,24 @@ mod tests {
         let args = serde_json::json!({"project_id": "no_such_project"});
         let r = get_git_context(&args, &[]).await;
         assert_eq!(r.status, ToolStatus::Rejected);
+    }
+
+    #[test]
+    fn denied_roots_are_deduplicated_and_taken_together() {
+        // Drain whatever parallel tests left behind, then record one unique
+        // root twice — duplicate asks for the same path must collapse.
+        let _ = take_denied_roots();
+        record_denied_root("D:\\pet_m6_test\\proj".into());
+        record_denied_root("D:\\pet_m6_test\\proj".into());
+        record_denied_root("D:\\pet_m6_test\\docs".into());
+        let got = take_denied_roots();
+        assert_eq!(
+            got.iter()
+                .filter(|r| r.as_str() == "D:\\pet_m6_test\\proj")
+                .count(),
+            1,
+            "duplicate roots must collapse into one ask"
+        );
+        assert!(got.contains(&"D:\\pet_m6_test\\docs".to_string()));
     }
 }

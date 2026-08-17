@@ -100,15 +100,13 @@ impl WorkspaceRegistry {
 
     /// Resolve a scope argument ("liri" | "active_project") to a root path.
     /// `active_project` resolves against the environment observer's current
-    /// project hint matched by name; unknown/None hint → None.
+    /// project hint matched against name OR id, case-insensitively (§8.5-M5);
+    /// unknown/None hint → None.
     pub fn resolve_scope(&self, scope: &str) -> Option<PathBuf> {
         if scope == "active_project" {
             let hint = crate::perception::environment::current_hints().project_hint;
             let hint = hint?;
-            let entry = self
-                .projects
-                .iter()
-                .find(|p| p.enabled && (p.name == hint || p.id == hint))?;
+            let entry = project_by_name_ci(self, &hint)?;
             Some(PathBuf::from(&entry.path))
         } else {
             self.project_by_id(scope).map(|p| PathBuf::from(&p.path))
@@ -118,6 +116,20 @@ impl WorkspaceRegistry {
     pub fn enabled_projects(&self) -> Vec<&ProjectEntry> {
         self.projects.iter().filter(|p| p.enabled).collect()
     }
+}
+
+/// Match an observer project hint against an enabled project's name OR id,
+/// case-insensitively — "Liri"、"liri"、"LIRI" 指向同一个项目。
+fn project_by_name_ci<'a>(
+    registry: &'a WorkspaceRegistry,
+    hint: &str,
+) -> Option<&'a ProjectEntry> {
+    let h = normalize_for_compare(hint);
+    registry.projects.iter().find(|p| {
+        p.enabled
+            && (normalize_for_compare(&p.name) == h
+                || normalize_for_compare(&p.id) == h)
+    })
 }
 
 /// The project root a canonical path belongs to, if any registered project
@@ -196,6 +208,19 @@ mod tests {
         assert!(r.resolve_scope("unknown").is_none());
         // active_project with no observer hint → None (tolerable, no panic).
         assert!(r.resolve_scope("active_project").is_none());
+    }
+
+    #[test]
+    fn project_hint_match_is_case_insensitive() {
+        let r = reg();
+        for hint in ["liri", "LIRI", "LiRi"] {
+            let hit = project_by_name_ci(&r, hint).expect("case variant must match");
+            assert_eq!(hit.id, "liri");
+        }
+        assert!(project_by_name_ci(&r, "别的项目").is_none());
+        let mut disabled = r;
+        disabled.projects[0].enabled = false;
+        assert!(project_by_name_ci(&disabled, "liri").is_none());
     }
 
     #[test]

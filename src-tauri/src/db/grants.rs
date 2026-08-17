@@ -120,6 +120,54 @@ pub fn deny_in_cooldown(created_at: &str) -> bool {
     }
 }
 
+/// Normalize a root string for equivalence compares: lowercase, / → \\,
+/// trimmed, no trailing separator. Used when canonicalization is impossible
+/// (the path no longer exists) as a best-effort fallback.
+fn normalized_grant_key(path: &str) -> String {
+    let mut s = path.trim().to_lowercase().replace('/', "\\");
+    while s.ends_with('\\') {
+        s.pop();
+    }
+    s
+}
+
+/// Are two stored/shown roots the same place? Canonicalize both sides so a
+/// deny written as `d:\projects\liri` still cools a re-ask for
+/// `D:\Projects\Liri\` (case / slash / trailing-separator / 8.3 variants can
+/// otherwise bypass the 24h cooldown — plan §8.5-M4).
+pub fn equivalent_roots(a: &str, b: &str) -> bool {
+    match (dunce::canonicalize(a.trim()), dunce::canonicalize(b.trim())) {
+        (Ok(x), Ok(y)) => normalized_grant_key(&x.to_string_lossy())
+            == normalized_grant_key(&y.to_string_lossy()),
+        // If either side no longer exists, the raw normalized form is the best
+        // available proxy; a deleted-root deny still suppresses pestering.
+        _ => normalized_grant_key(a) == normalized_grant_key(b),
+    }
+}
+
+/// Whether any fresh deny (inside the cooldown window) exists for the same
+/// root OR an equivalent naming variant. Used by the consent-ask arming path
+/// instead of exact-row `get` — the cooldown must survive re-spellings.
+pub fn any_deny_in_cooldown(conn: &Connection, root: &str) -> Result<bool, String> {
+    let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(DENY_REASK_COOLDOWN_SECS as i64))
+        .to_rfc3339();
+    let mut stmt = conn
+        .prepare("SELECT root, created_at FROM fs_grants WHERE mode = 'deny' AND created_at >= ?1")
+        .map_err(|e| format!("Failed to prepare deny cooldown query: {}", e))?;
+    let rows = stmt
+        .query_map([cutoff], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("Failed to query deny cooldown: {}", e))?;
+    for row in rows {
+        let (stored, created_at) = row.map_err(|e| format!("Failed to read deny row: {}", e))?;
+        if deny_in_cooldown(&created_at) && equivalent_roots(&stored, root) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +214,53 @@ mod tests {
         assert!(deny_in_cooldown(&fresh));
         assert!(!deny_in_cooldown(&stale));
         assert!(!deny_in_cooldown("not-a-date"));
+    }
+
+    fn temp_root() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pet_grants_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn equivalent_roots_handles_case_and_separators() {
+        let dir = temp_root();
+        let orig = dir.to_string_lossy().to_string();
+        let lower = orig.to_lowercase();
+        let slashed = lower.replace('\\', "/") + "/";
+        assert!(equivalent_roots(&orig, &lower));
+        assert!(equivalent_roots(&orig, &slashed));
+        // Raw fallback keeps working when the path no longer exists.
+        assert!(equivalent_roots("D:\\gone\\root", "d:/gone/root/"));
+        assert!(!equivalent_roots("D:\\gone\\root", "D:\\gone\\root2"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deny_cooldown_survives_renaming() {
+        let c = conn();
+        let dir = temp_root();
+        let orig = dir.to_string_lossy().to_string();
+        let renamed = orig.to_lowercase().replace('\\', "/");
+        upsert(&c, &renamed, GrantMode::Deny, "conversation").unwrap();
+        assert!(any_deny_in_cooldown(&c, &orig).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deny_cooldown_ignores_other_roots() {
+        let c = conn();
+        let dir = temp_root();
+        let other = dir.join("other_root");
+        upsert(&c, &dir.to_string_lossy(), GrantMode::Deny, "conversation").unwrap();
+        assert!(!any_deny_in_cooldown(&c, &other.to_string_lossy()).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

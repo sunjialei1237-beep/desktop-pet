@@ -11,11 +11,13 @@
 
 use chrono::{DateTime, Utc};
 
-/// Cross-turn slot held in AppState (same shape as PendingForget).
+/// Cross-turn slot held in AppState (same shape as PendingForget). One ask
+/// may cover several roots denied within the same tool loop; the user's one
+/// reply resolves all of them together (§8.5-M6).
 #[derive(Debug, Clone)]
 pub struct PendingAuthorization {
-    /// Canonical root the denied tool call wanted.
-    pub root: String,
+    /// Canonical roots the denied tool calls wanted (deduplicated).
+    pub roots: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -100,10 +102,11 @@ pub fn classify_reply(text: &str) -> ConsentReply {
 pub enum ConsentState {
     /// No pending ask, or the ask was abandoned — normal pipeline.
     Proceed,
-    /// User granted access; the fs_grants row is already written.
-    Granted { root: String, always: bool },
-    /// User refused; a deny row (with cooldown) is already written.
-    Denied { root: String },
+    /// User granted access; the fs_grants rows are already written for every
+    /// root the pending ask covered.
+    Granted { roots: Vec<String>, always: bool },
+    /// User refused; deny rows (with cooldown) are already written.
+    Denied { roots: Vec<String> },
 }
 
 #[cfg(test)]

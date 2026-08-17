@@ -168,6 +168,23 @@ pub fn covers_any(grant_root_raw: &str, used: &[std::path::PathBuf]) -> bool {
     }
 }
 
+/// Settings-side grant preflight (plan §8.5-M9): resolve + a synthetic
+/// self-grant. If even an explicit "always" grant over the root itself would
+/// be stopped by a hard policy (own AppData dir / sensitive name / UNC), the
+/// root is un-grantable and Settings must refuse to store it — an
+/// authorization row that can never pass is worse than a clear error.
+pub fn probe_own_grant(raw: &str) -> Result<PathBuf, PathDeny> {
+    let canonical = resolve(raw)?;
+    let probe = FsGrant {
+        root: canonical.to_string_lossy().to_string(),
+        mode: "always".to_string(),
+        created_at: String::new(),
+        source: "probe".to_string(),
+    };
+    authorize(&canonical, &[probe])?;
+    Ok(canonical)
+}
+
 /// Binary-extension denylist for read_text_file / search content sniffing.
 pub fn is_binary_extension(name: &str) -> bool {
     const BINARY: &[&str] = &[
@@ -346,6 +363,25 @@ mod tests {
             dir.file_name().unwrap().to_string_lossy()
         ));
         assert!(!covers_any(&missing.to_string_lossy(), &used));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn probe_own_grant_rejects_un_grantable_roots() {
+        // A normal project dir passes even with no pre-existing grants.
+        let dir = temp_project();
+        let root = dir.to_string_lossy().to_string();
+        assert!(probe_own_grant(&root).is_ok());
+        // The pet's own AppData dir is hard-denied no matter what.
+        let app = crate::config::app_data_dir();
+        std::fs::create_dir_all(&app).unwrap();
+        let e = probe_own_grant(&app.to_string_lossy()).unwrap_err();
+        assert_eq!(e, PathDeny::SensitiveFile);
+        // Missing roots cannot be stored at all (uniform anti-oracle error).
+        assert_eq!(
+            probe_own_grant("D:\\definitely\\not\\here\\xyz"),
+            Err(PathDeny::NotAccessible)
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

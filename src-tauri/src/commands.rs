@@ -1248,15 +1248,18 @@ pub async fn export_memory_both(
 
 /// Grant filesystem access to a root (Settings / power-user path; the
 /// conversational flow writes these too via converse). The root is
-/// canonicalized before storing so the pipeline's prefix matching is exact.
+/// canonicalized before storing so the pipeline's prefix matching is exact,
+/// and preflighted (§8.5-M9): roots that hard policy can never authorize
+/// (own AppData / sensitive name / UNC / missing) are rejected up front
+/// instead of persisting a grant that will never pass.
 #[tauri::command]
 pub async fn fs_grant_access(
     db: State<'_, DbState>,
     root: &str,
     mode: &str,
 ) -> Result<(), String> {
-    let canonical = crate::tools::path::resolve(root)
-        .map_err(|d| format!("路径无法访问（{}）", d.message()))?;
+    let canonical = crate::tools::path::probe_own_grant(root)
+        .map_err(|d| format!("这个路径不能授权（{}）", d.message()))?;
     let mode = match mode {
         "once" => crate::db::grants::GrantMode::Once,
         "project" | "always" => crate::db::grants::GrantMode::Always,
