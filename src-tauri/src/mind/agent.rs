@@ -173,6 +173,7 @@ async fn execute_one_tool(
     // Policy gate (whitelist / https / schema / config switch).
     match policy::check(kind, &args, cfg) {
         policy::PolicyDecision::Deny(reason) => {
+            crate::tools::fs::record_policy_denial(reason);
             log::info!(
                 "[agent] run {} policy denied {}: {}",
                 run_id,

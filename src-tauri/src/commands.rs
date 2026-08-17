@@ -1323,6 +1323,8 @@ pub struct DebugSnapshot {
     pub env_recent: Option<String>,
     /// Filesystem grants (plan 2026-08-17 §2.7) — authorization observability.
     pub fs_grants: Vec<crate::db::grants::FsGrant>,
+    /// §3.8 audit metrics (M10): bytes / truncation / deny decisions.
+    pub fs_audit: crate::tools::fs::FsAuditMetrics,
     /// Proactive-bubble budget observability (2026-08-14): when the last bubble
     /// fired and how long until the next is allowed (Architecture #11).
     pub last_bubble_at: Option<String>,
@@ -1578,6 +1580,7 @@ pub async fn get_debug_snapshot(
                 None
             },
             fs_grants: crate::db::grants::list(conn).unwrap_or_default(),
+            fs_audit: crate::tools::fs::audit_metrics(),
             // Proactive-bubble budget observability (2026-08-14): when the last
             // bubble fired + seconds until the next is allowed (#11).
             last_bubble_at: crate::db::onboarding::get(

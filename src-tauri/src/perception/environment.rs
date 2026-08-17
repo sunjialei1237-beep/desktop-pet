@@ -127,10 +127,34 @@ fn ring() -> &'static Mutex<VecDeque<EnvironmentEvent>> {
 }
 
 fn push_event(event: EnvironmentEvent) {
+    // M8 event-capacity starvation: AppChanged is the highest-frequency and
+    // least actionable signal (alt-tab floods); file/project/presence events
+    // are rare and meaningful. When the ring is full a low-priority app event
+    // is dropped silently if no app event sits in the ring to evict — it can
+    // never displace the others (§8.5-M8).
+    let low_priority = matches!(&event, EnvironmentEvent::AppChanged { .. });
     if let Ok(mut q) = ring().lock() {
         q.push_back(event);
         while q.len() > RING_CAP {
-            q.pop_front();
+            let drop_idx = q
+                .iter()
+                .position(|e| matches!(e, EnvironmentEvent::AppChanged { .. }));
+            match drop_idx {
+                Some(i) => {
+                    q.remove(i);
+                }
+                None if low_priority => {
+                    // Ring is full of meaningful events and this new one is
+                    // just another app switch — drop the NEW event instead.
+                    q.pop_back();
+                    break;
+                }
+                None => {
+                    // No app events to sacrifice; evict the oldest meaningful
+                    // event only when the incoming one is itself meaningful.
+                    q.pop_front();
+                }
+            }
         }
     }
 }
@@ -417,6 +441,40 @@ mod tests {
             recent_events().last(),
             Some(&EnvironmentEvent::AppChanged { app: format!("app{}", RING_CAP + 4) })
         );
+    }
+
+    #[test]
+    fn app_flood_cannot_starve_meaningful_events() {
+        let _guard = ring_test_guard();
+        if let Ok(mut q) = ring().lock() {
+            q.clear();
+        }
+        // Fill the ring with meaningful project events.
+        for i in 0..RING_CAP {
+            push_event(EnvironmentEvent::ProjectHintChanged {
+                project: format!("proj{i}"),
+            });
+        }
+        // High-frequency app switches when the ring is full of meaningful
+        // events: the new app event must be dropped, not evict a project.
+        for i in 0..RING_CAP {
+            push_event(EnvironmentEvent::AppChanged { app: format!("flood{i}") });
+        }
+        let after_flood = recent_events();
+        assert_eq!(after_flood.len(), RING_CAP);
+        assert!(
+            after_flood.iter().all(|e| matches!(e, EnvironmentEvent::ProjectHintChanged { .. })),
+            "app flood must never displace project events"
+        );
+        // A meaningful event evicts the oldest meaningful one (FIFO), never an
+        // app event (there is none inside).
+        push_event(EnvironmentEvent::FileHintChanged {
+            from: Some("a.rs".into()),
+            to: Some("b.rs".into()),
+        });
+        let after_file = recent_events();
+        assert!(matches!(after_file.last(), Some(EnvironmentEvent::FileHintChanged { .. })));
+        assert_eq!(after_file[0], EnvironmentEvent::ProjectHintChanged { project: "proj1".into() });
     }
 
     #[test]

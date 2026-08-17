@@ -54,6 +54,57 @@ fn failed(msg: String) -> ToolResult {
     }
 }
 
+// --- Audit metrics (plan §3.8 / §8.5-M10, DebugPanel 指标) -------------------
+
+/// Process-lifetime counters for §3.8's observability section. Kept as a
+/// Mutex<struct> (not atomics) because each field is only bumped at tool-call
+/// frequency; DebugPanel clones a snapshot.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct FsAuditMetrics {
+    pub reads: u32,
+    pub read_bytes: u64,
+    pub read_truncations: u32,
+    pub searches: u32,
+    pub dirs_listed: u32,
+    pub git_calls: u32,
+    pub git_timeouts: u32,
+    /// agent-loop policy denials (schema/switch/allowlist).
+    pub policy_denials: u32,
+    /// path pipeline: synthetic grant needed but absent.
+    pub grant_denials: u32,
+    pub sensitive_denials: u32,
+    pub unc_denials: u32,
+    pub access_errors: u32,
+    /// F1/F2 write side (post-confirmation only).
+    pub notes_written: u32,
+    pub edits_applied: u32,
+}
+
+fn audit_slot() -> &'static std::sync::Mutex<FsAuditMetrics> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<FsAuditMetrics>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(FsAuditMetrics::default()))
+}
+
+fn audit_bump(f: impl Fn(&mut FsAuditMetrics)) {
+    if let Ok(mut a) = audit_slot().lock() {
+        f(&mut a);
+    }
+}
+
+pub fn audit_metrics() -> FsAuditMetrics {
+    audit_slot().lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// Called by the agent loop's policy gate so §3.8 "decision=deny" counters
+/// include policy denials, not just path-pipeline refusals.
+pub fn record_policy_denial(_reason: &str) {
+    audit_bump(|a| a.policy_denials += 1);
+}
+
+pub fn record_git_timeout() {
+    audit_bump(|a| a.git_timeouts += 1);
+}
+
 // --- Consent arming (plan §3.7) --------------------------------------------------
 
 /// Roots that tools wanted but were NOT authorized for, recorded so converse
@@ -143,6 +194,7 @@ fn authorize_path(raw: &str, grants: &[crate::db::grants::FsGrant]) -> Result<Pa
     match path::resolve_and_authorize(raw, grants) {
         Ok(p) => Ok(p),
         Err(path::PathDeny::NotAuthorized) => {
+            audit_bump(|a| a.grant_denials += 1);
             // Best effort: record the root even though the raw path didn't
             // canonicalize cleanly (it may still exist; resolve only failed
             // for uniform-denial reasons on OTHER deny kinds).
@@ -150,6 +202,18 @@ fn authorize_path(raw: &str, grants: &[crate::db::grants::FsGrant]) -> Result<Pa
                 note_denied_root(&c);
             }
             Err(rejected(&path::PathDeny::NotAuthorized.message()))
+        }
+        Err(path::PathDeny::UncBlocked) => {
+            audit_bump(|a| a.unc_denials += 1);
+            Err(rejected(&path::PathDeny::UncBlocked.message()))
+        }
+        Err(path::PathDeny::SensitiveFile) => {
+            audit_bump(|a| a.sensitive_denials += 1);
+            Err(rejected(&path::PathDeny::SensitiveFile.message()))
+        }
+        Err(path::PathDeny::NotAccessible) => {
+            audit_bump(|a| a.access_errors += 1);
+            Err(rejected(&path::PathDeny::NotAccessible.message()))
         }
         Err(deny) => Err(rejected(&deny.message())),
     }
@@ -232,6 +296,13 @@ pub async fn read_text_file(args: &serde_json::Value, grants: &[crate::db::grant
     if end < requested_end || last_line < end || char_truncated {
         header.push_str("（片段已截断；需要更多内容请指定后续行号）\n");
     }
+    audit_bump(|a| {
+        a.reads += 1;
+        a.read_bytes += used as u64;
+        if end < requested_end || last_line < end || char_truncated {
+            a.read_truncations += 1;
+        }
+    });
     note_used_root(&canonical);
     ToolResult {
         status: ToolStatus::Success,
@@ -338,6 +409,7 @@ pub async fn search_files(args: &serde_json::Value, grants: &[crate::db::grants:
     }
 
     note_used_root(&root);
+    audit_bump(|a| a.searches += 1);
     if hits.is_empty() {
         return ToolResult {
             status: ToolStatus::Success,
@@ -398,6 +470,7 @@ pub async fn list_directory(args: &serde_json::Value, grants: &[crate::db::grant
     lines.extend(files);
     let note = if lines.len() >= MAX_DIR_ENTRIES { "（已达条目上限）" } else { "" };
     note_used_root(&canonical);
+    audit_bump(|a| a.dirs_listed += 1);
     ToolResult {
         status: ToolStatus::Success,
         content: format!("{} 共 {} 项：\n{}{}", canonical.display(), lines.len(), lines.join("\n"), note),
@@ -498,6 +571,7 @@ fn run_git_sync(root: &Path, args: &[String]) -> Option<String> {
                     GIT_TIMEOUT_SECS,
                     root.display()
                 );
+                record_git_timeout();
                 let _ = child.kill();
                 let _ = child.wait();
                 break None;
@@ -563,6 +637,7 @@ pub async fn get_git_context(args: &serde_json::Value, grants: &[crate::db::gran
         }
     }
 
+    audit_bump(|a| a.git_calls += 1);
     let status_out = run_git(&root, &["status", "-sb", "--porcelain"]).await;
     let log_out = run_git(&root, &["log", "-1", "--oneline"]).await.unwrap_or_default();
 
@@ -936,6 +1011,7 @@ pub fn apply_proposal(
         format!("替换文件失败（可能正被其他程序占用）：{}", e)
     })?;
     remember_undo(&canonical, bytes);
+    audit_bump(|a| a.edits_applied += 1);
     Ok(canonical)
 }
 
@@ -1120,7 +1196,10 @@ fn write_note_into(dir: &Path, filename: &str, content: &str) -> Result<PathBuf,
     let target = free_note_path(dir, &name);
     std::fs::write(&tmp, content).map_err(|e| format!("写临时文件失败：{}", e))?;
     match std::fs::rename(&tmp, &target) {
-        Ok(_) => Ok(target),
+        Ok(_) => {
+            audit_bump(|a| a.notes_written += 1);
+            Ok(target)
+        }
         // Retry once: another process may have taken the free path between
         // free_note_path and rename.
         Err(e) => {

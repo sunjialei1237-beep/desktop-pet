@@ -51,6 +51,22 @@ interface DebugSnapshot {
   env_hints: { app: string | null; title: string | null; file_hint: string | null; project_hint: string | null };
   env_recent: string | null;
   fs_grants: { root: string; mode: string; created_at: string; source: string }[];
+  fs_audit: {
+    reads: number;
+    read_bytes: number;
+    read_truncations: number;
+    searches: number;
+    dirs_listed: number;
+    git_calls: number;
+    git_timeouts: number;
+    policy_denials: number;
+    grant_denials: number;
+    sensitive_denials: number;
+    unc_denials: number;
+    access_errors: number;
+    notes_written: number;
+    edits_applied: number;
+  };
   last_bubble_at: string | null;
   next_bubble_in_secs: number;
 }
@@ -316,6 +332,13 @@ export function DebugPanel({ anim, onClose, onQuit }: {
             {snapshot.fs_grants.length === 0
               ? "（无）"
               : snapshot.fs_grants.map((g) => `${g.root} [${g.mode}]`).join(" | ")}
+          </span>
+        </div>
+        <div className="debug-bar">
+          <span>
+            FS 审计: 读 {snapshot.fs_audit.reads} 次 · {snapshot.fs_audit.read_bytes} 字节 · 截断 {snapshot.fs_audit.read_truncations}
+            {" "}| 拒：policy {snapshot.fs_audit.policy_denials} / grant {snapshot.fs_audit.grant_denials} / 敏感 {snapshot.fs_audit.sensitive_denials} / UNC {snapshot.fs_audit.unc_denials}
+            {" "}| 写：笔记 {snapshot.fs_audit.notes_written} · 编辑 {snapshot.fs_audit.edits_applied}
           </span>
         </div>
       </div>
