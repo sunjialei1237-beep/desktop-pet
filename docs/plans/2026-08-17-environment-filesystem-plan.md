@@ -365,26 +365,28 @@ DebugPanel 新增 section：Environment Snapshot / [Environment] 注入与否及
 6. **git 转译成人话**：cache 旁路时先由 Rust 转成"你的 {name} 有 3 处没提交、最近提交了 xxx"，再给 LLM，降低她的"术语味"；
 7. **Mutate 确认卡角色化**：最终气泡只留她的话（"我改了 3 行，看看行不行"），diff 卡独立存在——实施 F 阶段时作为验收项。
 
-### 8.5 本轮不改码、已登记的问题（Medium/后备）
+### 8.5 Medium 处置台账（2026-08-17 小轮后状态）
+
+> **裁决记录（用户裁定「修小轮 + 更新方案状态」）**：M2/M3/M11 已随 C/H 轮完成；M1（限容）/M4/M5/M6/M9 小轮完成（`5596010`，lib 509 绿）；M1 的 PID 复用错判与 M7/M8/M10 推迟到 P6/感知轮；M12 设计容忍。
 
 | # | 位置 | 问题 | 处置 |
 |---|---|---|---|
-| M1 | `window.rs::process_name_cache` | 永不淘汰 + Windows PID 复用 → 布局/类别错判、无界增长 | 限 256 条 + 失配清零；与 P6 同轮做 |
-| M2 | `fs.rs::read_text_file` | `start+79` 可溢出（debug panic） | `saturating_add`；跟 H3 同批即可，本轮若零成本顺手 |
-| M3 | `environment.rs` tests | ring 全局 OnceLock 被并行测试 share，潜在偶发红 | 测试串行化或函数注入 buffer |
-| M4 | deny 冷却查重 | `grants::get(root)` raw 字符串精确匹配，拼写/大小写变体漏过 24h 冷却 | 比对前 canonicalize 双方 |
-| M5 | `workspace.rs::resolve_scope` | `active_project` 项目名大小写敏感匹配 | 统一 normalize |
-| M6 | `fs.rs::note_denied_root` | 多工具轮只保留最后一个未授权 root | 改 Vec（与 H1 的 used-roots 槽同构） |
-| M7 | 环境观测自我窗口 | 璃自己被聚焦时 `desktop-pet` 覆盖真实前台 | 跳过自身 hwnd、沿用上一个非自我样本 |
-| M8 | 事件容量饥饿 | 高频 AppChanged 可挤掉 file 事件 | 分级保留/同 app 抖动去重 |
-| M9 | `commands.rs::fs_grant_access` | Settings 通道可写入注定 hard-deny 的自身 AppData 授权 | 入库存前跑 authorize 预检并明确报错 |
-| M10 | 审计指标 | §3.8 的部分字段（bytes/截断统计/grants 决策明细）只在日志，未进 DebugPanel 指标 | P6 后补 DebugPanel section |
-| M11 | `recent_summary`/`file/project` 无截断 | 归入 C2 修复 | 本轮随 C2 |
+| M1 | `window.rs::process_name_cache` | 永不淘汰 + Windows PID 复用 → 布局/类别错判、无界增长 | ✅ 限容 256（满容插入新 pid 时清空、更新既有 key 不清空，`insert_bounded`）；**PID 复用错判推迟观察** |
+| M2 | `fs.rs::read_text_file` | `start+79` 可溢出（debug panic） | ✅ 随 C/H 轮（`dfce832`）：`saturating_add` + 回归测试 |
+| M3 | `environment.rs` tests | ring 全局 OnceLock 被并行测试 share，潜在偶发红 | ✅ 随 C/H 轮（`dfce832`）：ring 测试串行化 guard |
+| M4 | deny 冷却查重 | `grants::get(root)` raw 字符串精确匹配，拼写/大小写变体漏过 24h 冷却 | ✅ `equivalent_roots`（canonicalize 双方，缺失时 normalized fallback）+ `any_deny_in_cooldown`，converse 冷却查询走新函数 |
+| M5 | `workspace.rs::resolve_scope` | `active_project` 项目名大小写敏感匹配 | ✅ `project_by_name_ci`：name/id 统一 normalize 比较，禁用项目仍被忽略 |
+| M6 | `fs.rs::note_denied_root` | 多工具轮只保留最后一个未授权 root | ✅ `denied_roots_slot: Vec` 去重记录；`PendingAuthorization.roots` 同轮多 root，一次答复统一 resolve，确认措辞支持 1/2/N 处 |
+| M7 | 环境观测自我窗口 | 璃自己被聚焦时 `desktop-pet` 覆盖真实前台 | ⏸ 推迟 P6/感知轮（C2 已堵住标题注入，非安全面） |
+| M8 | 事件容量饥饿 | 高频 AppChanged 可挤掉 file 事件 | ⏸ 推迟 P6：需先实测事件频率再定分级/去重策略 |
+| M9 | `commands.rs::fs_grant_access` | Settings 通道可写入注定 hard-deny 的自身 AppData 授权 | ✅ `path::probe_own_grant`：合成 self-grant 过 `authorize`，硬策略/UNC/不存在路径一律拒绝入库 |
+| M10 | 审计指标 | §3.8 的部分字段（bytes/截断统计/grants 决策明细）只在日志，未进 DebugPanel 指标 | ⏸ 推迟 P6（DebugPanel 同批） |
+| M11 | `recent_summary`/`file/project` 无截断 | 归入 C2 修复 | ✅ 随 C2（`dfce832`）：sanitize + 分字段截断 |
 | M12 | 标题解析边界 | 本地化/自定义 titlebar 下保守 None（已按设计容忍） | 不修，观察真机日志 |
 
 ### 8.6 实施顺序与验证要求
 
 1. 先落本模块（本轮第一条 commit，docs-only）；
 2. 按 C1→C2→C3→C4→H1→H2→H3 顺序改码，每个修复带**可复现回归测试**（尤其 C1 的否定句、C4 的深度仲裁）；
-3. 验证门：`cargo test --lib` 较 492 只增不减且全绿 + `cargo check --tests` + `tsc --noEmit`；
+3. 验证门：`cargo test --lib` 较 492 只增不减且全绿（C/H 后 502、Medium 小轮后 509）+ `cargo check --tests` + `tsc --noEmit`；
 4. 全部通过后更新 `docs/HANDOFF.md` 续⁵¹；P6（成本/注入黑盒评测）与 F1/F2 计划不变。
