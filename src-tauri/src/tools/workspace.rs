@@ -43,6 +43,32 @@ pub struct WorkspaceRegistry {
     pub projects: Vec<ProjectEntry>,
 }
 
+/// Stable, collision-free id for an auto-registered root (U3): lowercase
+/// ASCII/digits, other chars become '-'; "-2, -3…" on collision.
+fn unique_project_id(reg: &WorkspaceRegistry, name: &str) -> String {
+    let mut base: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    while base.starts_with('-') {
+        base.remove(0);
+    }
+    while base.ends_with('-') {
+        base.pop();
+    }
+    if base.is_empty() {
+        base.push_str("project");
+    }
+    let mut id = base.clone();
+    let mut n = 2usize;
+    while reg.projects.iter().any(|p| p.id == id) {
+        id = format!("{}-{}", base, n);
+        n += 1;
+    }
+    id
+}
+
 impl WorkspaceRegistry {
     /// Load from disk, creating `.liri/` + `PROJECTS/` + an empty registry on
     /// first run. Corrupt JSON degrades to an empty registry (logged) rather
@@ -84,12 +110,59 @@ impl WorkspaceRegistry {
         let path = registry_path();
         match serde_json::to_string_pretty(self) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    log::warn!("[workspace] failed to write {}: {}", path.display(), e);
+                // H2 hardening: temp + rename — a crash mid-write must never
+                // leave a truncated JSON that degrades every project on boot.
+                let tmp = path.with_extension("json.tmp");
+                if let Err(e) = std::fs::write(&tmp, &json) {
+                    log::warn!("[workspace] failed to write {}: {}", tmp.display(), e);
+                    return;
+                }
+                if let Err(e) = std::fs::rename(&tmp, &path) {
+                    log::warn!(
+                        "[workspace] failed to rename {} -> {}: {}",
+                        tmp.display(),
+                        path.display(),
+                        e
+                    );
+                    let _ = std::fs::remove_file(&tmp);
                 }
             }
             Err(e) => log::warn!("[workspace] failed to serialize registry: {}", e),
         }
+    }
+
+    /// U3 (plan §8.4): the first granted root for an unregistered location is
+    /// promoted to an enabled project so it becomes addressable ("把它的
+    /// git 状态给我" / active_project resolution). No-op when the root already
+    /// belongs to a registered project. Registry stays an INDEX — never reads
+    /// or stores file contents here.
+    pub fn register_granted_root(&mut self, root: &str) -> Option<String> {
+        let canonical = std::fs::canonicalize(root).ok()?;
+        let path_str = canonical.to_string_lossy().to_string();
+        // Already inside a registered project — no new world needed.
+        if owning_project(self, &canonical).is_some() {
+            return None;
+        }
+        // Exact path already exists (even disabled) — leave it untouched.
+        if let Some(p) = self.projects.iter().find(|p| p.path == path_str) {
+            return Some(p.id.clone());
+        }
+        let name = canonical
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "project".to_string());
+        let id = unique_project_id(self, &name);
+        let entry = ProjectEntry {
+            id,
+            path: path_str,
+            name,
+            description: String::new(),
+            enabled: true,
+        };
+        self.projects.push(entry);
+        let _ = std::fs::create_dir_all(liri_dir().join("PROJECTS"));
+        self.save();
+        self.projects.last().map(|p| p.id.clone())
     }
 
     pub fn project_by_id(&self, id: &str) -> Option<&ProjectEntry> {
@@ -116,6 +189,18 @@ impl WorkspaceRegistry {
     pub fn enabled_projects(&self) -> Vec<&ProjectEntry> {
         self.projects.iter().filter(|p| p.enabled).collect()
     }
+}
+
+/// U3 entry point used by the consent resolver: load, ensure the granted root
+/// has a workspace world, persist atomically. Returns the project id created
+/// (or already owning), None when the root can't canonicalize.
+pub fn register_root_after_grant(root: &str) -> Option<String> {
+    let mut reg = WorkspaceRegistry::load();
+    let id = reg.register_granted_root(root);
+    if let Some(id) = &id {
+        log::info!("[workspace] U3: granted root {} -> project {}", root, id);
+    }
+    id
 }
 
 /// Match an observer project hint against an enabled project's name OR id,

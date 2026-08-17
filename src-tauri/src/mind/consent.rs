@@ -19,6 +19,12 @@ pub struct PendingAuthorization {
     /// Canonical roots the denied tool calls wanted (deduplicated).
     pub roots: Vec<String>,
     pub created_at: DateTime<Utc>,
+    /// U1 (plan §8.4): the capability the LLM originally wanted and the
+    /// top-level request text. Carried through the consent state so "可以"
+    /// re-runs the SAME tool round in the SAME turn instead of "先答应，
+    /// 下一句再说一遍".
+    pub followup_capability: crate::tools::CapabilityMode,
+    pub followup_text: String,
 }
 
 /// Stale-slot window — mirrors the forget disambiguation's 90s.
@@ -103,10 +109,38 @@ pub enum ConsentState {
     /// No pending ask, or the ask was abandoned — normal pipeline.
     Proceed,
     /// User granted access; the fs_grants rows are already written for every
-    /// root the pending ask covered.
-    Granted { roots: Vec<String>, always: bool },
+    /// root the pending ask covered. `followup` carries the U1 continuation
+    /// when there is one.
+    Granted {
+        roots: Vec<String>,
+        always: bool,
+        followup: Option<GrantFollowup>,
+    },
     /// User refused; deny rows (with cooldown) are already written.
     Denied { roots: Vec<String> },
+    /// No pending ask, but the user said a deny-regret phrase: every explicit
+    /// deny row was flipped back to Once with a fresh clock (U4).
+    UnfrozeDenies { count: usize },
+}
+
+/// Continuation payload for U1: after "可以", re-arm the same capability and
+/// remind the LLM of the original request so it acts NOW, same turn.
+#[derive(Debug, Clone)]
+pub struct GrantFollowup {
+    pub capability: crate::tools::CapabilityMode,
+    pub text: String,
+}
+
+/// U4 standalone detection: phrases that mean "open it up again" regardless
+/// of whether there is a pending ask this turn. Deliberately purely lexical —
+/// same trust surface as classify_reply, no LLM judgment on security state.
+pub fn looks_like_deny_revoke(text: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    const REGRET: &[&str] = &[
+        "改主意", "现在开放", "开放吧", "解锁", "解禁", "解除禁止", "取消拒绝",
+        "撤销拒绝", "重新开放", "给你看了", "可以给你看",
+    ];
+    REGRET.iter().any(|k| t.contains(k))
 }
 
 /// A create_note proposal waiting for the user's explicit "可以/不行"
@@ -195,5 +229,16 @@ mod tests {
     fn unrelated_proceeds() {
         assert_eq!(classify_reply("今天天气怎么样"), ConsentReply::Unrelated);
         assert_eq!(classify_reply(""), ConsentReply::Unrelated);
+    }
+
+    #[test]
+    fn deny_regret_phrases_detected() {
+        // U4: the user explicitly re-opens a previously denied location.
+        assert!(looks_like_deny_revoke("我改主意了，现在开放那个项目"));
+        assert!(looks_like_deny_revoke("刚才那个位置解锁吧"));
+        assert!(looks_like_deny_revoke("撤销拒绝"));
+        // Normal chitchat must NOT trip the unfreeze.
+        assert!(!looks_like_deny_revoke("今天的云很开放啊"));
+        assert!(!looks_like_deny_revoke(""));
     }
 }

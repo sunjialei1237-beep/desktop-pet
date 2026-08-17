@@ -105,6 +105,18 @@ pub fn revoke(conn: &Connection, root: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// "我改主意了/现在开放吧" (plan §8.4-U4): flip every explicit deny back to
+/// a fresh Once grant and reset its cooldown clock. Returns how many rows
+/// were unfrozen. This is the user-initiated regret path — the opposite of
+/// an implicit ask, so no re-ask window applies.
+pub fn unfreeze_denied(conn: &Connection) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE fs_grants SET mode = 'once', created_at = ?1 WHERE mode = 'deny'",
+        params![chrono::Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| format!("Failed to unfreeze denied grants: {}", e))
+}
+
 /// Whether a deny recorded in `created_at` (RFC3339) is still inside the
 /// re-ask cooldown window.
 pub fn deny_in_cooldown(created_at: &str) -> bool {

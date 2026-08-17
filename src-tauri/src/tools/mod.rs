@@ -53,6 +53,12 @@ impl Default for CapabilityMode {
     }
 }
 
+/// U1 same-turn rerun guard: only tool-bearing capabilities qualify; a
+/// remembered None/assist-ish mode must never fabricate an agent loop.
+pub fn capability_is_tool_capability(cap: CapabilityMode) -> bool {
+    !matches!(cap, CapabilityMode::None)
+}
+
 /// Concrete tool identifiers. Mirror the scheduler.rs enum-registry style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {

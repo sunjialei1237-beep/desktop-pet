@@ -104,6 +104,7 @@ pub fn run() {
         }
     }
 
+    let tools_config_snapshot = config.tools.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -125,6 +126,7 @@ pub fn run() {
                 .build(),
         )
         .manage(AppState {
+            tools_config: std::sync::Mutex::new(tools_config_snapshot),
             config,
             llm: std::sync::Mutex::new(llm_client),
             embedding: embedding_service,
@@ -300,6 +302,8 @@ pub fn run() {
             commands::resolve_pending_event,
             commands::get_llm_config,
             commands::update_llm_config,
+            commands::get_tools_config,
+            commands::save_tools_config,
             commands::get_debug_snapshot,
             commands::set_clickthrough_diag,
             commands::get_clickthrough_diag,

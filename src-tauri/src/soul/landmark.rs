@@ -264,10 +264,23 @@ mod calendar_days_tests {
 
     #[test]
     fn counts_local_calendar_days_not_utc_periods() {
-        // 26h ago is 1 local calendar day (and could be only 1.x UTC periods
-        // or cross a date line — the point is: date diff, not floor(hours/24)).
-        let t = Utc::now() - Duration::hours(26);
-        assert_eq!(calendar_days_since(t), 1);
+        // Deterministic through the 00:00-02:00 local window (a 26h lookback
+        // can cross TWO date lines right after midnight): take LOCAL noon
+        // yesterday — exactly one calendar day ago at any clock time.
+        use chrono::{Datelike, Local, TimeZone};
+        let noon_today = Local::now()
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let noon = Local
+            .from_local_datetime(&noon_today)
+            .single()
+            .expect("local noon is unambiguous");
+        let yesterday_noon = noon - Duration::days(1);
+        assert_eq!(
+            calendar_days_since(yesterday_noon.with_timezone(&Utc)),
+            1
+        );
     }
 
     #[test]

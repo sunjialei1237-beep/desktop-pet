@@ -4,6 +4,7 @@
 use crate::db::DbState;
 use crate::embedding::EmbeddingService;
 use crate::llm::client::{ChatMessage, LlmClient, ThinkingConfig};
+use crate::mind::consent::ConsentState;
 use crate::mind::gate::GateRoute;
 use crate::mind::planner::Intent;
 use rand::Rng;
@@ -203,31 +204,59 @@ fn resolve_pending_authorization(
         }
     };
     let Some(pa) = pending else {
+        // U4 standalone regret path: no ask is pending ("我改主意了，现在
+        // 开放吧") — flip every deny row back to Once right here, before
+        // ingest, so the very next request already passes authorization.
+        if crate::mind::consent::looks_like_deny_revoke(text) {
+            let count = ctx.db.with_conn(crate::db::grants::unfreeze_denied)?;
+            if count > 0 {
+                log::info!("[converse] fs consent: deny regret — unfroze {} deny row(s)", count);
+                return Ok(ConsentState::UnfrozeDenies { count });
+            }
+        }
         return Ok(ConsentState::Proceed);
     };
+
+    let followup = Some(crate::mind::consent::GrantFollowup {
+        capability: pa.followup_capability,
+        text: pa.followup_text.clone(),
+    });
 
     match classify_reply(text) {
         ConsentReply::Always => {
             for root in &pa.roots {
                 let _ = db_write_grant(ctx, root, crate::db::grants::GrantMode::Always);
+                // U3: the first successful grant for a fresh location also
+                // registers it as a workspace project so it becomes an
+                // addressable world ("把它的 git 状态给我").
+                crate::tools::workspace::register_root_after_grant(root);
                 log::info!("[converse] fs consent: ALWAYS grant for {}", root);
             }
             Ok(ConsentState::Granted {
                 roots: pa.roots,
                 always: true,
+                followup,
             })
         }
         ConsentReply::Once => {
             for root in &pa.roots {
                 let _ = db_write_grant(ctx, root, crate::db::grants::GrantMode::Once);
+                crate::tools::workspace::register_root_after_grant(root);
                 log::info!("[converse] fs consent: ONCE grant for {}", root);
             }
             Ok(ConsentState::Granted {
                 roots: pa.roots,
                 always: false,
+                followup,
             })
         }
         ConsentReply::Deny => {
+            // Even when refusing THIS ask, a deny-regret phrase would mean the
+            // pointer belongs to the older deny state; it can't coexist with a
+            // fresh deny, so clear it first only when the user said both.
+            if crate::mind::consent::looks_like_deny_revoke(text) {
+                let _ = ctx.db.with_conn(crate::db::grants::unfreeze_denied);
+            }
             for root in &pa.roots {
                 let _ = db_write_grant(ctx, root, crate::db::grants::GrantMode::Deny);
                 log::info!("[converse] fs consent: DENY for {}", root);
@@ -328,6 +357,15 @@ const TOOL_MODE_PROMPT: &str = "\
 - 搜索结果只作为参考，用自己的判断筛选。
 - 用中文回复，像平时一样自然，不要过分肯定搜索结果。
 - 查到的信息只是你刚查到的参考，不要当成你一直记得的事。";
+
+/// U2 (plan §8.4): the environment section is for BEING there, not reciting.
+/// Appended ONLY after the section actually got injected, so honest-downgrade
+/// has literal grounding: no section = don't name files; no hint = ask.
+const ENV_USE_PROMPT: &str = "\
+[Environment Use]
+如果环境快照里有正好相关的信息，第一句可以很自然地带出一个具体事实\
+（例如「你还在写 agent.rs 呀」），让用户感到你在场；但只需一个，不要罗列快照。\
+如果快照里没有具体文件或项目，就不要假装知道 ta 在写什么——可以好奇地问：「你现在在忙什么呀？」。";
 
 /// F2 proposal-format directive (plan §3.6), appended only when the write
 /// switch is on: after a normal read round, the modify request is answered
@@ -500,6 +538,21 @@ pub async fn converse(
     );
     let mut intent = crate::mind::planner::plan(&brain);
 
+    // U1 (plan §8.4): "可以" re-runs the ORIGINAL request's tool round in the
+    // SAME turn. The short reply itself is planner-invisible; restoring the
+    // capability remembered when the ask was armed means she opens the file /
+    // reads the project right now and answers in one round trip.
+    if let ConsentState::Granted { followup: Some(followup), .. } = &consent_res {
+        if crate::tools::capability_is_tool_capability(followup.capability) {
+            intent.capability = followup.capability;
+            intent.action = "tools".to_string();
+            log::info!(
+                "[converse] fs consent granted — U1 same-turn rerun armed ({:?})",
+                followup.capability
+            );
+        }
+    }
+
     // Closeness (0..100) feeds the mood label: at low closeness neutral/positive
     // moods surface as 害羞 (design §6.2 "陌生时拘谨"). Computed once, used by both
     // emotion-write sites below.
@@ -627,6 +680,7 @@ pub async fn converse(
                     section.chars().count()
                 );
                 messages.push(ChatMessage::system(section));
+                messages.push(ChatMessage::system(ENV_USE_PROMPT));
             }
             None => log::info!("[converse] environment section skipped (stale/empty state)"),
         }
@@ -693,7 +747,7 @@ pub async fn converse(
     // natural conversation, no machinery); Denied → accept gracefully and
     // never nag (the deny row's cooldown enforces the 24h silence).
     match &consent_res {
-        crate::mind::consent::ConsentState::Granted { roots, always } => {
+        crate::mind::consent::ConsentState::Granted { roots, always, followup } => {
             log::info!("[converse] fs consent granted (always={}): {}", always, roots.join(", "));
             let scope_word = if *always { "以后" } else { "这一次" };
             let label = match roots.as_slice() {
@@ -706,14 +760,26 @@ pub async fn converse(
                     roots.len()
                 ),
             };
-            messages.push(ChatMessage::system(&format!(
-                "（系统提示：用户刚才同意了你访问「{}」{}。自然地、简短地道谢。如果用户之前正想让你看什么东西，可以顺势说现在可以看了，让 ta 再说一次想看什么。不要复述路径原文，用地道口语。）",
-                label, scope_word
-            )));
+            if followup.is_some() {
+                messages.push(ChatMessage::system(
+                    "（系统提示：用户刚才同意了你访问「这些位置」。这一轮你会直接继续处理 ta 之前的要求——不用请 ta 再说一遍，先做、做完用结果自然回话。）",
+                ));
+            } else {
+                messages.push(ChatMessage::system(&format!(
+                    "（系统提示：用户刚才同意了你访问「{}」{}。自然地、简短地道谢。如果用户之前正想让你看什么东西，可以顺势说现在可以看了，让 ta 再说一次想看什么。不要复述路径原文，用地道口语。）",
+                    label, scope_word
+                )));
+            }
         }
         crate::mind::consent::ConsentState::Denied { .. } => {
             messages.push(ChatMessage::system(
                 "（系统提示：用户拒绝了这个访问请求。理解并且不再追问，轻轻带过就好——比如「好～那就不看啦」。之后一段时间不要再主动提起这个请求。）",
+            ));
+        }
+        crate::mind::consent::ConsentState::UnfrozeDenies { count } => {
+            log::info!("[converse] fs consent: deny regret acknowledged ({count} rows unfrozen)");
+            messages.push(ChatMessage::system(
+                "（系统提示：用户改主意了，之前拒绝过的文件位置现在已经重新对你开放（Rust 已把旧拒绝全部撤销）。自然回应，比如「好呀，刚才那个地方我又能看了」。不要说具体数量。）",
             ));
         }
         crate::mind::consent::ConsentState::Proceed => {}
@@ -884,6 +950,15 @@ pub async fn converse(
             intent.capability,
             tool_kinds.iter().map(|k| k.name()).collect::<Vec<_>>()
         );
+        // U1: the consent grant just re-armed the ORIGINAL capability — feed the
+        // loop the original request it was answering, otherwise its only user
+        // turn is "可以" and there is nothing to continue.
+        if let ConsentState::Granted { followup: Some(followup), .. } = &consent_res {
+            messages.push(ChatMessage::system(&format!(
+                "（系统提示：用户刚同意访问。继续处理 ta 上一轮的要求：「{}」。现在就直接调用工具，完成后用中文自然汇报。）",
+                followup.text
+            )));
+        }
         messages.push(ChatMessage::system(TOOL_MODE_PROMPT));
         if ctx.tools_cfg.enable_fs_mutate {
             messages.push(ChatMessage::system(EDIT_PROPOSAL_PROMPT));
@@ -937,6 +1012,8 @@ pub async fn converse(
                     *g = Some(crate::mind::consent::PendingAuthorization {
                         roots: askable,
                         created_at: chrono::Utc::now(),
+                        followup_capability: intent.capability,
+                        followup_text: text.chars().take(200).collect(),
                     });
                     true
                 })

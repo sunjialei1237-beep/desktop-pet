@@ -43,6 +43,10 @@ pub struct EditApplyOutcome {
 /// Shared application state.
 pub struct AppState {
     pub config: AppConfig,
+    /// Hot-updatable [tools] layer (U5 Settings page): `state.config` stays
+    /// the on-disk snapshot used at boot; every turn reads THIS lock so
+    /// toggling the switches applies immediately without a restart.
+    pub tools_config: std::sync::Mutex<crate::config::ToolsConfig>,
     pub llm: std::sync::Mutex<Option<LlmClient>>,
     pub embedding: EmbeddingService,
     pub working_memory: Mutex<WorkingMemory>,
@@ -178,6 +182,11 @@ pub async fn send_message(
         .cloned()
         .ok_or("LLM not configured. Please set your API key in settings.")?;
 
+    let tools_cfg = state
+        .tools_config
+        .lock()
+        .map_err(|e| format!("tools config lock error: {}", e))?
+        .clone();
     let ctx = crate::mind::converse::ConverseCtx {
         text: &text,
         conversation_id: &conversation_id,
@@ -189,7 +198,7 @@ pub async fn send_message(
         pacing: &state.question_pacing,
         pending_forget: &state.pending_forget,
         pending_authorization: &state.pending_authorization,
-        tools_cfg: &state.config.tools,
+        tools_cfg: &tools_cfg,
     };
     let result = crate::mind::converse::converse(
         &ctx,
@@ -371,7 +380,12 @@ pub async fn apply_edit_proposal(
         .map_err(|e| format!("edit_proposals lock error: {}", e))?
         .remove(&id)
         .ok_or_else(|| "这个修改提案已经不在了（可能过期或已处理）。".to_string())?;
-    if state.config.tools.enable_fs_mutate == false {
+    let mutation_on = state
+        .tools_config
+        .lock()
+        .map(|g| g.enable_fs_mutate)
+        .unwrap_or(false);
+    if !mutation_on {
         return Ok(EditApplyOutcome {
             status: "failed".into(),
             message: "文件修改功能在设置里还没有打开（tools.enable_fs_mutate）。".into(),
@@ -417,7 +431,12 @@ pub async fn undo_last_edit(
     state: State<'_, AppState>,
     db: State<'_, DbState>,
 ) -> Result<EditApplyOutcome, String> {
-    if !state.config.tools.enable_fs_mutate {
+    let mutation_on = state
+        .tools_config
+        .lock()
+        .map(|g| g.enable_fs_mutate)
+        .unwrap_or(false);
+    if !mutation_on {
         return Ok(EditApplyOutcome {
             status: "failed".into(),
             message: "文件修改功能没有打开。".into(),
@@ -1123,6 +1142,53 @@ pub async fn update_llm_config(
     if let Ok(mut guard) = state.llm.lock() {
         *guard = new_llm;
     }
+    Ok(())
+}
+
+/// Current [tools] switches (U5 Settings page).
+#[tauri::command]
+pub async fn get_tools_config(
+    state: State<'_, AppState>,
+) -> Result<crate::config::ToolsConfig, String> {
+    state
+        .tools_config
+        .lock()
+        .map(|g| g.clone())
+        .map_err(|e| format!("tools config lock error: {}", e))
+}
+
+/// Persist [tools] switches and apply them to THIS process immediately —
+/// no restart needed (U5). Enabling observe/mutate still requires per-path
+/// grants on the Read side and per-call confirmation on the Write side.
+#[tauri::command]
+pub async fn save_tools_config(
+    state: State<'_, AppState>,
+    enable_search_web: bool,
+    enable_open_application: bool,
+    enable_fs_observe: bool,
+    enable_fs_mutate: bool,
+) -> Result<(), String> {
+    if let Ok(mut guard) = state.tools_config.lock() {
+        guard.enable_search_web = enable_search_web;
+        guard.enable_open_application = enable_open_application;
+        guard.enable_fs_observe = enable_fs_observe;
+        guard.enable_fs_mutate = enable_fs_mutate;
+    }
+    let mut config = state.config.clone();
+    config.tools = crate::config::ToolsConfig {
+        enable_search_web,
+        enable_open_application,
+        enable_fs_observe,
+        enable_fs_mutate,
+    };
+    crate::config::save_config(&config)?;
+    log::info!(
+        "[tools] saved: search={} open_app={} fs_observe={} fs_mutate={}",
+        enable_search_web,
+        enable_open_application,
+        enable_fs_observe,
+        enable_fs_mutate
+    );
     Ok(())
 }
 
