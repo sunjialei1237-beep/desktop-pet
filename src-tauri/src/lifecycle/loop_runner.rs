@@ -28,21 +28,30 @@ pub fn start_life_loop(app: AppHandle) {
         // `away_since`). Resets on app start — acceptable: she simply skips the
         // first cooldown window after launch.
         let mut last_lonely_nudge: Option<std::time::Instant> = None;
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(30));
-            medium_tick(&app);
-            // Rituals (早安) run BEFORE presence-transition so that an overnight
-            // return fires 早安 (date-driven) first; the welcome-back path then
-            // sees today's 早安 already done and yields to it.
-            check_goodmorning(&app);
-            // 晚安 runs after 早安 (the windows never overlap: Morning/Afternoon
-            // vs 21:00+). Once 晚安 fires, the frontend "该睡了" nudge also
-            // yields for the rest of the day via ritual_done_today.
-            check_goodnight(&app);
-            check_weekly_summary(&app);
-            check_landmark(&app);
-            check_presence_transition(&app, &mut last_presence, &mut away_since);
-            check_lonely_nudge(&app, &mut last_lonely_nudge);
+        std::thread::spawn(move || {
+            // First tick after 5s, then every 30s. The old structure slept
+            // 30s BEFORE the first tick, so a morning launch sat in silence
+            // for half a minute before 早安 could fire (user feedback
+            // 2026-08-16: "早安是 30S 之后才出现"). 5s is enough for the
+            // webview listeners to register (the removed lib.rs welcome
+            // bubble used a 2s delay for the same reason).
+            std::thread::sleep(Duration::from_secs(5));
+            loop {
+                medium_tick(&app);
+                // Rituals (早安) run BEFORE presence-transition so that an overnight
+                // return fires 早安 (date-driven) first; the welcome-back path then
+                // sees today's 早安 already done and yields to it.
+                check_goodmorning(&app);
+                // 晚安 runs after 早安 (the windows never overlap: Morning/Afternoon
+                // vs 21:00+). Once 晚安 fires, the frontend "该睡了" nudge also
+                // yields for the rest of the day via ritual_done_today.
+                check_goodnight(&app);
+                check_weekly_summary(&app);
+                check_landmark(&app);
+                check_presence_transition(&app, &mut last_presence, &mut away_since);
+                check_lonely_nudge(&app, &mut last_lonely_nudge);
+                std::thread::sleep(Duration::from_secs(30));
+            }
         });
     }
 
