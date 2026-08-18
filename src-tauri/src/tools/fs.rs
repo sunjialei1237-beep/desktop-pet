@@ -1,4 +1,4 @@
-﻿//! Observe tools (plan 2026-08-17 §3.4): read-only filesystem access for
+//! Observe tools (plan 2026-08-17 §3.4): read-only filesystem access for
 //! `CapabilityMode::SystemObservation`. Every path goes through the
 //! canonicalize-first pipeline (`path.rs`); content is line-truncated (NOT
 //! char-truncated mid-line) with a `path:start-end` header so the model
@@ -45,6 +45,19 @@ fn rejected(msg: &str) -> ToolResult {
         status: ToolStatus::Rejected,
         content: msg.to_string(),
     }
+}
+
+/// `path` argument with the editor-root last-mile join: a relative argument
+/// like `main.rs` or `plan-sess_xxx.md` (DeepSeek did this despite absolute
+/// path guidance) is completed with the root already sampled for the
+/// foreground editor. Absolute / empty values pass through unchanged.
+fn path_arg(args: &serde_json::Value) -> Option<String> {
+    let raw = args
+        .get("path")
+        .and_then(|p| p.as_str())
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())?;
+    Some(crate::perception::environment::hydrate_relative_path(&raw).unwrap_or(raw))
 }
 
 fn failed(msg: String) -> ToolResult {
@@ -115,13 +128,37 @@ fn denied_roots_slot() -> &'static std::sync::Mutex<Vec<String>> {
     SLOT.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
-/// The root a consent ask should cover for a denied path: the owning
-/// registered project when there is one, else the file's parent directory
-/// (the directory itself for directory requests).
+/// The root a consent ask should cover for a denied path. Candidates are (a)
+/// the editor/self environment ROOT the observer sampled for this very turn —
+/// hydration joins against it, so it is the tightest known boundary — and (b)
+/// the owning registered project; the deeper (most specific) candidate wins,
+/// otherwise the file's parent directory (itself for directory requests).
 fn grant_root_for(canonical: &Path) -> String {
+    fn depth(path: &Path) -> usize {
+        path.components().count()
+    }
+
+    let mut best: Option<(String, usize)> = None;
     let registry = super::workspace::WorkspaceRegistry::load();
     if let Some(proj) = super::workspace::owning_project(&registry, canonical) {
-        return proj.path.clone();
+        if let Ok(cproj) = std::fs::canonicalize(&proj.path) {
+            if path::root_contains(&cproj, canonical) {
+                best = Some((cproj.to_string_lossy().to_string(), depth(&cproj)));
+            }
+        }
+    }
+    if let Some(env_raw) = crate::perception::environment::current_hints().root {
+        if let Ok(cenv) = std::fs::canonicalize(&env_raw) {
+            if path::root_contains(&cenv, canonical) {
+                let d = depth(&cenv);
+                if best.as_ref().map(|(_, bd)| d > *bd).unwrap_or(true) {
+                    best = Some((cenv.to_string_lossy().to_string(), d));
+                }
+            }
+        }
+    }
+    if let Some((root, _)) = best {
+        return root;
     }
     if canonical.is_dir() {
         canonical.to_string_lossy().to_string()
@@ -199,7 +236,13 @@ fn authorize_path(raw: &str, grants: &[crate::db::grants::FsGrant]) -> Result<Pa
             // canonicalize cleanly (it may still exist; resolve only failed
             // for uniform-denial reasons on OTHER deny kinds).
             if let Ok(c) = path::resolve(raw) {
-                note_denied_root(&c);
+                let consent_root = grant_root_for(&c);
+                log::info!(
+                    "[fs] denied path {} -> consent root {}",
+                    c.display(),
+                    consent_root
+                );
+                record_denied_root(consent_root);
             }
             Err(rejected(&path::PathDeny::NotAuthorized.message()))
         }
@@ -224,11 +267,11 @@ fn authorize_path(raw: &str, grants: &[crate::db::grants::FsGrant]) -> Result<Pa
 /// Read a text file fragment. Lines are 1-based, inclusive; the window is
 /// clamped to MAX_LINES_PER_READ regardless of what was requested.
 pub async fn read_text_file(args: &serde_json::Value, grants: &[crate::db::grants::FsGrant]) -> ToolResult {
-    let raw_path = match args.get("path").and_then(|p| p.as_str()) {
+    let raw_path = match path_arg(args) {
         Some(p) if !p.trim().is_empty() => p,
         _ => return rejected("没有指定要读取的文件路径。"),
     };
-    let canonical = match authorize_path(raw_path, grants) {
+    let canonical = match authorize_path(&raw_path, grants) {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -432,11 +475,11 @@ pub async fn search_files(args: &serde_json::Value, grants: &[crate::db::grants:
 // --- list_directory ----------------------------------------------------------
 
 pub async fn list_directory(args: &serde_json::Value, grants: &[crate::db::grants::FsGrant]) -> ToolResult {
-    let raw_path = match args.get("path").and_then(|p| p.as_str()) {
+    let raw_path = match path_arg(args) {
         Some(p) if !p.trim().is_empty() => p,
         _ => return rejected("没有指定要列出的目录路径。"),
     };
-    let canonical = match authorize_path(raw_path, grants) {
+    let canonical = match authorize_path(&raw_path, grants) {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -480,11 +523,11 @@ pub async fn list_directory(args: &serde_json::Value, grants: &[crate::db::grant
 // --- get_file_metadata -------------------------------------------------------
 
 pub async fn get_file_metadata(args: &serde_json::Value, grants: &[crate::db::grants::FsGrant]) -> ToolResult {
-    let raw_path = match args.get("path").and_then(|p| p.as_str()) {
+    let raw_path = match path_arg(args) {
         Some(p) if !p.trim().is_empty() => p,
         _ => return rejected("没有指定文件路径。"),
     };
-    let canonical = match authorize_path(raw_path, grants) {
+    let canonical = match authorize_path(&raw_path, grants) {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -1340,6 +1383,25 @@ mod tests {
         let r = read_text_file(&args, &[]).await;
         assert_eq!(r.status, ToolStatus::Rejected);
         assert!(r.content.contains("授权"));
+        // Unauthorized attempts must arm the consent slot (§8.5-M6); compare
+        // with the canonical root spelling the slot actually stores.
+        let canonical_root = path::resolve(&dir.to_string_lossy()).unwrap();
+        assert!(take_denied_roots().contains(&canonical_root.to_string_lossy().to_string()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn list_unauthorized_records_consent_root_for_hidden_dir() {
+        // Regression for real-machine "帮我看一下目前我打开的代码": listing a
+        // dotfolder was rejected but no permission ask armed.
+        let dir = temp_project(2);
+        let hidden = dir.join(".hidden-project");
+        std::fs::create_dir_all(&hidden).unwrap();
+        let args = serde_json::json!({"path": hidden.to_string_lossy()});
+        let r = list_directory(&args, &[]).await;
+        assert_eq!(r.status, ToolStatus::Rejected);
+        let canonical_root = path::resolve(&hidden.to_string_lossy()).unwrap();
+        assert_eq!(take_denied_roots(), vec![canonical_root.to_string_lossy().to_string()]);
         std::fs::remove_dir_all(&dir).ok();
     }
 

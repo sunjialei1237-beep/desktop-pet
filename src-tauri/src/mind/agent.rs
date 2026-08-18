@@ -197,6 +197,10 @@ async fn execute_one_tool(
         }
         policy::PolicyDecision::Allow => {
             let start = Instant::now();
+            // Local-only diagnostics line: concretely shows WHAT the model
+            // passed (helps the recurring "rejected but no consent ask armed"
+            // real-machine class without dumping raw file contents).
+            log::info!("[agent] run {} tool {} args={}", run_id, name, args);
             let exec = tokio::time::timeout(
                 Duration::from_secs(TOOL_TIMEOUT_SECS),
                 tools::execute(kind, &args, cfg, fs_grants),

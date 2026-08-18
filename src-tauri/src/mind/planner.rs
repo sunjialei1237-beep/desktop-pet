@@ -89,6 +89,9 @@ const ENVIRONMENT_KEYWORDS: &[&str] = &[
     // tool_choice=auto still decides; a recall phrasing like "看看我上次说过什么"
     // arrives with memory bodies and the model abstains from tools itself.
     "查看", "看下", "看看", "读一下", "读取", "帮我看", "帮我读", "read this", "read the file",
+    // Directory inventory phrases (实装 2026-08-18): "列出 …目录里的文件"
+    // used to fall into capability=None so no observe tools were offered.
+    "列出", "看看里面", "里面有什么", "有哪些文件", "目录里",
     // F2 edit requests must land in SystemObservation first: the model has to
     // READ the real file (and snapshot lock) before it can arm a patch block
     // (§3.6 — edit tools are never advertised; observe+patch is the loop).
@@ -151,7 +154,15 @@ pub fn plan(brain: &BrainState) -> Intent {
     // is an action). This is a CANDIDATE, not a call decision — the LLM decides
     // with tool_choice="auto". Config gating (search_web off → no tools) happens
     // downstream in capability_to_tools, not here.
-    let capability = if COMPUTER_ACTION_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+    // 实装 2026-08-18: "打开" in "我打开的代码/文件" is possessive, NOT an
+    // imperative to launch anything — such phrases route to observation first
+    // (the generic action-beats-observation rule stays for "打开 X").
+    let possessive_env = ["我打开的", "打开的文件", "打开的代码", "打开的项目", "打开的这个"]
+        .iter()
+        .any(|k| lower.contains(k));
+    let capability = if possessive_env {
+        CapabilityMode::SystemObservation
+    } else if COMPUTER_ACTION_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
         CapabilityMode::ComputerAction
     } else if EXTERNAL_INFO_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
         CapabilityMode::ExternalInfo
@@ -698,6 +709,7 @@ mod tests {
             "看下这个文件",
             "读一下 D:\\x\\note.txt",
             "读取这个项目",
+            "列出 D:\\x\\src 目录里的文件",
             "read this file for me",
         ] {
             let intent = plan(&brain(text, &calm_emotion(), None, &[], &empty_retrieval()));
@@ -722,6 +734,23 @@ mod tests {
         ));
         assert_eq!(intent.goal, "care");
         assert!(!environment_relevant("我在写报告，压力好大好累", &intent));
+    }
+
+    #[test]
+    fn test_possessive_open_routes_observation_not_launch() {
+        // 实装 2026-08-18: "打开" inside "我打开的代码" must NOT open an app.
+        for text in [
+            "帮我看一下目前我打开的代码",
+            "看看我打开的文件里写了什么",
+            "读取打开的这个文件",
+        ] {
+            let intent = plan(&brain(text, &calm_emotion(), None, &[], &empty_retrieval()));
+            assert_eq!(
+                intent.capability,
+                CapabilityMode::SystemObservation,
+                "for: {text}"
+            );
+        }
     }
 
     #[test]

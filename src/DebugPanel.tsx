@@ -48,7 +48,7 @@ interface DebugSnapshot {
   llm_configured: boolean;
   continuous_work_secs: number;
   is_deep_focus: boolean;
-  env_hints: { app: string | null; title: string | null; file_hint: string | null; project_hint: string | null };
+  env_hints: { app: string | null; title: string | null; file_hint: string | null; project_hint: string | null; root: string | null };
   env_recent: string | null;
   fs_grants: { root: string; mode: string; created_at: string; source: string }[];
   fs_audit: {
@@ -321,6 +321,11 @@ export function DebugPanel({ anim, onClose, onQuit }: {
         <div className="debug-bar">
           <span>文件: {snapshot.env_hints.file_hint ?? "—"} | 项目: {snapshot.env_hints.project_hint ?? "—"}</span>
         </div>
+        {snapshot.env_hints.root && (
+          <div className="debug-bar">
+            <span>路径: {snapshot.env_hints.root}</span>
+          </div>
+        )}
         {snapshot.env_recent && (
           <div className="debug-bar">
             <span>Recently: {snapshot.env_recent}</span>

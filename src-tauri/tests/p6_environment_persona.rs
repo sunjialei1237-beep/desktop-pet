@@ -38,6 +38,7 @@ fn env_section() -> String {
             title: Some("agent.rs — desktop-pet".into()),
             file_hint: Some("agent.rs".into()),
             project_hint: Some("Liri".into()),
+            root: None,
         },
         false,
         Some("agent.rs → planner.rs"),

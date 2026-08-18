@@ -674,6 +674,7 @@ pub async fn converse(
     // state layer (freshness/degradation) passes inside the builder.
     // Chitchat turns never pay for it; the section never enters the static
     // prefix (cache discipline).
+    let mut env_had_root = false;
     if crate::mind::planner::environment_relevant(text, &intent) {
         match crate::perception::environment::build_environment_section() {
             Some(section) => {
@@ -681,6 +682,14 @@ pub async fn converse(
                     "[converse] environment section injected ({} chars)",
                     section.chars().count()
                 );
+                // 实装 determinise: when a real editor ROOT was sampled, the
+                // first turn force-calls a tool (tool_choice=required). DeepSeek
+                // otherwise occasionally answers "环境只给了文件名没给路径"
+                // while root=… is in the section — the model must actually READ
+                // before phrasing a may-read judgement (§ last-mile fix).
+                // build_environment_section pinned that root to the turn slot,
+                // so this reads the SAME snapshot the model just saw.
+                env_had_root = crate::perception::environment::turn_root().is_some();
                 messages.push(ChatMessage::system(section));
                 messages.push(ChatMessage::system(ENV_USE_PROMPT));
             }
@@ -976,6 +985,16 @@ pub async fn converse(
         let fs_grants: Vec<crate::db::grants::FsGrant> = db
             .with_conn(|conn| crate::db::grants::list(conn))
             .unwrap_or_default();
+        let force_first_tool = matches!(
+            &consent_res,
+            crate::mind::consent::ConsentState::Granted { followup: Some(_), .. }
+        ) || env_had_root;
+        log::info!(
+            "[converse] force_first_tool={} env_had_root={} capability={:?}",
+            force_first_tool,
+            env_had_root,
+            intent.capability
+        );
         let outcome = crate::mind::agent::run_agent_loop(
             &mut messages,
             intent.capability,
@@ -985,7 +1004,7 @@ pub async fn converse(
             &mut on_token,
             &mut recent_queries,
             &fs_grants,
-            matches!(&consent_res, crate::mind::consent::ConsentState::Granted { followup: Some(_), .. }),
+            force_first_tool,
         )
         .await?;
         log::info!(
