@@ -575,7 +575,7 @@ pub fn start(enable_window: bool) {
             // no path. For editor processes resolve the workspace folder from
             // the command line (cached per pid), so the read tools + consent
             // flow get a real absolute root instead of "路径匹配不上".
-            let root_hint = match (proc.as_deref(), pid) {
+            let mut root_hint = match (proc.as_deref(), pid) {
                 (Some(name), Some(pid)) if window::is_editor_process(name) => {
                     let root = window::editor_workspace_root(pid);
                     if root.is_none() {
@@ -585,6 +585,33 @@ pub fn start(enable_window: bool) {
                 }
                 _ => None,
             };
+            // F12/live-tool last mile: when the editor process root is missing
+            // or the sampled file is NOT under it, consult the Windows Recent
+            // shortcut for the actual open file (same resolver the fs tools use)
+            // and point the root hint at its real parent directory.
+            #[cfg(target_os = "windows")]
+            if let Some(file_name) = hints.file.as_deref() {
+                let joined_missing = root_hint
+                    .as_deref()
+                    .map(|r| !std::path::Path::new(r).join(file_name).exists())
+                    .unwrap_or(true);
+                if joined_missing {
+                    if let Some(target) = window::recent_shortcut_target(file_name) {
+                        if target.exists() {
+                            let parent = target
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_else(|| target.clone());
+                            log::info!(
+                                "[environment] editor root hint repaired by Recent shortcut for {} -> {}",
+                                file_name,
+                                parent.to_string_lossy()
+                            );
+                            root_hint = Some(parent.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
             let presence_now = presence::current_presence();
 
             // Track the away period across samples; `away_secs` only matters
