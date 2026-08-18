@@ -381,9 +381,65 @@ pub fn hydrate_relative_path(raw: &str) -> Option<String> {
             );
             return Some(found.to_string_lossy().to_string());
         }
+        // Last-mile fallback for VS Code windows that were started with one
+        // folder but now display a file from another project: the Recent
+        // shortcuts still carry that file's real absolute path.
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(found) = window::recent_shortcut_target(trimmed) {
+                if found.is_file() {
+                    log::info!(
+                        "[environment] file hint '{}' resolved via Recent shortcut -> '{}'",
+                        raw,
+                        found.display()
+                    );
+                    return Some(found.to_string_lossy().to_string());
+                }
+            }
+        }
     }
     log::info!("[environment] hydrate relative path '{}' with root '{}' -> '{}'", raw, root, joined);
     Some(joined)
+}
+
+/// Absolute tool paths are left alone by `hydrate_relative_path` — the model
+/// joins them from the [Environment] root, and when that root is the editor's
+/// STARTUP folder rather than the open file's real folder the joined path is
+/// absolute-but-wrong (D:/environment-demo/plan-sess_….md). This repairs that
+/// exact shape using the file's basename + Recent shortcuts; tools still pass
+/// the result through `resolve_and_authorize`.
+#[cfg(target_os = "windows")]
+pub fn repair_absolute_hint(raw: &str) -> Option<String> {
+    use std::path::Path;
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || !Path::new(trimmed).is_absolute()
+        || Path::new(trimmed).exists()
+        || trimmed.contains("node_modules")
+    {
+        return None;
+    }
+    let Some(name) = Path::new(trimmed).file_name().map(|n| n.to_string_lossy()) else {
+        return None;
+    };
+    let Some(found) = window::recent_shortcut_target(&name) else {
+        return None;
+    };
+    if found.is_file() && found.to_string_lossy() != trimmed {
+        log::info!(
+            "[environment] absolute hint '{}' missing, Recent shortcut target found -> '{}'",
+            trimmed,
+            found.display()
+        );
+        Some(found.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn repair_absolute_hint(_raw: &str) -> Option<String> {
+    None
 }
 
 // --- [Environment] prompt section (plan §2.4, P4) --------------------------------

@@ -18,6 +18,10 @@ use chrono::{DateTime, Utc};
 pub struct PendingAuthorization {
     /// Canonical roots the denied tool calls wanted (deduplicated).
     pub roots: Vec<String>,
+    /// Exact absolute paths the denied tool calls tried (repaired by the
+    /// Rust last-mile resolver wherever possible). U1 feeds them back to the
+    /// model so "可以" re-runs with the REAL path instead of re-guessing.
+    pub requested_paths: Vec<String>,
     pub created_at: DateTime<Utc>,
     /// U1 (plan §8.4): the capability the LLM originally wanted and the
     /// top-level request text. Carried through the consent state so "可以"
@@ -129,6 +133,8 @@ pub enum ConsentState {
 pub struct GrantFollowup {
     pub capability: crate::tools::CapabilityMode,
     pub text: String,
+    /// Repaired absolute paths the denied calls used before the user said yes.
+    pub requested_paths: Vec<String>,
 }
 
 /// U4 standalone detection: phrases that mean "open it up again" regardless

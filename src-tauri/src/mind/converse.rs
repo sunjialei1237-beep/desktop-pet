@@ -220,6 +220,7 @@ fn resolve_pending_authorization(
     let followup = Some(crate::mind::consent::GrantFollowup {
         capability: pa.followup_capability,
         text: pa.followup_text.clone(),
+        requested_paths: pa.requested_paths.clone(),
     });
 
     match classify_reply(text) {
@@ -969,10 +970,18 @@ pub async fn converse(
         // loop the original request it was answering, otherwise its only user
         // turn is "可以" and there is nothing to continue.
         if let ConsentState::Granted { followup: Some(followup), .. } = &consent_res {
-            messages.push(ChatMessage::system(&format!(
-                "（系统提示：用户刚同意访问。继续处理 ta 上一轮的要求：「{}」。现在就直接调用工具，完成后用中文自然汇报。）",
-                followup.text
-            )));
+            if followup.requested_paths.is_empty() {
+                messages.push(ChatMessage::system(&format!(
+                    "（系统提示：用户刚同意访问。继续处理 ta 上一轮的要求：「{}」。现在就直接调用工具，完成后用中文自然汇报。）",
+                    followup.text
+                )));
+            } else {
+                let paths = followup.requested_paths.join("\n- ");
+                messages.push(ChatMessage::system(&format!(
+                    "（系统提示：用户刚同意访问。继续处理 ta 上一轮的要求：「{}」。\n刚才被拦截的具体绝对路径如下，直接用这些路径调用工具，不要再猜：\n- {}\n完成后用中文自然汇报。）",
+                    followup.text, paths
+                )));
+            }
         }
         messages.push(ChatMessage::system(TOOL_MODE_PROMPT));
         if ctx.tools_cfg.enable_fs_mutate {
@@ -1018,6 +1027,7 @@ pub async fn converse(
         // equivalent-variant aware) — after an explicit "no" a root is not
         // re-asked for 24h, while non-cooled roots still get their ask.
         let denied_roots = crate::tools::fs::take_denied_roots();
+        let denied_paths = crate::tools::fs::take_denied_paths();
         if !denied_roots.is_empty() {
             let mut askable: Vec<String> = Vec::new();
             for root in denied_roots {
@@ -1031,12 +1041,22 @@ pub async fn converse(
                     askable.push(root);
                 }
             }
+            let askable_paths: Vec<String> = denied_paths
+                .iter()
+                .filter(|p| {
+                    askable.iter().any(|root| {
+                        crate::tools::path::covers_any(root, std::slice::from_ref(p))
+                    })
+                })
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
             if !askable.is_empty() && ctx
                 .pending_authorization
                 .lock()
                 .map(|mut g| {
                     *g = Some(crate::mind::consent::PendingAuthorization {
                         roots: askable,
+                        requested_paths: askable_paths,
                         created_at: chrono::Utc::now(),
                         followup_capability: intent.capability,
                         followup_text: text.chars().take(200).collect(),

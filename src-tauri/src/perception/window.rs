@@ -216,6 +216,188 @@ fn cache_editor_root(pid: u32, root: Option<PathBuf>) {
     }
 }
 
+/// Windows Recent shortcut targets use two representations in one file:
+/// - LinkInfo LocalBasePath is ANSI (code page ACP — GBK on this user
+///   machine) and actually carries the FULL file target here, while
+/// - the Unicode offset block only stores a base path whose string node
+///   merges trailing material (sweep found `D:\桌宠\.zcode\plans\``).
+/// So the structured LinkInfo parse is primary; the sweep below is its
+/// structural fallback.
+#[cfg(target_os = "windows")]
+fn parse_lnk_linkinfo_local_path(bytes: &[u8]) -> Option<String> {
+    use windows::Win32::Globalization::{MultiByteToWideChar, CP_ACP, MB_PRECOMPOSED};
+    let u32_at = |off: usize| usize::try_from(u32::from_le_bytes(bytes.get(off..off + 4)?.try_into().ok()?)).ok();
+    let u16_at = |off: usize| {
+        let b = bytes.get(off..off + 2)?;
+        usize::try_from(u16::from_le_bytes(b.try_into().ok()?)).ok()
+    };
+    let header_size = u32_at(0)?;
+    if header_size < 0x4C {
+        return None;
+    }
+    let flags = u32_at(20)? as u32;
+    let mut pos = header_size;
+    if flags & 0x1 != 0 {
+        let id_list_size = u16_at(pos)?;
+        pos = pos.checked_add(2 + id_list_size)?;
+    }
+    if flags & 0x2 == 0 {
+        return None;
+    }
+    let li = pos;
+    let li_size = u32_at(li)?;
+    let li_header_size = u32_at(li.checked_add(4)?)?;
+    if li_size < 0x1c || li_header_size < 0x1c {
+        return None;
+    }
+    let li_flags = u32_at(li.checked_add(8)?)? as u32;
+    let volume_id_off = u32_at(li.checked_add(12)?)?;
+    let local_base_off = u32_at(li.checked_add(16)?)?;
+    // Full local path requires the VolumeID/LocalBasePath branch.
+    if li_flags & 0x1 == 0 || volume_id_off == 0 || local_base_off == 0 {
+        return None;
+    }
+    let start = li.checked_add(local_base_off)?;
+    let end = bytes[start..].iter().position(|b| *b == 0)? + start;
+    let ansi = &bytes[start..end];
+    if ansi.len() < 4 || ansi.len() > 2048 {
+        return None;
+    }
+    let mut wide = [0u16; 2048];
+    let written = unsafe {
+        MultiByteToWideChar(
+            CP_ACP,
+            MB_PRECOMPOSED,
+            ansi,
+            Some(&mut wide),
+        )
+    };
+    if written == 0 || written as usize >= wide.len() {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&wide[..written as usize]))
+}
+
+/// Extract workspace folder candidates from a `.lnk` (Windows shell shortcut)
+/// binary using a UTF-16LE string sweep. Shell links store their target in an
+/// encoded LinkInfo block; decoding that block structurally is overkill for
+/// the fallback here — candidate strings with a drive letter and separators
+/// are checked against the filesystem by the caller, so a false-positive
+/// string can never leak into tool arguments.
+#[doc(hidden)]
+pub fn parse_lnk_absolute_paths(bytes: &[u8]) -> Vec<String> {
+    if bytes.len() < 4 {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    // Every even offset can start a UTF-16LE run. Cheap and independent of
+    // LinkInfo offsets (which differ between Windows versions).
+    for start in 0..bytes.len().saturating_sub(1) {
+        let mut units: Vec<u16> = Vec::new();
+        for i in (start..bytes.len() - 1).step_by(2) {
+            let c = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+            if c == 0 {
+                break;
+            }
+            if c < 0x20 || c == 0xFFFF {
+                units.clear();
+                break;
+            }
+            if units.len() >= 260 {
+                break;
+            }
+            units.push(c);
+        }
+        if units.len() < 4 {
+            continue;
+        }
+        let Ok(s) = String::from_utf16(&units) else {
+            continue;
+        };
+        let b = s.as_bytes();
+        if b[0].is_ascii_alphabetic()
+            && b.get(1) == Some(&b':')
+            && (s.contains('\\') || s.contains('/'))
+        {
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+    }
+    out
+}
+
+/// Resolve a bare file name by looking at the user's Windows Recent shortcuts
+/// (`%APPDATA%\Microsoft\Windows\Recent\*.lnk`), newest first. VS Code keeps
+/// these current every time a file is opened/touched even when the Electron
+/// window command line only remembers its STARTUP folder: the 2026-08-18
+/// live failure was "tab shows plan-sess_….md but root=D:/environment-demo".
+/// All candidates are local metadata and are still authorized by the fs
+/// policy before any content leaves the process.
+#[cfg(target_os = "windows")]
+pub fn recent_shortcut_target(file_name: &str) -> Option<PathBuf> {
+    let wanted = file_name.trim();
+    if wanted.is_empty()
+        || wanted == "."
+        || wanted == ".."
+        || wanted.contains('\\')
+        || wanted.contains('/')
+        || wanted.len() > 160
+    {
+        return None;
+    }
+    let Ok(appdata) = std::env::var("APPDATA") else {
+        return None;
+    };
+    let dir = Path::new(&appdata).join("Microsoft").join("Windows").join("Recent");
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let mut links: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|e| e.eq_ignore_ascii_case("lnk")).unwrap_or(false))
+        .collect();
+    links.sort_by_key(|p| {
+        std::cmp::Reverse(
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH),
+        )
+    });
+    const MAX_LNK_BYTES: u64 = 128 * 1024;
+    for link in links.iter().take(400) {
+        let Ok(meta) = std::fs::metadata(link) else {
+            continue;
+        };
+        if meta.len() > MAX_LNK_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(link) else {
+            continue;
+        };
+        // Primary: ANSI LinkInfo LocalBasePath (contains the full file path).
+        if let Some(candidate) = parse_lnk_linkinfo_local_path(&bytes) {
+            let path = PathBuf::from(&candidate);
+            if path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(wanted))
+            {
+                return Some(path);
+            }
+        }
+        // Fallback: UTF-16 string sweep (older/odd link writers).
+        for candidate in parse_lnk_absolute_paths(&bytes) {
+            let path = PathBuf::from(&candidate);
+            if path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(wanted))
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 /// Resolve the workspace folder for an editor pid. Only successful results
 /// are cached — a failed capture returns None for THIS sample and is retried
 /// on the next one (PowerShell's first invocation can be slow/cold; caching a
@@ -610,6 +792,50 @@ mod tests {
         insert_bounded(&mut m, 4, "d2".into(), 2);
         assert_eq!(m.len(), 2, "updating an existing key must not clear");
         assert_eq!(m.get(&4).map(String::as_str), Some("d2"));
+    }
+
+    #[test]
+    fn parse_lnk_linkinfo_local_path_reads_ansi_target() {
+        let mut raw = vec![0u8; 300];
+        raw[0..4].copy_from_slice(&76u32.to_le_bytes());
+        raw[20..24].copy_from_slice(&3u32.to_le_bytes()); // HasIDList | HasLinkInfo
+        raw[76..78].copy_from_slice(&0u16.to_le_bytes()); // empty ID list
+        let li = 78usize;
+        let local_off = 36u32;
+        let target = b"D:\\projects\\demo\\demo.ts";
+        let li_size = 40usize + target.len();
+        raw[li..li + 4].copy_from_slice(&(li_size as u32).to_le_bytes());
+        raw[li + 4..li + 8].copy_from_slice(&28u32.to_le_bytes());
+        raw[li + 8..li + 12].copy_from_slice(&1u32.to_le_bytes()); // VolumeIDAndLocalBasePath
+        raw[li + 12..li + 16].copy_from_slice(&28u32.to_le_bytes());
+        raw[li + 16..li + 20].copy_from_slice(&local_off.to_le_bytes());
+        let start = li + local_off as usize;
+        raw[start..start + target.len()].copy_from_slice(target);
+        raw[start + target.len()] = 0;
+        assert_eq!(
+            parse_lnk_linkinfo_local_path(&raw).as_deref(),
+            Some("D:\\projects\\demo\\demo.ts")
+        );
+    }
+
+    #[test]
+    fn parse_lnk_absolute_paths_recovers_utf16_target() {
+        let mut raw = vec![0x4cu8, 0x00, 0x00, 0x00]; // LinkHeader-ish junk
+        raw.extend([0u8; 72]); // pad to even alignment
+        for unit in "D:\\桌宠\\.zcode\\plans\\plan-sess_001.md".encode_utf16() {
+            raw.extend(unit.to_le_bytes());
+        }
+        let found = parse_lnk_absolute_paths(&raw);
+        assert!(
+            found
+                .iter()
+                .any(|s| s == "D:\\桌宠\\.zcode\\plans\\plan-sess_001.md"),
+            "parsed {:?}",
+            found
+        );
+        // Nothing here is a path — the sweep must stay silent rather than
+        // inventing a candidate out of no-info bytes.
+        assert!(parse_lnk_absolute_paths(&[0x01u8; 300]).is_empty());
     }
 
     #[test]

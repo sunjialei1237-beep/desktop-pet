@@ -50,14 +50,26 @@ fn rejected(msg: &str) -> ToolResult {
 /// `path` argument with the editor-root last-mile join: a relative argument
 /// like `main.rs` or `plan-sess_xxx.md` (DeepSeek did this despite absolute
 /// path guidance) is completed with the root already sampled for the
-/// foreground editor. Absolute / empty values pass through unchanged.
+/// foreground editor. Absolute / empty values pass through unchanged — except
+/// an absolute join against a WRONG startup-folder root, which the Recent-
+/// shortcut lookup repairs (VS Code tabs that moved to another project).
 fn path_arg(args: &serde_json::Value) -> Option<String> {
     let raw = args
         .get("path")
         .and_then(|p| p.as_str())
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())?;
-    Some(crate::perception::environment::hydrate_relative_path(&raw).unwrap_or(raw))
+    let hydrated = crate::perception::environment::hydrate_relative_path(&raw);
+    if let Some(p) = hydrated {
+        return Some(p);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(p) = crate::perception::environment::repair_absolute_hint(&raw) {
+            return Some(p);
+        }
+    }
+    Some(raw)
 }
 
 fn failed(msg: String) -> ToolResult {
@@ -170,6 +182,30 @@ fn grant_root_for(canonical: &Path) -> String {
     }
 }
 
+/// Exact paths whose authorization was denied this loop (used for the U1
+/// prompt so the retry uses the repaired real path, not a fresh guess).
+/// At most a few entries per loop; separare from roots because the root
+/// triple logic may not cover the full file (nested src/… etc).
+fn denied_paths_slot() -> &'static std::sync::Mutex<Vec<PathBuf>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+fn record_denied_path(canonical: &Path) {
+    if let Ok(mut v) = denied_paths_slot().lock() {
+        if !v.iter().any(|p| p == canonical) {
+            v.push(canonical.to_path_buf());
+        }
+    }
+}
+
+pub fn take_denied_paths() -> Vec<PathBuf> {
+    denied_paths_slot()
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default()
+}
+
 /// Record one denied root (deduplicated) — extraction separated from the
 /// grant-root-derivation so the slot policy is directly testable.
 fn record_denied_root(root: String) {
@@ -242,6 +278,7 @@ fn authorize_path(raw: &str, grants: &[crate::db::grants::FsGrant]) -> Result<Pa
                     c.display(),
                     consent_root
                 );
+                record_denied_path(&c);
                 record_denied_root(consent_root);
             }
             Err(rejected(&path::PathDeny::NotAuthorized.message()))
