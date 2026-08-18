@@ -985,6 +985,7 @@ pub async fn converse(
             &mut on_token,
             &mut recent_queries,
             &fs_grants,
+            matches!(&consent_res, crate::mind::consent::ConsentState::Granted { followup: Some(_), .. }),
         )
         .await?;
         log::info!(

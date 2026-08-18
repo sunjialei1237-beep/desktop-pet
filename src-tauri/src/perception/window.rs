@@ -46,6 +46,10 @@ pub fn classify_process(process_name: &str) -> AppCategory {
         "windowsterminal", "powershell", "cmd", "gitkraken", "postman",
         "dbeaver", "ssms", "rstudio", "windsurf", "cursor",
         "zcode", "opencode",
+        // Basic/plain text editors count as work too — opening files in
+        // Notepad (the pet's own E3 open_file target) or a markdown editor is
+        // exactly the "正在写" foreground the deep-focus clock should track.
+        "notepad", "write", "typora", "obsidian", "marktext", "wps",
     ];
     let entertainment_apps = [
         "steam", "epicgames", "battle.net", "origin", "riotclientservices",
@@ -278,6 +282,11 @@ mod tests {
         assert_eq!(classify_process("code.exe"), AppCategory::Work);
         assert_eq!(classify_process("devenv.exe"), AppCategory::Work);
         assert_eq!(classify_process("WindowsTerminal.exe"), AppCategory::Work);
+        // Plain text editors are work too — the release user opens files with
+        // Notepad and expects the F12 focus clock to count it.
+        assert_eq!(classify_process("Notepad.exe"), AppCategory::Work);
+        assert_eq!(classify_process("Typora.exe"), AppCategory::Work);
+        assert_eq!(classify_process("Obsidian.exe"), AppCategory::Work);
     }
 
     #[test]

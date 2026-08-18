@@ -85,6 +85,10 @@ const ENVIRONMENT_KEYWORDS: &[&str] = &[
     "看看这个", "这个项目", "这个文件", "这段代码", "我在改", "我打开的", "现在的项目",
     "当前项目", "我在调试", "我在忙什么", "look at this", "what am i", "what i'm doing",
     "current project", "this project", "this file",
+    // Bare read imperatives. "查看/读取/看下" alone are observation intent —
+    // tool_choice=auto still decides; a recall phrasing like "看看我上次说过什么"
+    // arrives with memory bodies and the model abstains from tools itself.
+    "查看", "看下", "看看", "读一下", "读取", "帮我看", "帮我读", "read this", "read the file",
     // F2 edit requests must land in SystemObservation first: the model has to
     // READ the real file (and snapshot lock) before it can arm a patch block
     // (§3.6 — edit tools are never advertised; observe+patch is the loop).
@@ -681,6 +685,27 @@ mod tests {
         ] {
             let intent = plan(&brain(text, &calm_emotion(), None, &[], &empty_retrieval()));
             assert_eq!(intent.capability, CapabilityMode::SystemObservation, "for: {text}");
+        }
+    }
+
+    #[test]
+    fn test_bare_read_imperative_routes_observation() {
+        // Runtime finding 2026-08-18 (release, real user): "查看今天要交的
+        // 报告.md" had ZERO of the old keywords → capability=None → the model
+        // was never offered read_text_file and answered "我看不到你的文件".
+        for text in [
+            "查看今天要交的报告.md",
+            "看下这个文件",
+            "读一下 D:\\x\\note.txt",
+            "读取这个项目",
+            "read this file for me",
+        ] {
+            let intent = plan(&brain(text, &calm_emotion(), None, &[], &empty_retrieval()));
+            assert_eq!(
+                intent.capability,
+                CapabilityMode::SystemObservation,
+                "for: {text}"
+            );
         }
     }
 

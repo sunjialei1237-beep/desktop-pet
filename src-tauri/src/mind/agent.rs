@@ -56,6 +56,7 @@ pub async fn run_agent_loop(
     on_token: &mut impl FnMut(&str),
     recent_queries: &mut Vec<(String, Instant)>,
     fs_grants: &[crate::db::grants::FsGrant],
+    force_first_tool: bool,
 ) -> Result<AgentOutcome, String> {
     let kinds = tools::capability_to_tools(cap, cfg);
     let tool_defs = tools::tool_defs_for(&kinds);
@@ -74,10 +75,17 @@ pub async fn run_agent_loop(
 
     for _ in 0..MAX_TOOL_ROUNDS {
         rounds += 1;
-        let result = llm
-            .chat(messages, Some(0.8), Some(4096), Some(&tool_defs))
-            .await
-            .map_err(|e| format!("Agent LLM error: {:?}", e))?;
+        // U1 determinism: on the consent-followup rerun the FIRST round uses
+        // tool_choice="required", so "可以" immediately continues the original
+        // request instead of DeepSeek occasionally answering "把路径发给我吧".
+        let result = if force_first_tool && rounds == 1 {
+            llm.chat_required_tools(messages, Some(0.8), Some(4096), &tool_defs)
+                .await
+        } else {
+            llm.chat(messages, Some(0.8), Some(4096), Some(&tool_defs))
+                .await
+        }
+        .map_err(|e| format!("Agent LLM error: {:?}", e))?;
         total_tokens += result.prompt_tokens + result.completion_tokens;
 
         // No tool calls → the model produced the final answer directly.

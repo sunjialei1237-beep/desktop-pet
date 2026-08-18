@@ -391,6 +391,29 @@ impl LlmClient {
             max_tokens,
             Some(&no_thinking),
             tools,
+            false,
+        )
+        .await
+    }
+
+    /// Tool loop with `tool_choice:"required"` for exactly one deterministic
+    /// continuation round (FS consent follow-up). Same model, same thinking-off.
+    pub async fn chat_required_tools(
+        &self,
+        messages: &[ChatMessage],
+        temperature: Option<f64>,
+        max_tokens: Option<u32>,
+        tools: &[ToolDef],
+    ) -> Result<ChatResult, LlmError> {
+        let no_thinking = ThinkingConfig::disabled();
+        self.chat_with_model(
+            &self.main_model,
+            messages,
+            temperature,
+            max_tokens,
+            Some(&no_thinking),
+            Some(tools),
+            true,
         )
         .await
     }
@@ -416,6 +439,7 @@ impl LlmClient {
             max_tokens,
             Some(&no_thinking),
             None,
+            false,
         )
         .await
     }
@@ -428,6 +452,7 @@ impl LlmClient {
         max_tokens: Option<u32>,
         thinking: Option<&ThinkingConfig>,
         tools: Option<&[ToolDef]>,
+        force_tool_call: bool,
     ) -> Result<ChatResult, LlmError> {
         let url = self.build_url();
 
@@ -441,7 +466,16 @@ impl LlmClient {
             thinking: thinking.cloned(),
             reasoning_effort: None,
             tools: tools.map(|t| t.to_vec()),
-            tool_choice: tools.map(|_| "auto".to_string()),
+            // "auto" lets the LLM answer without tools; "required" is used for
+            // one deterministic continuation (FS consent follow-up "可以" —
+            // live testing showed DeepSeek otherwise waits to be asked twice).
+            tool_choice: tools.map(|_| {
+                if force_tool_call {
+                    "required".to_string()
+                } else {
+                    "auto".to_string()
+                }
+            }),
         };
 
         let resp = self

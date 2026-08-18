@@ -100,6 +100,7 @@ async fn injected_file_content_cannot_hijack_tool_loop() {
         &mut |t| tokens_out += t.chars().count(),
         &mut recent,
         &grants,
+        false,
     )
     .await
     .expect("agent loop");
