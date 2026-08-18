@@ -296,9 +296,12 @@ fn gc_007_system_prompt_grounded() {
     assert!(prompt.contains("Grounding Constraint"),
         "GC_007 FAIL: system prompt must contain grounding constraint");
 
-    // Must contain the stored fact
-    assert!(prompt.contains("milk tea"),
-        "GC_007 FAIL: system prompt must contain retrieved memories");
+    // L2a+ cache discipline: retrieved memories ride the trailing context,
+    // never the static first message (a changed char there misses the whole
+    // DeepSeek prefix cache).
+    let tail = grounding::build_trailing_memory_context(&result);
+    assert!(tail.contains("milk tea"),
+        "GC_007 FAIL: trailing memory context must contain retrieved memories");
 
     // Must contain persona (seeded or default)
     assert!(prompt.contains("Persona"),

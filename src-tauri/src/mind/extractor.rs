@@ -97,6 +97,14 @@ struct LlmExtraction {
 
 /// Extracts structured memory items from the user's message.
 /// `known_facts` is injected into the prompt for contradiction detection.
+///
+/// Cache discipline (L2a+): the system message is a fully STATIC template.
+/// The volatile bits — today's date (resolves relative dates like "明天" /
+/// "下周二" without hallucinating a training date) and the known-facts list —
+/// ride at the TOP of the user message instead. A static system message keeps
+/// the extractor's prefix-cache unit hit every turn; previously the
+/// known-facts list inside the system template changed whenever new facts
+/// landed, invalidating the whole request prefix.
 pub async fn extract(
     text: &str,
     known_facts: &str,
@@ -107,15 +115,19 @@ pub async fn extract(
     // a training-date (observed: "明天" → 2026-01-02, "下周二" → 2026-05-12).
     let now_local = chrono::Local::now();
     let weekday_cn = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-        [now_local.weekday().num_days_from_monday() as usize];    let today = format!("{}（{}）", now_local.format("%Y-%m-%d"), weekday_cn);
-    let system_prompt = EXTRACTOR_PROMPT
-        .replace("{known_facts}", known_facts)
-        .replace("{today}", &today);
+        [now_local.weekday().num_days_from_monday() as usize];
+    let today = format!("{}（{}）", now_local.format("%Y-%m-%d"), weekday_cn);
+
+    // Volatile context at the top of the USER message (system template static).
+    let user_text = format!(
+        "今天日期：{}\n\n已知事实（跳过重复、留意矛盾）：\n{}\n\n用户消息：\n{}",
+        today, known_facts, text
+    );
 
     let messages = || {
         vec![
-            ChatMessage::system(system_prompt.clone()),
-            ChatMessage::user(text),
+            ChatMessage::system(EXTRACTOR_PROMPT),
+            ChatMessage::user(user_text.clone()),
         ]
     };
 

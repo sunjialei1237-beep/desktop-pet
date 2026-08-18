@@ -44,6 +44,8 @@ interface DebugSnapshot {
     calls: number;
     prompt_tokens: number;
     completion_tokens: number;
+    cache_hit_tokens: number;
+    cache_miss_tokens: number;
   };
   llm_configured: boolean;
   continuous_work_secs: number;
@@ -396,6 +398,14 @@ export function DebugPanel({ anim, onClose, onQuit }: {
         <span className="debug-title">Cost (today)</span>
         <div className="debug-bar">
           <span>{snapshot.cost.calls} LLM calls | prompt {snapshot.cost.prompt_tokens} / completion {snapshot.cost.completion_tokens} tok ({snapshot.cost.date})</span>
+        </div>
+        <div className="debug-bar">
+          <span>
+            缓存命中 {snapshot.cost.cache_hit_tokens} / 未命中 {snapshot.cost.cache_miss_tokens} tok
+            {snapshot.cost.cache_hit_tokens + snapshot.cost.cache_miss_tokens > 0
+              ? ` (${((snapshot.cost.cache_hit_tokens / (snapshot.cost.cache_hit_tokens + snapshot.cost.cache_miss_tokens)) * 100).toFixed(1)}%)`
+              : " (无缓存数据)"}
+          </span>
         </div>
       </div>
 

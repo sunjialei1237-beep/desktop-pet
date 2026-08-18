@@ -147,8 +147,17 @@ pub fn retrieve(
         })
         .collect();
 
-    // Sort by score descending, take top-K.
-    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort by score descending, take top-K. Tie-break on id so a score that
+    // barely moved between turns (emotion drift 0.1 weight) cannot reshuffle
+    // the [Memories] block ordering — stable ordering keeps the trailing
+    // memory context byte-identical across turns where nothing changed,
+    // preserving DeepSeek prefix-cache hit units.
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.episode.id.cmp(&a.episode.id))
+    });
     scored.truncate(top_k);
 
     // retrieve() is a PURE READ: it does not reinforce. Reinforcement is a write

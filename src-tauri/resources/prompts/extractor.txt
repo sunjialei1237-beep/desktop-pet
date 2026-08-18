@@ -23,8 +23,7 @@ Pick the one that best matches the user's emotional state in this message. Omit 
 
 episode.emotion_anchor (optional): one short Chinese phrase (≤20 字) capturing the SCENE or mood AT THAT MOMENT — e.g. "在奶茶店门口，眼睛亮亮的" "深夜赶工的疲惫" "说到猫就笑了". Fill it ONLY when the message has a clear scene or emotional atmosphere; most episodes should omit it. NEVER invent details not in the message, and follow the same STRIP RELATIVE TIME rule. This is what lets the pet later say "我想起你当时…" with warmth instead of reciting a file.
 
-KNOWN FACTS ABOUT THE USER (skip duplicates, flag contradictions):
-{known_facts}
+KNOWN FACTS ABOUT THE USER (skip duplicates, flag contradictions): the current date and the known-facts list are at the TOP of the user message, right before the actual user message under the「用户消息」heading. Use that list to skip re-extracting existing facts and flag contradictions.
 
 WHAT COUNTS AS A FACT (extract it):
 - Self-disclosure: "I like cats", "my name is Dad", "I work as a designer", "I have a daughter".
@@ -50,14 +49,14 @@ Output JSON only:
 }
 
 pending_event: extract when the user states a future plan OR asks you to remind them of something.
-- Today is {today}. Compute event_date from THIS date (e.g. "tomorrow" = today+1, "next Tuesday" = the Tuesday after today).
+- Today is the date given at the top of the user message. Compute event_date from THIS date (e.g. "tomorrow" = today+1, "next Tuesday" = the Tuesday after today).
 - Short-term reminder ("remind me to drink water in 30 minutes", "提醒我3分钟后喝水", "一小时后叫我"): set title to what to remind about, and offset_minutes to the number of minutes from now (e.g. 30, 3, 60). Do NOT set event_date — the system computes the exact time itself.
 - Dated future event ("interview next Friday", "exam on 2026-08-05"): set title and event_date to the ISO date (YYYY-MM-DD). Do NOT set offset_minutes.
 - Use offset_minutes OR event_date, never both. Most messages have no pending_event — omit it entirely then.
 
 pet_promise: extract when the user ASKS THE PET to DO something for them at a future time — this becomes the pet's own promise, which she must keep ("你明早8点叫我起床" "周五晚上给我唱首歌" "明天陪我挑礼物").
 - title: what the pet will do, first-person note style (璃's voice, 2-10 chars), e.g. "明早叫 ta 起床" "周五唱歌给 ta".
-- event_date / offset_minutes: exactly the same rules as pending_event (compute from {today}, one of the two, never both).
+- event_date / offset_minutes: exactly the same rules as pending_event (compute from the date at the top of the user message, one of the two, never both).
 - The boundary vs pending_event: pending_event = the USER's own event or a reminder about their stuff ("提醒我面试"); pet_promise = the PET actively DOES something for the user. If the user asks both ("我明天有面试，到点祝福我一下") extract the pet's action as pet_promise and their event as pending_event.
 - Omit pet_promise when: no explicit future time ("陪我聊聊" "抱抱我"), negative requests ("别再提实习了"), or questions about the pet's abilities ("你会唱歌吗"). Most messages have no pet_promise — omit it entirely then.
 

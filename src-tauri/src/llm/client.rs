@@ -263,6 +263,11 @@ pub struct LlmCostStats {
     pub calls: u64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// Prefix-cache hit/miss input tokens (DeepSeek reports them per call; a
+    /// hit costs ~1/31 of a miss on v4-flash, so this is THE cost lever).
+    /// Absent when the provider omits the fields — both stay 0 then.
+    pub cache_hit_tokens: u64,
+    pub cache_miss_tokens: u64,
 }
 
 impl Default for LlmCostStats {
@@ -272,6 +277,8 @@ impl Default for LlmCostStats {
             calls: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 0,
         }
     }
 }
@@ -279,7 +286,13 @@ impl Default for LlmCostStats {
 impl LlmCostStats {
     /// Records one successful call's usage, resetting totals if the local day
     /// rolled over since the last record.
-    fn record(&mut self, prompt_tokens: u32, completion_tokens: u32) {
+    fn record(
+        &mut self,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        cache_hit: Option<u32>,
+        cache_miss: Option<u32>,
+    ) {
         let today = local_today();
         if self.date != today {
             *self = LlmCostStats::default();
@@ -287,6 +300,22 @@ impl LlmCostStats {
         self.calls += 1;
         self.prompt_tokens += prompt_tokens as u64;
         self.completion_tokens += completion_tokens as u64;
+        if let (Some(h), Some(m)) = (cache_hit, cache_miss) {
+            self.cache_hit_tokens += h as u64;
+            self.cache_miss_tokens += m as u64;
+        }
+    }
+
+    /// Today's prefix-cache hit rate over reported cache tokens, 0..=1.
+    /// 1.0 = every input token was a cache hit. None when no cache usage was
+    /// reported yet (provider omission or zero calls).
+    pub fn cache_hit_rate(&self) -> Option<f64> {
+        let total = self.cache_hit_tokens + self.cache_miss_tokens;
+        if total == 0 {
+            None
+        } else {
+            Some(self.cache_hit_tokens as f64 / total as f64)
+        }
     }
 
     /// Returns a snapshot, zeroed if the local day has rolled over (so an
@@ -349,10 +378,29 @@ impl LlmClient {
 
     /// Records one successful call's token usage into the shared daily cost
     /// stats (Architecture #8). Lock-poison safe: a failed lock only skips
-    /// accounting, never breaks the call.
+    /// accounting, never breaks the call. Also logs the per-call prefix-cache
+    /// split — cache discipline observability (a 31x price gap between a
+    /// cache hit and a miss on v4-flash makes this the #1 cost lever).
     fn track_usage(&self, result: &ChatResult) {
+        if let (Some(hit), Some(miss)) = (result.prompt_cache_hit_tokens, result.prompt_cache_miss_tokens) {
+            let total = hit + miss;
+            if total > 0 {
+                log::info!(
+                    "[llm-cache] hit={} miss={} rate={:.1}% (prompt {})",
+                    hit,
+                    miss,
+                    hit as f64 / total as f64 * 100.0,
+                    result.prompt_tokens
+                );
+            }
+        }
         if let Ok(mut stats) = self.cost.lock() {
-            stats.record(result.prompt_tokens, result.completion_tokens);
+            stats.record(
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.prompt_cache_hit_tokens,
+                result.prompt_cache_miss_tokens,
+            );
         }
     }
 
@@ -953,12 +1001,14 @@ mod tests {
     #[test]
     fn test_cost_record_accumulates() {
         let mut stats = LlmCostStats::default();
-        assert_eq!(stats.calls, 0);
-        stats.record(10, 5);
-        stats.record(20, 8);
+        stats.record(10, 5, Some(6), Some(4));
+        stats.record(20, 8, Some(15), Some(5));
         assert_eq!(stats.calls, 2);
         assert_eq!(stats.prompt_tokens, 30);
         assert_eq!(stats.completion_tokens, 13);
+        assert_eq!(stats.cache_hit_tokens, 21);
+        assert_eq!(stats.cache_miss_tokens, 9);
+        assert!((stats.cache_hit_rate().unwrap() - 0.7).abs() < 1e-9);
     }
 
     #[test]
@@ -969,11 +1019,15 @@ mod tests {
             calls: 99,
             prompt_tokens: 999,
             completion_tokens: 999,
+            cache_hit_tokens: 999,
+            cache_miss_tokens: 999,
         };
-        stats.record(10, 4);
+        stats.record(10, 4, Some(7), Some(3));
         assert_eq!(stats.calls, 1); // reset, then +1
         assert_eq!(stats.prompt_tokens, 10);
         assert_eq!(stats.completion_tokens, 4);
+        assert_eq!(stats.cache_hit_tokens, 7);
+        assert_eq!(stats.cache_miss_tokens, 3);
         assert_eq!(stats.date, local_today());
     }
 
@@ -984,10 +1038,18 @@ mod tests {
             calls: 99,
             prompt_tokens: 999,
             completion_tokens: 999,
+            cache_hit_tokens: 999,
+            cache_miss_tokens: 999,
         };
         let snap = stats.snapshot_today();
         assert_eq!(snap.calls, 0);
         assert_eq!(snap.prompt_tokens, 0);
         assert_eq!(snap.date, local_today());
+    }
+
+    #[test]
+    fn test_cost_cache_rate_none_without_usage() {
+        let stats = LlmCostStats::default();
+        assert!(stats.cache_hit_rate().is_none(), "no cache usage reported → no rate");
     }
 }

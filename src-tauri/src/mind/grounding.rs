@@ -11,18 +11,22 @@ use crate::mind::planner::Intent;
 /// Static personality template loaded at compile time.
 const SYSTEM_TEMPLATE: &str = include_str!("../../resources/prompts/system.txt");
 
-/// Builds the full system prompt that constrains the LLM to grounded memory.
+/// Builds the FIRST (system) message of a conversation request — the STATIC
+/// prefix. L2a+ cache discipline: this message must be byte-identical between
+/// consecutive turns, because DeepSeek's context cache only hits when a request
+/// fully matches a persisted "cache prefix unit" — one changed character in
+/// messages[0] invalidates the entire request prefix and bills it as a cache
+/// miss (31x price gap on v4-flash).
 ///
-/// Structure:
-///   1. Role / persona description (from persona_traits + relationship)
-///   2. Memory constraint instructions (the grounding guardrail)
-///   3. Emotion snapshot (how the pet feels right now)
-///   4. Intent from the Planner
-///   5. Retrieved memories (facts + episodes), each with confidence/source
-/// [Current time] section (Phase 6): injected so the LLM always knows the time
-/// without a tool round. "几点" is answered directly from the prompt; get_time
-/// stays as a runtime smoke test of the agent loop. Uses local time + the
-/// perception time-of-day bucket so it matches the rest of the system.
+/// Static here: identity template + static persona lines (traits / nickname /
+/// pet name / style roots) + the grounding guardrail. Everything that moves
+/// per turn — relationship numbers (closeness / days_known / conversation
+/// counts change every turn), milestone ledger, relationship review and the
+/// retrieved [Memories] block — is rendered by
+/// `build_trailing_memory_context` and injected AFTER the history by the budget
+/// allocators. A volatile tail may miss; the static head always hits.
+///
+/// Params are kept in the signature so the ~19 call sites stay unchanged.
 fn current_time_section() -> String {
     use chrono::Datelike;
     use crate::perception::time::{current_time_of_day, TimeOfDay};
@@ -50,30 +54,42 @@ pub fn build_system_prompt(
     _emotion: &EmotionState,
     _intent: &Intent,
 ) -> String {
-    // Soul v2 plan L2a: the STATIC system prompt — identity template + persona
-    // + grounding constraint + memories. Everything stable within a session,
-    // so the message prefix stays cache-friendly (DeepSeek prefix caching;
-    // the old layout had current_time in slot 2, invalidating the cache for
-    // everything after it every minute). The volatile per-turn directives
-    // (time / mood / intent) moved to `build_near_end_directive`, injected
-    // after the conversation history where recency attention is strongest
-    // (CCv2 post_history_instructions, @depth 0). Params are kept in the
-    // signature so the ~19 call sites stay unchanged.
     let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
 
-    // 1. Persona + relationship
-    sections.push(format_persona(retrieval));
+    // 1. Static persona lines (traits + onboarding profile). Relationship
+    // live numbers moved to the trailing context — they change every turn.
+    sections.push(format_persona_static(retrieval));
 
-    // 2. Grounding constraint
+    // 2. Grounding constraint (static)
     sections.push(MEMORY_CONSTRAINT.to_string());
 
-    // 3. Retrieved memories
+    sections.join("\n\n")
+}
+
+/// Trailing dynamic context (L2a+ cache discipline): relationship live numbers
+/// + milestone ledger + [Relationship] review + [Memories]. Rendered as ONE
+/// system message injected after the conversation history by the budget
+/// allocators (and before the near-end directive), so it never touches the
+/// static first-message prefix. Always non-empty: an empty retrieval still
+/// yields the explicit no-fabrication marker (hallucination root-cause fix —
+/// the model must be able to tell memory retrieval came up empty).
+pub fn build_trailing_memory_context(retrieval: &RetrievalResult) -> String {
+    let mut sections: Vec<String> = Vec::new();
+    if let Some(rel) = format_relationship(retrieval) {
+        sections.push(format!("[Relationship]\n{}", rel));
+    }
     let memories = format_memories(retrieval);
     if !memories.is_empty() {
         sections.push(memories);
     }
-
     sections.join("\n\n")
+}
+
+/// QA-mode trailing relationship snapshot (direct-answer route keeps identity
+/// but no [Memories]; the live relationship line still rides the tail so the
+/// first QA system message stays static too). None when no relationship row.
+pub fn build_qa_relationship_section(retrieval: &RetrievalResult) -> Option<String> {
+    format_relationship(retrieval).map(|rel| format!("[Relationship]\n{}", rel))
 }
 
 /// Near-end directive (Soul v2 plan L2a): current time + current mood (with
@@ -120,7 +136,7 @@ pub fn build_qa_system_prompt(
     // moved to `build_qa_near_end` (mirrors the main-path split).
     let mut sections = vec![SYSTEM_TEMPLATE.to_string()];
 
-    sections.push(format_persona(retrieval));
+    sections.push(format_persona_static(retrieval));
 
     sections.join("\n\n")
 }
@@ -150,10 +166,11 @@ say you are not sure rather than fabricating. Each memory below is annotated \
 with its confidence level and source date. Do not present information as \
 remembered unless it appears in the memories section below.";
 
-/// Formats the persona description from traits + relationship snapshot.
-fn format_persona(retrieval: &RetrievalResult) -> String {
+/// Formats the STATIC persona lines: traits + onboarding profile. Relationship
+/// live numbers are excluded (`format_relationship`) — they change every turn
+/// and would break the static first-message cache prefix.
+fn format_persona_static(retrieval: &RetrievalResult) -> String {
     let traits = &retrieval.persona_traits;
-    let relationship = &retrieval.relationship;
     let user_profile = &retrieval.user_profile;
     let mut lines = vec!["[Persona]".to_string()];
 
@@ -176,32 +193,6 @@ fn format_persona(retrieval: &RetrievalResult) -> String {
     if !adaptive_traits.is_empty() {
         lines.push(format!("Adaptive traits: {}", adaptive_traits.join(", ")));
     }
-
-    // Relationship snapshot. `trust` is a dead column (never written) —
-    // injecting "trust 0.0" next to a real closeness is a contradictory
-    // signal, so it stays hidden until something actually maintains it
-    // (宁缺勿假). `days_known` is backfilled at read time in retrieval.
-    if let Some(rel) = relationship {
-        let trust_part = if rel.trust > 0.0 {
-            format!(", trust {:.1}/100", rel.trust)
-        } else {
-            String::new()
-        };
-        // days_known rides with the first-met DATE so she never has to do
-        // date arithmetic herself — asked "我们认识多久了" she mis-derived
-        // "7月18号" from a bare day count (true anchor: 7月16号).
-        let known_part = match &retrieval.first_met {
-            Some(date) => format!("known each other since {} ({} days)", date, rel.days_known),
-            None => format!("known {} days", rel.days_known),
-        };
-        lines.push(format!(
-            "Relationship: closeness {}/100{}, {}, {} conversations",
-            rel.closeness as i32,
-            trust_part,
-            known_part,
-            rel.total_conversations,
-       ));
-   }
 
     // Onboarding profile (user-chosen at first launch): nickname, pet name,
     // personality, relationship style. Primary identity signals for the LLM.
@@ -227,6 +218,39 @@ fn format_persona(retrieval: &RetrievalResult) -> String {
     }
 
     lines.join("\n")
+}
+
+/// Formats the VOLATILE relationship snapshot line(s) — closeness / trust /
+/// days_known / conversation totals all change every turn, so this rides the
+/// trailing context (never the static first-message prefix).
+pub fn format_relationship(retrieval: &RetrievalResult) -> Option<String> {
+    let relationship = retrieval.relationship.as_ref()?;
+    // `trust` is a dead column (never written) — injecting "trust 0.0" next to
+    // a real closeness is a contradictory signal, so it stays hidden until
+    // something actually maintains it (宁缺勿假). `days_known` is backfilled
+    // at read time in retrieval.
+    let trust_part = if relationship.trust > 0.0 {
+        format!(", trust {:.1}/100", relationship.trust)
+    } else {
+        String::new()
+    };
+    // days_known rides with the first-met DATE so she never has to do
+    // date arithmetic herself — asked "我们认识多久了" she mis-derived
+    // "7月18号" from a bare day count (true anchor: 7月16号).
+    let known_part = match &retrieval.first_met {
+        Some(date) => format!(
+            "known each other since {} ({} days)",
+            date, relationship.days_known
+        ),
+        None => format!("known {} days", relationship.days_known),
+    };
+    Some(format!(
+        "Relationship: closeness {}/100{}, {}, {} conversations",
+        relationship.closeness as i32,
+        trust_part,
+        known_part,
+        relationship.total_conversations,
+    ))
 }
 
 /// Formats the emotion state as a concise snapshot.
@@ -708,10 +732,10 @@ mod tests {
    #[test]
     fn test_relationship_review_injected() {
         // A populated relationship_review must surface as a [Relationship]
-        // block in the system prompt (always-on relationship context).
+        // block in the trailing memory context (always-on relationship context).
         let mut r = empty_retrieval();
         r.relationship_review = Some("你们最近聊到了实习的事，相处轻松".to_string());
-        let prompt = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
+        let prompt = build_trailing_memory_context(&r);
         assert!(
             prompt.contains("[Relationship]\n你们最近聊到了实习的事，相处轻松"),
             "relationship review should be injected as a [Relationship] block"
@@ -726,6 +750,37 @@ mod tests {
     }
 
     #[test]
+    fn test_system_prompt_is_static_prefix() {
+        // L2a+ cache discipline: the first system message must contain NO
+        // per-turn volatile content — memories, relationship numbers, reviews.
+        // Only the template + static persona + grounding guardrail.
+        let mut r = retrieval_with_data();
+        let prompt = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
+        assert!(!prompt.contains("milk tea"), "memories must not be in the static first message");
+        assert!(!prompt.contains("hotpot"), "memories must not be in the static first message");
+        // NB: system.txt 正文会引用 [Memories]/[Milestones] 标签名，所以这里
+        // 不用标签名断言，而用记忆内容（milk tea/hotpot/closeness）。
+        assert!(!prompt.contains("closeness"), "static system is relationship-number-free");
+        assert!(prompt.contains("gentle"), "static persona trait stays in the head");
+        // And the trailing context DOES carry them (build_system_prompt alone
+        // must stay static; allocate_and_compress appends the tail).
+        let tail = build_trailing_memory_context(&r);
+        assert!(tail.contains("milk tea"));
+        assert!(tail.contains("hotpot"));
+        assert!(tail.contains("closeness"));
+    }
+
+    #[test]
+    fn test_trailing_context_carries_relationship_and_memories() {
+        let retrieval = retrieval_with_data();
+        let tail = build_trailing_memory_context(&retrieval);
+        assert!(tail.contains("milk tea"));
+        assert!(tail.contains("hotpot"));
+        assert!(tail.contains("closeness 35"));
+        assert!(tail.contains("[Persona]") == false, "persona stays in the static head");
+    }
+
+    #[test]
     fn test_system_prompt_contains_chinese_grounding_ban() {
         // The anti-fabrication rule must also reach Chinese generation (the pet
         // replies in Chinese), so the ban is bilingual. Guards against the
@@ -737,10 +792,13 @@ mod tests {
     #[test]
     fn test_system_prompt_contains_memories() {
         let retrieval = retrieval_with_data();
+        // Static head keeps only the template + persona wording...
         let prompt = build_system_prompt(&retrieval, &EmotionState::default(), &Intent::default());
-        assert!(prompt.contains("milk tea"));
-        assert!(prompt.contains("hotpot"));
-        assert!(prompt.contains("gentle"));
+        assert!(prompt.contains("gentle"), "static template keeps persona wording");
+        // ...while the trailing context carries the memory ledger.
+        let tail = build_trailing_memory_context(&retrieval);
+        assert!(tail.contains("milk tea"));
+        assert!(tail.contains("hotpot"));
     }
 
     #[test]
@@ -898,10 +956,11 @@ mod tests {
     #[test]
     fn test_milestones_split_ledger() {
         // Hermes-inspired relationship ledger: landmark episodes surface in
-        // [Milestones] and are NOT repeated under [Memories].
+        // [Milestones] and are NOT repeated under [Memories] — in the
+        // trailing memory context.
         let mut retrieval = retrieval_with_data();
         retrieval.episodes[0].episode.is_landmark = true;
-        let prompt = build_system_prompt(&retrieval, &EmotionState::default(), &Intent::default());
+        let prompt = build_trailing_memory_context(&retrieval);
         assert!(prompt.contains("[Milestones]"), "landmark must surface in [Milestones]");
         assert!(prompt.contains("hotpot"), "milestone summary present");
         // rfind: system.txt 正文也提到这两个标签，真正的区块在 prompt 末尾。
@@ -916,15 +975,15 @@ mod tests {
     #[test]
     fn test_empty_memories_section() {
         let retrieval = empty_retrieval();
-        let prompt = build_system_prompt(&retrieval, &EmotionState::default(), &Intent::default());
+        let tail = build_trailing_memory_context(&retrieval);
         assert!(
-            !prompt.contains("- [Fact]"),
+            !tail.contains("- [Fact]"),
             "should list no facts when empty"
         );
-        // Empty memory now renders an explicit marker (not omitted) so the
+        // Empty memory still renders an explicit marker (not omitted) so the
         // model can't fabricate "你上次说…" threads — see format_memories.
         assert!(
-            prompt.contains("暂无相关记忆"),
+            tail.contains("暂无相关记忆"),
             "empty memory must show the explicit no-fabrication marker"
         );
     }
@@ -933,6 +992,7 @@ mod tests {
     fn dead_trust_column_hidden_alive_trust_injected() {
         // Soul v2 plan §3.3: trust is a dead column — "trust 0.0" next to a
         // real closeness is a contradictory relationship signal, hide it.
+        // The relationship line rides the trailing context (cache discipline).
         let rel = |trust: f64| Relationship {
             closeness: 60.0,
             trust,
@@ -948,17 +1008,20 @@ mod tests {
         r.relationship = Some(rel(0.0));
         let p = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
         assert!(!p.contains("trust"), "dead trust column must stay hidden");
-        assert!(p.contains("known 30 days"));
+        assert!(p.contains("known 30 days") == false, "relationship numbers must live in the trailing context");
+        let tail = build_trailing_memory_context(&r);
+        assert!(tail.contains("known 30 days"), "relationship line rides the tail");
 
         r.relationship = Some(rel(40.0));
-        let p2 = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
-        assert!(p2.contains("trust 40"), "maintained trust stays injected");
+        let tail2 = build_trailing_memory_context(&r);
+        assert!(tail2.contains("trust 40"), "maintained trust stays injected");
     }
 
     #[test]
     fn first_met_date_rides_with_days_known() {
         // She mis-derived "7月18号" when asked 我们认识多久了 — the fix pairs
         // the day count with the anchor date so no date arithmetic is needed.
+        // The relationship line rides the trailing context (cache discipline).
         let rel = || Relationship {
             closeness: 100.0,
             trust: 0.0,
@@ -973,11 +1036,11 @@ mod tests {
         let mut r = empty_retrieval();
         r.relationship = Some(rel());
         r.first_met = Some("2026-07-16".to_string());
-        let p = build_system_prompt(&r, &EmotionState::default(), &Intent::default());
+        let tail = build_trailing_memory_context(&r);
         assert!(
-            p.contains("known each other since 2026-07-16 (30 days)"),
+            tail.contains("known each other since 2026-07-16 (30 days)"),
             "date must ride with the day count, got: {}",
-            p.lines().find(|l| l.starts_with("Relationship:")).unwrap_or("")
+            tail.lines().find(|l| l.contains("Relationship:")).unwrap_or("")
         );
     }
 

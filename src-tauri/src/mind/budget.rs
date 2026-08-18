@@ -128,6 +128,19 @@ pub fn allocate_and_compress(
     let conv_messages = compress_conversation(working_memory, budget::CONVERSATION);
     messages.extend(conv_messages);
 
+    // 2.5 L2a+ cache discipline: the volatile context — relationship live
+    // numbers, milestone ledger, [Relationship] review and [Memories] — rides
+    // the TAIL (after the history, before the near-end directive), so
+    // messages[0] stays a fully static prefix. DeepSeek's context cache only
+    // hits when a request fully matches a persisted prefix unit; one changed
+    // character in the first message bills the whole input as a cache miss
+    // (31x price gap on v4-flash). The memory block is always present: an
+    // empty retrieval yields the explicit no-fabrication marker (see
+    // format_memories), which is itself a static string across empty turns.
+    messages.push(ChatMessage::system(
+        crate::mind::grounding::build_trailing_memory_context(&retrieval),
+    ));
+
     // 3. Soul v2 plan L2a: near-end directive (time + mood + intent) as a
     // trailing system message after the history — the recency-weighted
     // steering slot (CCv2 post_history_instructions). All callers of this
@@ -160,6 +173,13 @@ pub fn allocate_qa(
 
     let conv_messages = compress_conversation(working_memory, budget::CONVERSATION);
     messages.extend(conv_messages);
+
+    // L2a+ cache discipline: QA keeps identity but no [Memories]; the live
+    // relationship line still rides the tail so the first system message
+    // stays a static prefix (DeepSeek prefix-cache hit rule).
+    if let Some(section) = crate::mind::grounding::build_qa_relationship_section(&retrieval) {
+        messages.push(ChatMessage::system(section));
+    }
 
     // Soul v2 L2a: QA near-end directive (direct-answer + time + mood).
     if is_near_end_enabled() {
@@ -409,13 +429,19 @@ mod tests {
         ];
         let messages = allocate_and_compress(&retrieval, &wm, &EmotionState::default(), &Intent::default());
 
-        // Soul v2 L2a: system + 2 conversation messages + trailing near-end
-        // directive (time/mood/intent) — 4 messages.
-        assert_eq!(messages.len(), 4);
+        // L2a+: static system + 2 conversation messages + trailing memory
+        // context (empty-retrieval marker) + near-end directive = 5 messages.
+        assert_eq!(messages.len(), 5);
         assert_eq!(messages[0].role, "system");
         assert!(messages[0].content_str().contains("[Grounding Constraint]"));
-        assert_eq!(messages[3].role, "system", "trailing near-end directive");
-        assert!(messages[3].content_str().contains("[Current time]"));
+        assert!(
+            !messages[0].content_str().contains("暂无相关记忆"),
+            "static head is memory-free"
+        );
+        assert_eq!(messages[3].role, "system", "trailing memory context");
+        assert!(messages[3].content_str().contains("[Memories]"));
+        assert_eq!(messages[4].role, "system", "trailing near-end directive");
+        assert!(messages[4].content_str().contains("[Current time]"));
     }
 
     #[test]
@@ -547,16 +573,20 @@ mod tests {
         );
 
         let system = messages[0].content_str();
-        assert!(system.contains("milk tea"));
-        assert!(system.contains("cheerful"));
-        assert!(system.contains("closeness 20"));
+        // L2a+ cache discipline: memories / relationship numbers ride the
+        // trailing context; the static head only keeps persona traits.
+        assert!(!system.contains("milk tea"), "memories must not be in the static head");
+        assert!(system.contains("cheerful"), "static persona trait stays in the head");
+        let tail = messages[1].content_str();
+        assert!(tail.contains("milk tea"));
+        assert!(tail.contains("closeness 20"));
     }
 
     #[test]
     fn test_near_end_switch_restores_v1_layout() {
         let _flag = flag_lock().lock().unwrap_or_else(|e| e.into_inner());
-        // Soul v2 L2a rollback path: switch OFF -> exact v1 layout (single
-        // system message, no trailing directive).
+        // L2a+ rollback path: switch OFF -> static system + trailing memory
+        // context only (no near-end directive).
         set_near_end_enabled(false);
         let messages = allocate_and_compress(
             &empty_retrieval(),
@@ -564,7 +594,7 @@ mod tests {
             &EmotionState::default(),
             &Intent::default(),
         );
-        assert_eq!(messages.len(), 1, "v1 layout: system only, no trailing directive");
+        assert_eq!(messages.len(), 2, "off: static system + trailing memory context");
         set_near_end_enabled(true);
         let messages = allocate_and_compress(
             &empty_retrieval(),
@@ -572,8 +602,8 @@ mod tests {
             &EmotionState::default(),
             &Intent::default(),
         );
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1].role, "system");
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].role, "system");
     }
 
     #[test]
