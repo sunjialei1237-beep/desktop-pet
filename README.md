@@ -64,13 +64,16 @@
 
 ## ⬇️ 下载安装（普通用户，无需任何开发环境）
 
-> ⚠️ 当前状态：早期开发中（v0.1）。安装包通过 **GitHub Releases** 发布，点击下方按钮直达最新版下载页。
+> ⚠️ 当前状态：早期开发中（v0.1）。点击下方按钮，浏览器会直接跳转到 GitHub 发布页（下载页面）。
 
 <div align="center">
 
-### [⬇️ 下载最新版 Liri](https://github.com/sunjialei1237-beep/desktop-pet/releases/latest)
+[![下载 Windows 版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88-v0.1.0-9d7ee0?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/sunjialei1237-beep/desktop-pet/releases/latest)
 
-`Liri_0.1.0_x64-setup.exe`（一键安装，含桌面快捷方式与卸载器）· `Liri-portable-x64` （免安装便携版）
+也可以点击下面的直链**直接开始下载**：
+
+[⬇️ Liri_0.1.0_x64-setup.exe — 一键安装（7.7 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.0/Liri_0.1.0_x64-setup.exe) ｜
+[⬇️ Liri-0.1.0-x64-portable.zip — 免安装（9.7 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.0/Liri-0.1.0-x64-portable.zip)
 
 </div>
 
