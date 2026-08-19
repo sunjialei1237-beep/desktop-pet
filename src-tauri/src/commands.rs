@@ -1141,6 +1141,78 @@ pub async fn update_llm_config(
     Ok(())
 }
 
+/// First-launch setup wizard state (installer UX): whether the API key is
+/// configured, whether the wizard has been seen (skipped or completed), and
+/// whether the local BGE-M3 memory-model files are present — plus the LLM
+/// defaults the wizard should prefill. The wizard auto-opens on first launch
+/// until the user completes or skips it (persisted in app_config KV).
+#[derive(Debug, Serialize)]
+pub struct SetupState {
+    pub api_key_set: bool,
+    pub wizard_done: bool,
+    pub embedding_files_present: bool,
+    pub base_url: String,
+    pub main_model: String,
+    pub reflection_model: String,
+}
+
+#[tauri::command]
+pub async fn get_setup_state(
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+) -> Result<SetupState, String> {
+    let wizard_done = db
+        .with_conn(|conn| db_onboarding::get(conn, "setup_wizard_done"))
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    Ok(SetupState {
+        api_key_set: !state.config.llm.api_key.is_empty(),
+        wizard_done,
+        embedding_files_present: state.embedding.files_present(),
+        base_url: state.config.llm.base_url.clone(),
+        main_model: state.config.llm.main_model.clone(),
+        reflection_model: state.config.llm.reflection_model.clone(),
+    })
+}
+
+/// Marks the first-launch setup wizard as seen (skipped or completed), so it
+/// never re-opens automatically on later launches.
+#[tauri::command]
+pub async fn set_setup_wizard_done(db: State<'_, DbState>) -> Result<(), String> {
+    db.with_conn(|conn| db_onboarding::save(conn, "setup_wizard_done", "true"))
+}
+
+/// Cheap connectivity check for the setup wizard: sends one minimal chat
+/// completion with the configured main model and returns the model's reply
+/// text (or a friendly error for invalid keys / unreachable endpoints).
+#[tauri::command]
+pub async fn test_llm_connection(state: State<'_, AppState>) -> Result<String, String> {
+    // NOTE: bind the cloned Option to its own `let` so the MutexGuard drops
+    // before the `.await` below (same pattern as welcome_back_bubble).
+    let llm = state
+        .llm
+        .lock()
+        .map_err(|e| format!("LLM lock error: {}", e))?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "还没有可用的 API Key，请先填入并保存。".to_string())?;
+    let result = llm
+        .chat(
+            &[ChatMessage::user("请只回复四个字：连接成功")],
+            Some(0.0),
+            Some(32),
+            None,
+        )
+        .await
+        .map_err(|e| format!("连接失败：{}", e))?;
+    if result.content.trim().is_empty() {
+        return Err("连接测试没有收到回复（模型返回了空内容），请检查模型名称。".to_string());
+    }
+    Ok(result.content.trim().to_string())
+}
+
 /// Current [tools] switches (U5 Settings page).
 #[tauri::command]
 pub async fn get_tools_config(

@@ -1026,3 +1026,176 @@ html, body, #root {
   font-size: 11px;
   cursor: pointer;
 }
+
+/* -- 首次启动配置向导（SetupWizard，安装包 UX）-- */
+.setup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(30, 20, 50, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 120;
+  padding: 18px;
+}
+
+.setup-panel {
+  background: rgba(255, 255, 255, 0.99);
+  border-radius: 20px;
+  padding: 28px 26px 24px;
+  width: 100%;
+  max-width: 356px;
+  max-height: 100%;
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(40, 20, 80, 0.35);
+  font-family: inherit;
+}
+
+.setup-steps {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 22px;
+}
+
+.setup-step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #e4dcf5;
+  transition: background 0.25s;
+}
+
+.setup-step-dot.on {
+  background: #9d7ee0;
+}
+
+.setup-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.setup-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #2d2438;
+  margin: 0 0 6px;
+}
+
+.setup-sub {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #6b5f7d;
+  margin: 0 0 14px;
+}
+
+.setup-list {
+  margin: 4px 0 12px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 2;
+  color: #45394f;
+}
+
+.setup-hint {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #988baa;
+  margin: 6px 0 14px;
+}
+
+.setup-label {
+  display: block;
+  font-size: 12px;
+  color: #888;
+  margin: 12px 0 4px;
+}
+
+.setup-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #333;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.setup-input:focus {
+  border-color: #9d7ee0;
+}
+
+.setup-link {
+  border: none;
+  background: none;
+  color: #9d7ee0;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 6px 0 0;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.setup-primary {
+  width: 100%;
+  margin-top: 18px;
+  padding: 12px;
+  border: none;
+  border-radius: 12px;
+  background: #9d7ee0;
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+}
+
+.setup-primary:hover {
+  background: #8a6ed0;
+}
+
+.setup-primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.setup-ghost {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: #988baa;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+}
+
+.setup-ghost:hover {
+  color: #6b5f7d;
+  background: #f4f0fa;
+}
+
+.setup-ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.setup-ok {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: #2e7d32;
+}
+
+.setup-err {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #b3402f;
+  word-break: break-all;
+}

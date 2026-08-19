@@ -62,7 +62,29 @@
 
 ---
 
-## 🚀 快速开始
+## ⬇️ 下载安装（普通用户，无需任何开发环境）
+
+> ⚠️ 当前状态：早期开发中（v0.1）。安装包通过 **GitHub Releases** 发布，点击下方按钮直达最新版下载页。
+
+<div align="center">
+
+### [⬇️ 下载最新版 Liri](https://github.com/sunjialei1237-beep/desktop-pet/releases/latest)
+
+`Liri_0.1.0_x64-setup.exe`（一键安装，含桌面快捷方式与卸载器）· `Liri-portable-x64` （免安装便携版）
+
+</div>
+
+**三步开始使用：**
+
+1. **下载并安装**：双击 `setup.exe`，一路「下一步」即可（无需管理员权限）。
+2. **配置 API Key**：首次启动会自动弹出配置向导 —— 粘贴你的 DeepSeek API Key（[免费获取](https://platform.deepseek.com/)），点「验证并保存」即可开口聊天。也支持任意 OpenAI 兼容服务（OpenAI / Ollama 等，改 Base URL 即可）。
+3. **（可选）下载记忆模型**：在向导中选择「立即下载」（约 570MB，本地 BGE-M3，一次下载永久使用）。下载后她才能真正跨会话"记住你"；跳过也能正常聊天，只是记性差一些。之后随时可在 **右键 → 模型与设置** 里补下载。
+
+> 💡 所有数据（对话记忆、向量、模型文件）都保存在你自己的电脑上（`%APPDATA%\DesktopPet\`），不上传任何第三方。
+
+---
+
+## 🚀 从源码运行（开发者）
 
 ### 前置要求
 - **Windows 10/11**（一期；macOS / Linux 待后续）

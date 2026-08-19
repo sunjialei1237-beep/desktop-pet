@@ -14,9 +14,9 @@ main_model = "deepseek-v4-pro"
 reflection_model = "deepseek-v4-flash"
 
 [embedding]
-# Directory for BGE-M3 ONNX weights (~2.2GB).
-# Leave empty to be prompted on first run.
-# Recommended: a non-system drive, e.g. "D:\models\bge-m3"
+# Directory for BGE-M3 ONNX weights (int8 quantized set, ~570MB).
+# Leave empty to use the default location under the app data dir
+# (first run downloads it via the setup wizard).
 model_dir = ""
 model_name = "bge-m3"
 

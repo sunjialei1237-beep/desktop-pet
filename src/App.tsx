@@ -6,6 +6,7 @@ import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { SpineCanvas } from "./SpineCanvas";
 import { SettingsPanel } from "./SettingsPanel";
+import { SetupWizard } from "./SetupWizard";
 import { ContextMenu } from "./ContextMenu";
 import { AnimationFSM, BehaviorState } from "./animation/fsm";
 import { pickNextBehavior } from "./animation/microBehavior";
@@ -48,6 +49,16 @@ interface EditApplyOutcome {
   status: string; // saved | declined | failed | undone
   message: string;
   path: string | null;
+}
+
+// 首次启动配置向导后端快照（commands::get_setup_state）。
+interface SetupState {
+  api_key_set: boolean;
+  wizard_done: boolean;
+  embedding_files_present: boolean;
+  base_url: string;
+  main_model: string;
+  reflection_model: string;
 }
 
 // 首次见面访谈问题（顺序即提问顺序）。答案存入 app_config，注入 system prompt 的 [Persona]。
@@ -106,6 +117,23 @@ const SLEEP_AFTER_IDLE_MS = 10 * 60 * 1000;
   const [isThinking, setIsThinking] = useState(false);
   const [moodLabel, setMoodLabel] = useState("平静");
   const [showSettings, setShowSettings] = useState(false);
+  // First-launch setup wizard (installer UX): auto-opens when no API key is
+  // configured and the wizard hasn't been dismissed yet. Mirror of the
+  // onboardingActiveRef guard: while open, every other bubble / interview /
+  // context menu is suppressed so the wizard owns the first moment.
+  const [setupOpen, setSetupOpen] = useState(false);
+  const setupOpenRef = useRef(false);
+  // 向导关闭时置位；下方的 effect 看到 setupOpen 变 false 后补跑 persona 访谈。
+  const setupClosedRef = useRef(false);
+  const openSetupWizard = useCallback(() => {
+    setupOpenRef.current = true;
+    setSetupOpen(true);
+  }, []);
+  const closeSetupWizard = useCallback(() => {
+    setupOpenRef.current = false;
+    setupClosedRef.current = true;
+    setSetupOpen(false);
+  }, []);
  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 const [awayMode, setAwayMode] = useState(false);
   const [onboarding, setOnboarding] = useState<{
@@ -511,7 +539,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
    listen<string>("bubble-show", (event) => {
       // 访谈进行中：只允许访谈气泡，忽略后端 welcome 等其它气泡以免覆盖当前问题。
-      if (onboardingActiveRef.current) return;
+      if (onboardingActiveRef.current || setupOpenRef.current) return;
       showBubble(event.payload, 8000, "bubble-calm");
    }).then((un) => { if (!cancelled) unlisteners.push(un); else un(); });
 
@@ -538,7 +566,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // memory-grounded welcome via the LLM (falls back to a rule line backend-side).
     // Suppressed during the onboarding interview and while the pet is resting.
     listen<{ away_secs: number }>("welcome-back", (event) => {
-      if (onboardingActiveRef.current) return;
+      if (onboardingActiveRef.current || setupOpenRef.current) return;
       if (awayMode) return;
       invoke<string | null>("welcome_back_bubble", { awaySecs: event.payload.away_secs })
         .then((reply) => {
@@ -553,7 +581,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // memory-grounded LLM path (falls back to a rule line backend-side).
     // Suppressed during onboarding / away, like welcome-back.
     listen<{ loneliness: number }>("lonely-nudge", () => {
-      if (onboardingActiveRef.current) return;
+      if (onboardingActiveRef.current || setupOpenRef.current) return;
       if (awayMode) return;
       // She's asleep — don't wake her to say "想你了". Mirrors the "go to bed"
       // nudge guard: a sleepy 璃 stays sleepy (Architecture #12 silence).
@@ -570,7 +598,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // lonely-nudge guard set (onboarding / away / sleeping). #12: a sleeping
     // 璃 isn't woken to say 早安.
     listen<{ kind: string }>("ritual-bubble", (event) => {
-      if (onboardingActiveRef.current) return;
+      if (onboardingActiveRef.current || setupOpenRef.current) return;
       if (awayMode) return;
       if (fsmRef.current?.state === BehaviorState.Sleeping) return;
       invoke<string | null>("ritual_bubble", { kind: event.payload.kind })
@@ -584,7 +612,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       if (event.payload.status === "resumed") {
         // 与其它问候监听器同一套守卫（onboarding / away / sleeping）：重启
         // 问候不得覆盖访谈第一问，也不打扰睡着的璃（单问候原则 2026-08-15/17）。
-        if (onboardingActiveRef.current) return;
+        if (onboardingActiveRef.current || setupOpenRef.current) return;
         if (awayMode) return;
         if (fsmRef.current?.state === BehaviorState.Sleeping) return;
         // Diversified local greeting pool (zero LLM, cost control — replaces
@@ -732,16 +760,42 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     })();
 }, []);
 
-  // 首次见面访谈：启动时查后端 needs_onboarding，未完成则开始访谈。
+  // 首次启动配置向导（安装包 UX）：未配置 API Key 且向导未被跳过时，先打开
+  // 向导（欢迎 → API Key 验证 → 记忆模型 → 完成）；向导打开期间不启动
+  // persona 访谈、不冒任何其它气泡（与 onboardingActiveRef 同一套守卫）。
   useEffect(() => {
     (async () => {
+      try {
+        const s = await invoke<SetupState>("get_setup_state");
+        if (!s.api_key_set && !s.wizard_done) {
+          openSetupWizard();
+          return;
+        }
+      } catch (e) {
+        console.warn("setup wizard check", e);
+      }
+      // 首次见面访谈：启动时查后端 needs_onboarding，未完成则开始访谈。
       try {
         if (await invoke<boolean>("needs_onboarding")) startOnboarding();
       } catch (e) {
         console.warn("onboarding check", e);
       }
     })();
-  }, [startOnboarding]);
+  }, [startOnboarding, openSetupWizard]);
+
+  // 向导关闭（完成或跳过）后：persona 首次访谈在向导打开期间被让位，
+  // 若仍未完成则在这里顺次补启动，避免"下次重启才弹"的割裂感。
+  useEffect(() => {
+    if (!setupClosedRef.current || setupOpen) return;
+    setupClosedRef.current = false;
+    (async () => {
+      try {
+        if (await invoke<boolean>("needs_onboarding")) startOnboarding();
+      } catch (e) {
+        console.warn("onboarding check after wizard", e);
+      }
+    })();
+  }, [setupOpen, startOnboarding]);
 
   // Soul layer: on startup, trigger reflection if due (>20h) then surface
   // any pending internal thoughts as a bubble. Skipped during onboarding
@@ -766,7 +820,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
           // (reflections regenerate; spam is worse than silence — Arch #12).
           setTimeout(() => {
             const tryShow = (attempt: number) => {
-              if (onboardingActiveRef.current) return;
+              if (onboardingActiveRef.current || setupOpenRef.current) return;
               const busy =
                 bubbleVisibleRef.current ||
                 Date.now() - lastBubbleShownAtRef.current < 45_000;
@@ -978,7 +1032,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       const canvas = canvasRectRef.current;
       const mb = modelBoundsRef.current;
       // Force-capture: never ignore when the user needs to interact with the whole window.
-      const forceCapture = inputVisible || showSettings || isBeingDragged;
+      const forceCapture = inputVisible || showSettings || setupOpen || isBeingDragged;
       // Geometry for the diagnostics snapshot (computed in every branch so the
       // Debug Panel sees what the listener sees, even when forceCapture / null
       // geometry short-circuit before the rect math).
@@ -1115,7 +1169,7 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       unlistenMoved?.();
       if (cursorWatchdog) clearTimeout(cursorWatchdog);
     };
-  }, [applyIgnore, inputVisible, showSettings, isBeingDragged]);
+  }, [applyIgnore, inputVisible, showSettings, setupOpen, isBeingDragged]);
 
   // P12: Physics + circadian loop (Body layer, independent of LLM)
   useEffect(() => {
@@ -1697,6 +1751,7 @@ const handleBodyClick = useCallback(() => {
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    if (setupOpenRef.current) return;
     sound.play("menu");
     setContextMenu({ x: e.clientX, y: e.clientY });
   }, []);
@@ -1950,6 +2005,8 @@ const handleBodyClick = useCallback(() => {
       )}
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+
+      {setupOpen && <SetupWizard onClose={closeSetupWizard} />}
     </div>
   );
 }
