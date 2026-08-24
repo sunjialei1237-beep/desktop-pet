@@ -16,14 +16,16 @@ pub enum PolicyDecision {
 }
 
 /// Extensions `open_file` may hand to the shell. Everything immediately
-/// executable by association (.bat/.cmd/.vbs/.exe/.msi/.lnk/.ps1) and
-/// macro-capable Office formats (.docm/.xlsm) is absent BY DESIGN — the
-/// association is the attack surface (plan §3.5 FS-A2).
+/// executable by association (.bat/.cmd/.vbs/.exe/.msi/.lnk/.ps1), the
+/// macro-capable Office formats (.docm/.xlsm), AND the legacy OLE macro
+/// carriers (.doc/.xls/.ppt — Word 97-2003 VBA travels in these) are absent
+/// BY DESIGN — the association is the attack surface (plan §3.5 FS-A2).
+/// Modern OOXML (.docx/.xlsx/.pptx) cannot carry auto-running legacy macros.
 const LAUNCHABLE_EXTENSIONS: &[&str] = &[
     // text / config / notes
     "txt", "md", "markdown", "rtf", "log", "csv", "json", "toml", "yaml", "yml", "ini", "conf",
-    // documents / images
-    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    // documents / images (OOXML only — legacy .doc/.xls/.ppt are macro carriers)
+    "pdf", "docx", "xlsx", "pptx",
     "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
     // audio / video
     "mp3", "wav", "m4a", "flac", "mp4", "mov", "mkv", "avi",
@@ -99,6 +101,11 @@ pub fn check(kind: super::ToolKind, args: &Value, cfg: &ToolsConfig) -> PolicyDe
                 Ok(c) => c,
                 Err(_) => return PolicyDecision::Deny("path_not_found"),
             };
+            // UNC/network targets stay blocked here too (mirrors path.rs
+            // resolve()): opening a network file is still an outbound access.
+            if canonical.to_string_lossy().starts_with("\\\\") {
+                return PolicyDecision::Deny("unc_blocked");
+            }
             if !canonical.is_file() {
                 return PolicyDecision::Deny("not_a_file");
             }
@@ -363,7 +370,11 @@ mod tests {
                 ".{ext} should be launchable, got {verdict:?}"
             );
         }
-        let danger_exts = ["bat", "exe", "lnk", "ps1", "vbs", "msi", "reg", "xlsm", "docm"];
+        let danger_exts = [
+            "bat", "exe", "lnk", "ps1", "vbs", "msi", "reg", "xlsm", "docm",
+            // Legacy OLE macro carriers — same rule as .docm (audit FS-A2).
+            "doc", "xls", "ppt",
+        ];
         for (i, ext) in danger_exts.iter().enumerate() {
             let f = dir.join(format!("evil_{i}.{ext}"));
             std::fs::write(&f, "x").unwrap();

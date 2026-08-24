@@ -982,9 +982,13 @@ struct PatchBlock {
 }
 
 fn find_patch_block(reply: &str) -> Option<PatchBlock> {
-    let lower = reply.to_lowercase();
+    // Search the fence in the ORIGINAL string: "```" is ASCII, so a direct
+    // search is already caseless. Searching in a `to_lowercase()` copy is a
+    // byte-offset bug — Unicode case mapping can change byte length (e.g.
+    // 'İ' U+0130 → 2 code points), shifting every index taken from the copy
+    // and panicking (or mis-slicing) when applied to the original.
     let mut scan = 0usize;
-    while let Some(fence) = lower[scan..].find("```") {
+    while let Some(fence) = reply[scan..].find("```") {
         let fence_at = scan + fence;
         let line_end = reply[fence_at..].find('\n').unwrap_or(reply.len() - fence_at);
         let tag_line = reply[fence_at + 3..fence_at + line_end].trim().to_lowercase();
@@ -1123,7 +1127,7 @@ pub fn apply_proposal(
         let _ = std::fs::remove_file(&tmp);
         format!("替换文件失败（可能正被其他程序占用）：{}", e)
     })?;
-    remember_undo(&canonical, bytes);
+    remember_undo(&canonical, bytes, content_hash64(&out));
     audit_bump(|a| a.edits_applied += 1);
     Ok(canonical)
 }
@@ -1146,27 +1150,57 @@ fn normalize_eol(s: &str, eol: &str) -> String {
     out
 }
 
-fn undo_slot() -> &'static std::sync::Mutex<Option<(PathBuf, Vec<u8>)>> {
-    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<(PathBuf, Vec<u8>)>>> =
+fn undo_slot() -> &'static std::sync::Mutex<Option<UndoEntry>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<UndoEntry>>> =
         std::sync::OnceLock::new();
     SLOT.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-fn remember_undo(canonical: &Path, pre_image: Vec<u8>) {
+/// One undo-able edit: the pre-image plus a hash of the POST-edit bytes.
+/// Undo only restores when the on-disk bytes still match `post_hash` —
+/// blindly restoring would silently clobber anything the user (or their
+/// editor) changed after the pet's edit (same optimistic-lock discipline as
+/// apply, plan §3.6).
+struct UndoEntry {
+    path: PathBuf,
+    pre_image: Vec<u8>,
+    post_hash: u64,
+}
+
+fn remember_undo(canonical: &Path, pre_image: Vec<u8>, post_hash: u64) {
     if let Ok(mut slot) = undo_slot().lock() {
-        *slot = Some((canonical.to_path_buf(), pre_image));
+        *slot = Some(UndoEntry {
+            path: canonical.to_path_buf(),
+            pre_image,
+            post_hash,
+        });
     }
 }
 
 /// Session-level single-step undo: restores the pre-image of the LAST edit.
 /// The pre-image only exists because the same proposal was authorized at read
-/// time and confirmed by the user, so undo needs no fresh grant snapshot.
+/// time and confirmed by the user, so undo needs no fresh grant snapshot —
+/// but it DOES refuse when the file changed after the edit (protect newer
+/// changes instead of clobbering them).
 pub fn undo_last_edit() -> Result<PathBuf, String> {
-    let (canonical, pre) = undo_slot()
+    let UndoEntry {
+        path: canonical,
+        pre_image,
+        post_hash,
+    } = undo_slot()
         .lock()
         .ok()
         .and_then(|mut g| g.take())
         .ok_or_else(|| "这一会儿还没有可以撤销的修改。".to_string())?;
+
+    let current = std::fs::read(&canonical).map_err(|e| format!("读文件失败：{}", e))?;
+    if content_hash64(&current) != post_hash {
+        return Err(
+            "文件在我改完之后又被改动过了，直接撤销会把那些新改动覆盖掉。我先不动——需要的话让璃重新读一遍再处理。"
+                .to_string(),
+        );
+    }
+
     let parent = canonical
         .parent()
         .ok_or_else(|| "文件没有父目录".to_string())?;
@@ -1178,7 +1212,7 @@ pub fn undo_last_edit() -> Result<PathBuf, String> {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    std::fs::write(&tmp, &pre).map_err(|e| format!("写撤销临时文件失败：{}", e))?;
+    std::fs::write(&tmp, &pre_image).map_err(|e| format!("写撤销临时文件失败：{}", e))?;
     std::fs::rename(&tmp, &canonical).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("撤销失败：{}", e)
@@ -1424,6 +1458,72 @@ mod tests {
         // with the canonical root spelling the slot actually stores.
         let canonical_root = path::resolve(&dir.to_string_lossy()).unwrap();
         assert!(take_denied_roots().contains(&canonical_root.to_string_lossy().to_string()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn find_patch_block_survives_case_mapping_length_changes() {
+        // Regression: the fence search used to run on a `to_lowercase()` copy
+        // and its byte offsets indexed the ORIGINAL string. 'İ' (U+0130)
+        // lowercases to TWO code points, shifting every later offset — the
+        // block was mis-sliced (or the slice panicked on a char boundary).
+        // The fix searches "```" (ASCII, inherently caseless) in place.
+        let reply = "说明先写这里 İİİ 还有 İstanbul\n```edit_file\npath: x\n<<<<< SEARCH\na\n=====\nb\n>>>>> END\n```\n收尾";
+        let block = find_patch_block(reply).expect("block must be found");
+        assert!(block.body.contains("<<<<< SEARCH"));
+        assert!(block.body.contains("path: x"));
+        // Byte range must reconstruct the exact original block.
+        assert!(reply[block.start..block.end].starts_with("```edit_file"));
+        assert!(reply[block.start..block.end].ends_with("```"));
+    }
+
+    #[test]
+    fn undo_lock_divergence_and_restore() {
+        // Single test, both scenarios serialized: the undo slot is ONE global
+        // (single-step undo by design), so parallel tests would race for it.
+        let dir = temp_project(4);
+        let file = dir.join("big.rs");
+        let grants = grant_for(&dir);
+
+        // -- Scenario A: file changed after the pet's edit → undo REFUSES.
+        let bytes = std::fs::read(&file).unwrap();
+        let meta = std::fs::metadata(&file).unwrap();
+        let proposal = EditProposal {
+            id: "edit_a".into(),
+            path: file.to_string_lossy().to_string(),
+            search: "line 2 content".into(),
+            replacement: "line 2 CHANGED".into(),
+            read_mtime_nanos: mtime_nanos(&meta),
+            read_hash: content_hash64(&bytes),
+            read_authorized: true,
+        };
+        apply_proposal(&proposal, &grants).expect("apply A");
+        assert!(std::fs::read_to_string(&file).unwrap().contains("line 2 CHANGED"));
+        // Third party edits the file after the pet's edit.
+        std::fs::write(&file, "user typed something entirely new\n").unwrap();
+        let err = undo_last_edit().expect_err("undo must refuse on divergence");
+        assert!(err.contains("又被改动过"), "got: {err}");
+        // Refusal must leave the user's newer bytes untouched.
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "user typed something entirely new\n");
+
+        // -- Scenario B: untouched after edit → undo restores byte-exact.
+        std::fs::write(&file, "line 1 content\nline 2 content\nline 3 content\nline 4 content\n").unwrap();
+        let bytes_b = std::fs::read(&file).unwrap();
+        let meta_b = std::fs::metadata(&file).unwrap();
+        let proposal_b = EditProposal {
+            id: "edit_b".into(),
+            path: file.to_string_lossy().to_string(),
+            search: "line 3 content".into(),
+            replacement: "line 3 CHANGED".into(),
+            read_mtime_nanos: mtime_nanos(&meta_b),
+            read_hash: content_hash64(&bytes_b),
+            read_authorized: true,
+        };
+        apply_proposal(&proposal_b, &grants).expect("apply B");
+        assert!(std::fs::read_to_string(&file).unwrap().contains("line 3 CHANGED"));
+        undo_last_edit().expect("undo B");
+        assert_eq!(std::fs::read(&file).unwrap(), bytes_b);
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
