@@ -867,6 +867,16 @@ html, body, #root {
   white-space: pre-wrap;
 }
 
+/* Paragraph blocks (models that write blank-line paragraphs — GLM/Agnes — render
+   with a small intentional gap instead of a full pre-wrap blank line). */
+.pet-bubble-para {
+  display: block;
+  margin-top: 5px;
+}
+.pet-bubble-para--first {
+  margin-top: 0;
+}
+
 /* --- Glyph (wordless signal, shell-less) --- */
 .pet-bubble-anchor--glyph {
   pointer-events: none;

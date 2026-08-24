@@ -62,6 +62,7 @@ const GOOD_NEWS_KEYWORDS: &[&str] = &[
     "got it", "succeeded", "finished", "done it", "kai xin", "gao xing",
     "tongguo", "cheng gong", "wancheng", "bang", "tai bang",
     "开心", "高兴", "通过", "成功", "完成", "搞定", "棒", "太棒",
+    "出成绩", "过线", "出分", "哈哈",
     "厉害", "考过", "终于", "爽", "好消息", "升职", "加薪",
     "第一名", "赢了", "满分", "进步",
 ];
@@ -655,6 +656,21 @@ mod tests {
             &empty_retrieval(),
         ));
         assert_eq!(intent.capability, CapabilityMode::ExternalInfo);
+    }
+
+    #[test]
+    fn test_good_news_score_release_routes_celebrate() {
+        // The 2026-08-24 live miss: "今天出四级成绩，考了425" matched no
+        // good-news keyword → plain converse tone on a milestone event.
+        let intent = plan(&brain(
+            "哈哈哈，之前的四级听力训练是有结果的，今天出四级成绩，考了425",
+            &happy_emotion(),
+            None,
+            &[],
+            &empty_retrieval(),
+        ));
+        assert_eq!(intent.goal, "celebrate");
+        assert_eq!(intent.tone, "excited");
     }
 
     #[test]

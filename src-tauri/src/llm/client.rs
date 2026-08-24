@@ -647,7 +647,9 @@ impl LlmClient {
     /// reasoning_content protocol, hence included.
     fn thinking_allowed(&self) -> bool {
         let hay = format!("{} {}", self.base_url, self.main_model).to_lowercase();
-        hay.contains("deepseek") || hay.contains("agnes")
+        // GLM coding/general endpoints honor the same field (verified:
+        // thinking:disabled → reasoning_tokens absent, 2026-08-24 probe).
+        hay.contains("deepseek") || hay.contains("agnes") || hay.contains("bigmodel") || hay.contains("glm-")
     }
 
     /// Build the chat-completions URL from the configured base_url. Shared by

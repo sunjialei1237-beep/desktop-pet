@@ -331,6 +331,28 @@ fn db_write_grant(
         .with_conn(|conn| crate::db::grants::upsert(conn, root, mode, "conversation"))
 }
 
+/// Provider-agnostic reply normalization: trim edges, collapse 3+ newlines
+/// to a paragraph break. Some models (Agnes) pad paragraphs with blank-line
+/// runs; the bubble renders paragraphs itself now, so anything beyond a
+/// clean double newline is noise.
+fn normalize_reply(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut blanks = 0usize;
+    for ch in raw.trim().chars() {
+        if ch == '\n' {
+            blanks += 1;
+            if blanks == 2 {
+                out.push('\n');
+                out.push('\n');
+            }
+        } else {
+            blanks = 0;
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// System hint listing the candidate memories so she asks "which one?"
 /// naturally (cites the real summaries instead of inventing different ones).
 fn disambig_prompt(candidates: &[crate::mind::forget::ForgetCandidate]) -> String {
@@ -1083,7 +1105,7 @@ pub async fn converse(
                 }
             }
         }
-        (outcome.reply, outcome.tool_rounds)
+        (normalize_reply(&outcome.reply), outcome.tool_rounds)
     } else {
         // Step 9: normal streamed reply. Thinking OFF for first-token latency.
         let no_thinking = ThinkingConfig::disabled();
@@ -1111,7 +1133,7 @@ pub async fn converse(
         // Reasoning models behind some relays (e.g. Agnes) prefix the
         // streamed content with blank lines — trim so the bubble never
         // starts with empty lines (the agent-loop branch already trims).
-        (chat_result.content.trim().to_string(), 0)
+        (normalize_reply(&chat_result.content), 0)
     };
 
     // F2 proposal strip: the patch block never enters the bubble or the
@@ -1194,4 +1216,24 @@ pub async fn converse(
         tool_rounds,
         edit_proposal,
     })
+}
+
+#[cfg(test)]
+mod provider_norm_tests {
+    use super::normalize_reply;
+
+    #[test]
+    fn collapses_blank_line_runs_and_trims() {
+        assert_eq!(normalize_reply("  你好
+
+
+
+世界  "), "你好
+
+世界");
+        assert_eq!(normalize_reply("
+
+开头也清掉"), "开头也清掉");
+        assert_eq!(normalize_reply("单段"), "单段");
+    }
 }

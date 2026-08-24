@@ -258,7 +258,18 @@ export function PetBubble({
                 ref={bubbleRef}
                 className={`pet-bubble${overflowing ? " pet-bubble--scrollable" : ""}`}
               >
-                <span className="pet-bubble-text">{text}</span>
+                {/* Paragraph-aware rendering: models disagree on paragraph
+                    style (DeepSeek chats in one block, GLM/Agnes write
+                    blank-line paragraphs). pre-wrap alone turns a blank line
+                    into a full empty line that reads as a broken bubble;
+                    split paragraphs and give them a small margin instead. */}
+                <span className="pet-bubble-text">
+                  {text.split(/\n{2,}/).map((para, i) => (
+                    <span key={i} className={i === 0 ? "pet-bubble-para pet-bubble-para--first" : "pet-bubble-para"}>
+                      {para}
+                    </span>
+                  ))}
+                </span>
               </div>
               <span className="pet-bubble-tail" />
             </>
