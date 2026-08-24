@@ -105,6 +105,8 @@ pub fn run() {
     }
 
     let tools_config_snapshot = config.tools.clone();
+    let llm_config_snapshot = config.llm.clone();
+    let llm_profiles_snapshot = config.llm_profiles.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -127,6 +129,8 @@ pub fn run() {
         )
         .manage(AppState {
             tools_config: std::sync::Mutex::new(tools_config_snapshot),
+            llm_config: std::sync::Mutex::new(llm_config_snapshot),
+            llm_profiles: std::sync::Mutex::new(llm_profiles_snapshot),
             config,
             llm: std::sync::Mutex::new(llm_client),
             embedding: embedding_service,
@@ -302,6 +306,9 @@ pub fn run() {
             commands::resolve_pending_event,
             commands::get_llm_config,
             commands::update_llm_config,
+            commands::list_llm_profiles,
+            commands::apply_llm_profile,
+            commands::delete_llm_profile,
             commands::get_setup_state,
             commands::set_setup_wizard_done,
             commands::test_llm_connection,

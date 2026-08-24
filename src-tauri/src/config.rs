@@ -6,6 +6,12 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub llm: LlmConfig,
+    /// Saved LLM profiles ("配置过的模型"): every `update_llm_config` records
+    /// the endpoint here so the Settings panel can switch back with one
+    /// click. Persisted as `[[llm_profiles]]` in config.toml (gitignored,
+    /// same plaintext trust level as `llm.api_key`).
+    #[serde(default)]
+    pub llm_profiles: Vec<LlmProfile>,
     pub embedding: EmbeddingConfig,
     pub app: AppConfigData,
     #[serde(default)]
@@ -27,6 +33,52 @@ pub struct LlmConfig {
     pub api_key: String,
     pub main_model: String,
     pub reflection_model: String,
+}
+
+/// One saved switchable LLM configuration (base_url + key + models).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProfile {
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub main_model: String,
+    pub reflection_model: String,
+}
+
+/// Upserts a profile into the list: an entry with the same endpoint
+/// (base_url + models) is re-keyed in place; otherwise a new entry is pushed
+/// with a collision-free name ("name (2)", "name (3)"…).
+pub fn upsert_llm_profile(profiles: &mut Vec<LlmProfile>, mut profile: LlmProfile) {
+    for p in profiles.iter_mut() {
+        if p.base_url == profile.base_url
+            && p.main_model == profile.main_model
+            && p.reflection_model == profile.reflection_model
+        {
+            if !profile.api_key.is_empty() {
+                p.api_key = profile.api_key.clone();
+            }
+            return;
+        }
+    }
+    profile.name = unique_llm_profile_name(profiles, &profile.name);
+    profiles.push(profile);
+}
+
+fn unique_llm_profile_name(profiles: &[LlmProfile], base: &str) -> String {
+    let mut name = base.to_string();
+    let mut n = 2usize;
+    while profiles.iter().any(|p| p.name == name) {
+        name = format!("{} ({})", base, n);
+        n += 1;
+    }
+    name
+}
+
+/// Removes the named profile. Returns false when no entry had that name.
+pub fn delete_llm_profile(profiles: &mut Vec<LlmProfile>, name: &str) -> bool {
+    let before = profiles.len();
+    profiles.retain(|p| p.name != name);
+    before != profiles.len()
 }
 
 /// Local embedding model configuration (BGE-M3 via ONNX Runtime).
@@ -130,6 +182,7 @@ impl Default for AppConfig {
                 main_model: "deepseek-v4-pro".to_string(),
                 reflection_model: "deepseek-v4-flash".to_string(),
             },
+            llm_profiles: Vec::new(),
             embedding: EmbeddingConfig {
                 model_dir: String::new(),
                 model_name: "bge-m3".to_string(),
@@ -444,5 +497,85 @@ log_level = ""
         config.app.db_path = "D:\\custom\\pet.db".to_string();
         let path = resolve_db_path(&config);
         assert_eq!(path, PathBuf::from("D:\\custom\\pet.db"));
+    }
+
+    #[test]
+    fn test_llm_profiles_missing_section_defaults_empty() {
+        // Old config.toml (pre-profiles) must keep parsing with an empty list.
+        let old = r#"
+[llm]
+base_url = "https://api.deepseek.com/v1"
+api_key = "k"
+main_model = "m"
+reflection_model = "m"
+
+[embedding]
+model_dir = ""
+model_name = "bge-m3"
+
+[app]
+db_path = ""
+debug = true
+log_level = "info"
+"#;
+        let config: AppConfig = toml::from_str(old).unwrap();
+        assert!(config.llm_profiles.is_empty());
+    }
+
+    #[test]
+    fn test_llm_profiles_roundtrip() {
+        let mut config = AppConfig::default();
+        config.llm_profiles.push(LlmProfile {
+            name: "glm-4.7".to_string(),
+            base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+            api_key: "sk-1".to_string(),
+            main_model: "glm-4.7".to_string(),
+            reflection_model: "glm-4.7-flash".to_string(),
+        });
+        let text = toml::to_string_pretty(&config).unwrap();
+        let parsed: AppConfig = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.llm_profiles.len(), 1);
+        assert_eq!(parsed.llm_profiles[0].name, "glm-4.7");
+        assert_eq!(parsed.llm_profiles[0].api_key, "sk-1");
+    }
+
+    fn sample_profile(name: &str, base_url: &str, key: &str) -> LlmProfile {
+        LlmProfile {
+            name: name.to_string(),
+            base_url: base_url.to_string(),
+            api_key: key.to_string(),
+            main_model: name.to_string(),
+            reflection_model: format!("{}-flash", name),
+        }
+    }
+
+    #[test]
+    fn test_upsert_llm_profile_rekeys_same_endpoint() {
+        let mut profiles = vec![sample_profile("m1", "https://a/v1", "sk-old")];
+        upsert_llm_profile(&mut profiles, sample_profile("m1", "https://a/v1", "sk-new"));
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].api_key, "sk-new");
+    }
+
+    #[test]
+    fn test_upsert_llm_profile_suffixes_name_collision() {
+        // Same model name at a different provider = a distinct switchable
+        // entry, not an overwrite.
+        let mut profiles = vec![sample_profile("m1", "https://a/v1", "sk-a")];
+        upsert_llm_profile(&mut profiles, sample_profile("m1", "https://b/v1", "sk-b"));
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[1].name, "m1 (2)");
+        // And a third one keeps counting.
+        upsert_llm_profile(&mut profiles, sample_profile("m1", "https://c/v1", "sk-c"));
+        assert_eq!(profiles.len(), 3);
+        assert_eq!(profiles[2].name, "m1 (3)");
+    }
+
+    #[test]
+    fn test_delete_llm_profile() {
+        let mut profiles = vec![sample_profile("m1", "https://a/v1", "sk-a")];
+        assert!(delete_llm_profile(&mut profiles, "m1"));
+        assert!(profiles.is_empty());
+        assert!(!delete_llm_profile(&mut profiles, "m1"));
     }
 }

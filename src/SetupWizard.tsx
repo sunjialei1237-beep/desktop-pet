@@ -30,6 +30,7 @@ export function SetupWizard({ onClose }: { onClose: () => void }) {
   const [mainModel, setMainModel] = useState("deepseek-v4-pro");
   const [reflectionModel, setReflectionModel] = useState("deepseek-v4-flash");
   const [verifying, setVerifying] = useState(false);
+  const [showKey, setShowKey] = useState(false);
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const [modelDownloading, setModelDownloading] = useState(false);
@@ -165,14 +166,23 @@ export function SetupWizard({ onClose }: { onClose: () => void }) {
             />
 
             <label className="setup-label">API Key</label>
-            <input
-              className="setup-input"
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="sk-..."
-              spellCheck={false}
-            />
+            <div className="setup-key-row">
+              <input
+                className="setup-input"
+                type={showKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-..."
+                spellCheck={false}
+              />
+              <button
+                className="settings-key-toggle"
+                onClick={() => setShowKey((v) => !v)}
+                title={showKey ? "隐藏" : "显示"}
+              >
+                {showKey ? "🙈" : "👁"}
+              </button>
+            </div>
             <button className="setup-link" onClick={handleGetKey}>
               没有 Key？免费获取 DeepSeek API Key ↗
             </button>

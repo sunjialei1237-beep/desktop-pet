@@ -1026,6 +1026,55 @@ html, body, #root {
   font-size: 11px;
   cursor: pointer;
 }
+.settings-grant-revoke:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── LLM API key 显示/隐藏 + 已保存模型方案列表 ───────────────────────── */
+.settings-key-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-key-row input {
+  flex: 1;
+  min-width: 0;
+}
+.settings-key-toggle {
+  border: 1px solid #ddd;
+  background: #f7f7f9;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.settings-key-toggle:hover {
+  background: #eeeef2;
+}
+.setup-key-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.setup-key-row .setup-input {
+  flex: 1;
+  min-width: 0;
+}
+.settings-profile-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 4px 0;
+}
+.settings-profile-active {
+  margin-left: 6px;
+  color: #2e7d32;
+  font-weight: 600;
+}
 
 /* -- 首次启动配置向导（SetupWizard，安装包 UX）-- */
 .setup-overlay {

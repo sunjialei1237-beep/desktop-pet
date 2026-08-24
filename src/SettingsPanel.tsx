@@ -4,9 +4,20 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 interface LlmConfig {
   base_url: string;
+  api_key: string;
   api_key_set: boolean;
   main_model: string;
   reflection_model: string;
+}
+
+/** Saved switchable model profile (backend `list_llm_profiles`). */
+interface LlmProfile {
+  name: string;
+  base_url: string;
+  main_model: string;
+  reflection_model: string;
+  api_key_set: boolean;
+  active: boolean;
 }
 
 interface ToolsConfig {
@@ -34,6 +45,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [reflectionModel, setReflectionModel] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  // API key visibility: prefilled from the backend (stored locally anyway),
+  // eye toggle switches between masked and plain.
+  const [showKey, setShowKey] = useState(false);
+  const [profiles, setProfiles] = useState<LlmProfile[]>([]);
+  const [switching, setSwitching] = useState<string | null>(null);
   const [embReady, setEmbReady] = useState(false);
   const [embFilesPresent, setEmbFilesPresent] = useState(false);
   const [embDownloading, setEmbDownloading] = useState(false);
@@ -55,6 +71,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     invoke<LlmConfig>("get_llm_config")
       .then((c) => {
         setBaseUrl(c.base_url);
+        setApiKey(c.api_key);
         setMainModel(c.main_model);
         setReflectionModel(c.reflection_model);
       })
@@ -80,7 +97,50 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       .then(setTools)
       .catch((e) => setToolsErr(String(e)));
     listGrants();
+    refreshProfiles();
   }, []);
+
+  const refreshProfiles = useCallback(async () => {
+    try {
+      setProfiles(await invoke<LlmProfile[]>("list_llm_profiles"));
+    } catch {
+      // Profile list is a convenience — never block the panel on it.
+    }
+  }, []);
+
+  /** One-click switch to a saved profile: applies it immediately (backend
+   * rebuilds the LLM client) and refreshes the form to match. */
+  const applyProfile = useCallback(
+    async (name: string) => {
+      setSwitching(name);
+      try {
+        const c = await invoke<LlmConfig>("apply_llm_profile", { name });
+        setBaseUrl(c.base_url);
+        setApiKey(c.api_key);
+        setMainModel(c.main_model);
+        setReflectionModel(c.reflection_model);
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+        await refreshProfiles();
+      } catch {
+        // ignore — list refresh keeps the UI truthful
+      }
+      setSwitching(null);
+    },
+    [refreshProfiles]
+  );
+
+  const deleteProfile = useCallback(
+    async (name: string) => {
+      try {
+        await invoke("delete_llm_profile", { name });
+        await refreshProfiles();
+      } catch {
+        // ignore
+      }
+    },
+    [refreshProfiles]
+  );
 
   const listGrants = useCallback(async () => {
     try {
@@ -155,11 +215,14 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      // The backend auto-records every saved config as a profile — pull the
+      // updated list so it shows up immediately.
+      await refreshProfiles();
     } catch {
       // ignore
     }
     setSaving(false);
-  }, [baseUrl, apiKey, mainModel, reflectionModel]);
+  }, [baseUrl, apiKey, mainModel, reflectionModel, refreshProfiles]);
 
   return (
     <div className="settings-overlay" onClick={onClose}>
@@ -177,13 +240,23 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           placeholder="https://api.deepseek.com/v1"
         />
 
-        <label>API Key {apiKey === "" ? "" : "(changed)"}</label>
-        <input
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder="sk-..."
-        />
+        <label>API Key {apiKey ? "（已保存）" : ""}</label>
+        <div className="settings-key-row">
+          <input
+            type={showKey ? "text" : "password"}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="sk-..."
+            spellCheck={false}
+          />
+          <button
+            className="settings-key-toggle"
+            onClick={() => setShowKey((v) => !v)}
+            title={showKey ? "隐藏" : "显示"}
+          >
+            {showKey ? "🙈" : "👁"}
+          </button>
+        </div>
 
         <label>Main Model</label>
         <input
@@ -208,6 +281,34 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         >
           {saving ? "..." : saved ? "OK" : "Save"}
         </button>
+
+        <div className="settings-grants">
+          <div className="settings-grants-title">已保存的模型（点「使用」一键切换，无需重启）</div>
+          {profiles.length === 0 && (
+            <span className="emb-hint">暂无——保存过的配置会自动出现在这里</span>
+          )}
+          {profiles.map((p) => (
+            <div className="settings-profile-row" key={p.name}>
+              <span className="settings-grant-root" title={`${p.base_url} · ${p.reflection_model}`}>
+                {p.name}
+                {p.active && <span className="settings-profile-active">✓ 使用中</span>}
+              </span>
+              <span className="settings-grant-mode" title={p.base_url}>
+                {p.base_url.replace(/^https?:\/\//, "")}
+              </span>
+              <button
+                className="settings-grant-revoke"
+                onClick={() => applyProfile(p.name)}
+                disabled={p.active || switching === p.name}
+              >
+                {switching === p.name ? "切换中…" : p.active ? "当前" : "使用"}
+              </button>
+              <button className="settings-grant-revoke" onClick={() => deleteProfile(p.name)}>
+                删除
+              </button>
+            </div>
+          ))}
+        </div>
 
         <div className="settings-divider" />
 

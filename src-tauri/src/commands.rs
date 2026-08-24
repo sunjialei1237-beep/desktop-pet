@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
 use crate::config::AppConfig;
+use crate::config::{LlmConfig, LlmProfile};
 use crate::db::DbState;
 use crate::db::onboarding as db_onboarding;
 use crate::embedding::{EmbeddingService, ModelDownloader};
@@ -47,6 +48,14 @@ pub struct AppState {
     /// the on-disk snapshot used at boot; every turn reads THIS lock so
     /// toggling the switches applies immediately without a restart.
     pub tools_config: std::sync::Mutex<crate::config::ToolsConfig>,
+    /// Hot-updatable LLM config (Settings save / profile switch): mirrors the
+    /// `tools_config` pattern — `state.config` stays the boot snapshot, this
+    /// lock is what `get_llm_config` / `get_setup_state` read so the UI never
+    /// shows stale values after a runtime save.
+    pub llm_config: std::sync::Mutex<LlmConfig>,
+    /// Saved switchable LLM profiles, kept in sync with `[[llm_profiles]]` in
+    /// config.toml.
+    pub llm_profiles: std::sync::Mutex<Vec<LlmProfile>>,
     pub llm: std::sync::Mutex<Option<LlmClient>>,
     pub embedding: EmbeddingService,
     pub working_memory: Mutex<WorkingMemory>,
@@ -1090,19 +1099,58 @@ pub async fn get_user_profile(
 #[derive(Debug, Serialize)]
 pub struct LlmConfigResponse {
     pub base_url: String,
+    /// The actual key, so the Settings panel can show what is configured.
+    /// config.toml already stores it in plaintext locally — no new exposure.
+    pub api_key: String,
     pub api_key_set: bool,
     pub main_model: String,
     pub reflection_model: String,
 }
 
+fn llm_config_response(llm: &LlmConfig) -> LlmConfigResponse {
+    LlmConfigResponse {
+        base_url: llm.base_url.clone(),
+        api_key: llm.api_key.clone(),
+        api_key_set: !llm.api_key.is_empty(),
+        main_model: llm.main_model.clone(),
+        reflection_model: llm.reflection_model.clone(),
+    }
+}
+
+/// Persists the live LLM config + profiles into config.toml. The file is read
+/// fresh first so runtime edits by other writers (tool toggles) are never
+/// reverted by the stale boot snapshot in `state.config`.
+fn persist_llm_state(state: &AppState, llm: &LlmConfig, profiles: &[LlmProfile]) -> Result<(), String> {
+    let mut disk = crate::config::load_config().unwrap_or_else(|_| state.config.clone());
+    disk.llm = llm.clone();
+    disk.llm_profiles = profiles.to_vec();
+    crate::config::save_config(&disk)
+}
+
+/// Rebuilds the LLM client from the given config so changes apply without a
+/// restart. None (no key yet) is a valid state — chat fails politely until a
+/// key is saved.
+fn rebuild_llm_client(state: &AppState, llm: &LlmConfig) {
+    let new_llm = LlmClient::new(
+        &llm.base_url,
+        &llm.api_key,
+        &llm.main_model,
+        &llm.reflection_model,
+    )
+    .ok();
+    if let Ok(mut guard) = state.llm.lock() {
+        *guard = new_llm;
+    }
+}
+
 #[tauri::command]
 pub async fn get_llm_config(state: State<'_, AppState>) -> Result<LlmConfigResponse, String> {
-    Ok(LlmConfigResponse {
-        base_url: state.config.llm.base_url.clone(),
-        api_key_set: !state.config.llm.api_key.is_empty(),
-        main_model: state.config.llm.main_model.clone(),
-        reflection_model: state.config.llm.reflection_model.clone(),
-    })
+    let llm = state
+        .llm_config
+        .lock()
+        .map_err(|e| format!("LLM config lock error: {}", e))?
+        .clone();
+    Ok(llm_config_response(&llm))
 }
 
 #[tauri::command]
@@ -1113,31 +1161,161 @@ pub async fn update_llm_config(
     main_model: String,
     reflection_model: String,
 ) -> Result<(), String> {
-    let mut config = state.config.clone();
-    config.llm.base_url = base_url;
-    if !api_key.is_empty() {
-        config.llm.api_key = api_key;
-    }
-    config.llm.main_model = main_model.clone();
-    config.llm.reflection_model = if reflection_model.is_empty() {
-        main_model
-    } else {
-        reflection_model
+    let llm = {
+        let mut live = state
+            .llm_config
+            .lock()
+            .map_err(|e| format!("LLM config lock error: {}", e))?;
+        // Empty key = "keep the existing one"; empty reflection = mirror main.
+        *live = LlmConfig {
+            base_url,
+            api_key: if api_key.is_empty() {
+                live.api_key.clone()
+            } else {
+                api_key
+            },
+            main_model: main_model.clone(),
+            reflection_model: if reflection_model.is_empty() {
+                main_model
+            } else {
+                reflection_model
+            },
+        };
+        live.clone()
     };
-    crate::config::save_config(&config)?;
-    log::info!("LLM config saved, reinitializing client");
 
-    // Reinitialize the LLM client immediately so the user can chat without restart.
-    let new_llm = crate::llm::client::LlmClient::new(
-        &config.llm.base_url,
-        &config.llm.api_key,
-        &config.llm.main_model,
-        &config.llm.reflection_model,
-    ).ok();
+    // Every configured model is recorded as a switchable profile so it can be
+    // re-applied with one click later.
+    let profiles = {
+        let mut guard = state
+            .llm_profiles
+            .lock()
+            .map_err(|e| format!("LLM profiles lock error: {}", e))?;
+        crate::config::upsert_llm_profile(
+            &mut guard,
+            LlmProfile {
+                name: llm.main_model.clone(),
+                base_url: llm.base_url.clone(),
+                api_key: llm.api_key.clone(),
+                main_model: llm.main_model.clone(),
+                reflection_model: llm.reflection_model.clone(),
+            },
+        );
+        guard.clone()
+    };
 
-    if let Ok(mut guard) = state.llm.lock() {
-        *guard = new_llm;
-    }
+    persist_llm_state(state.inner(), &llm, &profiles)?;
+    log::info!(
+        "LLM config saved (profile「{}」recorded), reinitializing client",
+        llm.main_model
+    );
+    rebuild_llm_client(state.inner(), &llm);
+    Ok(())
+}
+
+/// Frontend view of a saved profile — no key material, plus whether it is the
+/// currently active configuration.
+#[derive(Debug, Serialize)]
+pub struct LlmProfileView {
+    pub name: String,
+    pub base_url: String,
+    pub main_model: String,
+    pub reflection_model: String,
+    pub api_key_set: bool,
+    pub active: bool,
+}
+
+#[tauri::command]
+pub async fn list_llm_profiles(state: State<'_, AppState>) -> Result<Vec<LlmProfileView>, String> {
+    let live = state
+        .llm_config
+        .lock()
+        .map_err(|e| format!("LLM config lock error: {}", e))?
+        .clone();
+    let profiles = state
+        .llm_profiles
+        .lock()
+        .map_err(|e| format!("LLM profiles lock error: {}", e))?
+        .clone();
+    Ok(profiles
+        .into_iter()
+        .map(|p| {
+            let active = p.base_url == live.base_url
+                && p.main_model == live.main_model
+                && p.reflection_model == live.reflection_model
+                && p.api_key == live.api_key;
+            LlmProfileView {
+                name: p.name,
+                base_url: p.base_url,
+                main_model: p.main_model,
+                reflection_model: p.reflection_model,
+                api_key_set: !p.api_key.is_empty(),
+                active,
+            }
+        })
+        .collect())
+}
+
+/// Applies a saved profile as the active LLM configuration (one-click
+/// switch): updates the live config, persists it, rebuilds the client
+/// immediately — no restart needed.
+#[tauri::command]
+pub async fn apply_llm_profile(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<LlmConfigResponse, String> {
+    let profile = {
+        let profiles = state
+            .llm_profiles
+            .lock()
+            .map_err(|e| format!("LLM profiles lock error: {}", e))?;
+        profiles
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
+            .ok_or_else(|| format!("没有找到模型方案「{}」", name))?
+    };
+    let llm = LlmConfig {
+        base_url: profile.base_url,
+        api_key: profile.api_key,
+        main_model: profile.main_model,
+        reflection_model: profile.reflection_model,
+    };
+    *state
+        .llm_config
+        .lock()
+        .map_err(|e| format!("LLM config lock error: {}", e))? = llm.clone();
+    let profiles = state
+        .llm_profiles
+        .lock()
+        .map_err(|e| format!("LLM profiles lock error: {}", e))?
+        .clone();
+    persist_llm_state(state.inner(), &llm, &profiles)?;
+    log::info!("LLM profile「{}」applied, reinitializing client", name);
+    rebuild_llm_client(state.inner(), &llm);
+    Ok(llm_config_response(&llm))
+}
+
+/// Removes a saved profile. Only the shortcut is deleted — the active
+/// configuration is untouched.
+#[tauri::command]
+pub async fn delete_llm_profile(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let profiles = {
+        let mut guard = state
+            .llm_profiles
+            .lock()
+            .map_err(|e| format!("LLM profiles lock error: {}", e))?;
+        if !crate::config::delete_llm_profile(&mut guard, &name) {
+            return Ok(()); // already gone — idempotent
+        }
+        guard.clone()
+    };
+    let live = state
+        .llm_config
+        .lock()
+        .map_err(|e| format!("LLM config lock error: {}", e))?
+        .clone();
+    persist_llm_state(state.inner(), &live, &profiles)?;
     Ok(())
 }
 
@@ -1167,13 +1345,20 @@ pub async fn get_setup_state(
         .flatten()
         .map(|v| v == "true")
         .unwrap_or(false);
+    // Read the live config so a key saved at runtime (Settings) is reflected
+    // without a restart.
+    let llm = state
+        .llm_config
+        .lock()
+        .map_err(|e| format!("LLM config lock error: {}", e))?
+        .clone();
     Ok(SetupState {
-        api_key_set: !state.config.llm.api_key.is_empty(),
+        api_key_set: !llm.api_key.is_empty(),
         wizard_done,
         embedding_files_present: state.embedding.files_present(),
-        base_url: state.config.llm.base_url.clone(),
-        main_model: state.config.llm.main_model.clone(),
-        reflection_model: state.config.llm.reflection_model.clone(),
+        base_url: llm.base_url.clone(),
+        main_model: llm.main_model.clone(),
+        reflection_model: llm.reflection_model.clone(),
     })
 }
 
@@ -1242,7 +1427,10 @@ pub async fn save_tools_config(
         guard.enable_fs_observe = enable_fs_observe;
         guard.enable_fs_mutate = enable_fs_mutate;
     }
-    let mut config = state.config.clone();
+    // Read the file fresh instead of cloning the boot snapshot: the snapshot's
+    // [llm] section is stale after any runtime LLM save, and writing it back
+    // would revert the user's key / profile switch on disk.
+    let mut config = crate::config::load_config().unwrap_or_else(|_| state.config.clone());
     config.tools = crate::config::ToolsConfig {
         enable_search_web,
         enable_open_application,
