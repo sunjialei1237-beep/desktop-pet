@@ -65,7 +65,7 @@ pub async fn run_agent_loop(
     // there is nothing to advertise — answer normally (no tool round).
     if tool_defs.is_empty() {
         log::info!("[agent] run {} capability {:?} resolved to no tools — plain answer", run_id, cap);
-        return final_stream_answer(messages.as_slice(), llm, on_token, 0).await;
+        return final_stream_answer(messages.as_slice(), llm, on_token, 0, 0).await;
     }
 
     let kind_by_name: HashMap<&str, ToolKind> = kinds.iter().map(|k| (k.name(), *k)).collect();
@@ -95,7 +95,7 @@ pub async fn run_agent_loop(
                 let reply = result.content.trim().to_string();
                 if reply.is_empty() {
                     // Empty non-tool response — fall back to a fresh stream.
-                    return final_stream_answer(messages.as_slice(), llm, on_token, total_tokens)
+                    return final_stream_answer(messages.as_slice(), llm, on_token, total_tokens, rounds)
                         .await;
                 }
                 // Emit the (non-streamed) answer token-by-token so the bubble
@@ -134,7 +134,7 @@ pub async fn run_agent_loop(
     messages.push(ChatMessage::system(
         "（已经查了好几轮了，用已有的信息回答就好，不要再调用工具了。）",
     ));
-    final_stream_answer(messages.as_slice(), llm, on_token, total_tokens).await
+    final_stream_answer(messages.as_slice(), llm, on_token, total_tokens, rounds).await
 }
 
 /// Execute one tool call: policy gate → (timeout-bounded) execute → push the
@@ -276,6 +276,7 @@ async fn final_stream_answer(
     llm: &LlmClient,
     on_token: &mut impl FnMut(&str),
     prior_tokens: u32,
+    rounds: usize,
 ) -> Result<AgentOutcome, String> {
     let no_thinking = ThinkingConfig::disabled();
     let result = llm
@@ -286,7 +287,7 @@ async fn final_stream_answer(
         .map_err(|e| format!("Agent final stream error: {:?}", e))?;
     Ok(AgentOutcome {
         reply: result.content,
-        tool_rounds: 0,
+        tool_rounds: rounds,
         total_tool_tokens: prior_tokens + result.prompt_tokens + result.completion_tokens,
     })
 }

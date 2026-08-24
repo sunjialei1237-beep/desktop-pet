@@ -231,6 +231,17 @@ struct Usage {
     prompt_cache_hit_tokens: Option<u32>,
     #[serde(default)]
     prompt_cache_miss_tokens: Option<u32>,
+    /// OpenAI-compatible relays (e.g. Agnes) report cache hits as
+    /// `prompt_tokens_details.cached_tokens` instead of DeepSeek's flat
+    /// fields — normalized into the same observability in `chat_with_model`.
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
 }
 
 /// Result of a chat completion call.
@@ -581,13 +592,23 @@ impl LlmClient {
             );
         }
 
-        let usage = chat_resp.usage.unwrap_or(Usage {
+        let mut usage = chat_resp.usage.unwrap_or(Usage {
             prompt_cache_hit_tokens: None,
             prompt_cache_miss_tokens: None,
+            prompt_tokens_details: None,
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
         });
+        // Normalize relay-style cache accounting onto the DeepSeek field so
+        // cost observability works across providers.
+        if usage.prompt_cache_hit_tokens.is_none() {
+            if let Some(cached) = usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens) {
+                usage.prompt_cache_hit_tokens = Some(cached);
+                usage.prompt_cache_miss_tokens =
+                    Some(usage.prompt_tokens.saturating_sub(cached));
+            }
+        }
 
         let result = ChatResult {
             content,
@@ -606,12 +627,25 @@ impl LlmClient {
     /// Build the chat-completions URL from the configured base_url. Shared by
     /// `chat_with_model` (non-streaming) and `chat_stream`.
     fn build_url(&self) -> String {
-        // base_url from config includes the API version (e.g. "https://api.deepseek.com/v1").
-        // Append "/chat/completions" directly; add "/v1" for base_urls without version.
-        if self.base_url.ends_with("/v1") {
-            format!("{}/chat/completions", self.base_url)
+        // Multi-provider URL assembly (provider-matrix compat, 2026-08-24).
+        // Accepted base_url shapes:
+        //   "https://api.deepseek.com/v1"                    → +/chat/completions
+        //   "https://api.deepseek.com"      (bare host)      → +/v1/chat/completions
+        //   "https://open.bigmodel.cn/api/paas/v4" (version) → +/chat/completions
+        //   "https://apihub.agnes-ai.com/v1/chat/completions" → as-is (full endpoint;
+        //     some relays tolerate a doubled path, most providers 404 on it)
+        let url = self.base_url.trim_end_matches('/');
+        if url.ends_with("chat/completions") {
+            return url.to_string();
+        }
+        // Path presence: anything after the host (and port) begins at the
+        // first '/' following "://".
+        let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+        let has_path = after_scheme.contains('/');
+        if !has_path || url.ends_with("/v1") {
+            format!("{}/v1/chat/completions", url).replace("/v1/v1/", "/v1/")
         } else {
-            format!("{}/v1/chat/completions", self.base_url)
+            format!("{}/chat/completions", url)
         }
     }
 
@@ -759,13 +793,21 @@ impl LlmClient {
         if content.trim().is_empty() {
             log::warn!("[llm-stream-empty] no content deltas received");
         }
-        let usage = usage.unwrap_or(Usage {
+        let mut usage = usage.unwrap_or(Usage {
             prompt_cache_hit_tokens: None,
             prompt_cache_miss_tokens: None,
+            prompt_tokens_details: None,
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
         });
+        // Relay-style cache accounting normalized here too (streaming path).
+        if usage.prompt_cache_hit_tokens.is_none() {
+            if let Some(cached) = usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens) {
+                usage.prompt_cache_hit_tokens = Some(cached);
+                usage.prompt_cache_miss_tokens = Some(usage.prompt_tokens.saturating_sub(cached));
+            }
+        }
         ChatResult {
             content,
             prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
@@ -787,6 +829,69 @@ impl LlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn client_for(base: &str) -> LlmClient {
+        LlmClient::new(base, "test-key", "m", "m").expect("client")
+    }
+
+    #[test]
+    fn build_url_accepts_all_provider_shapes() {
+        // DeepSeek classic versioned base.
+        assert_eq!(
+            client_for("https://api.deepseek.com/v1").build_url(),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        // Bare host (OpenAI style) gets /v1 inserted.
+        assert_eq!(
+            client_for("https://api.openai.com").build_url(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        // Non-/v1 versioned path (Zhipu GLM official) appends directly —
+        // the old code produced /api/paas/v4/v1/chat/completions (404).
+        assert_eq!(
+            client_for("https://open.bigmodel.cn/api/paas/v4").build_url(),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        );
+        // Full endpoint (relay style) is used verbatim — the old code
+        // doubled the path (/v1/chat/completions/v1/chat/completions).
+        assert_eq!(
+            client_for("https://apihub.agnes-ai.com/v1/chat/completions").build_url(),
+            "https://apihub.agnes-ai.com/v1/chat/completions"
+        );
+        // Trailing slash tolerated everywhere.
+        assert_eq!(
+            client_for("https://api.deepseek.com/v1/").build_url(),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn usage_normalizes_relay_cached_tokens() {
+        // Agnes-style usage: prompt_tokens_details.cached_tokens instead of
+        // DeepSeek's flat prompt_cache_hit_tokens.
+        let body = r#"{
+            "prompt_tokens": 400, "completion_tokens": 30, "total_tokens": 430,
+            "prompt_tokens_details": {"cached_tokens": 256}
+        }"#;
+        let u: Usage = serde_json::from_str(body).unwrap();
+        assert_eq!(u.prompt_cache_hit_tokens, None); // DeepSeek field absent
+        let mut u = u;
+        if u.prompt_cache_hit_tokens.is_none() {
+            if let Some(c) = u.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens) {
+                u.prompt_cache_hit_tokens = Some(c);
+                u.prompt_cache_miss_tokens = Some(u.prompt_tokens.saturating_sub(c));
+            }
+        }
+        assert_eq!(u.prompt_cache_hit_tokens, Some(256));
+        assert_eq!(u.prompt_cache_miss_tokens, Some(144));
+        // DeepSeek-native shape still parses unchanged.
+        let ds: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,
+                "prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":2}"#,
+        )
+        .unwrap();
+        assert_eq!(ds.prompt_cache_hit_tokens, Some(8));
+    }
 
     #[test]
     fn test_chat_request_serializes_tools() {

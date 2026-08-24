@@ -1108,7 +1108,10 @@ pub async fn converse(
             "[converse] cache hit={:?} miss={:?}",
             chat_result.prompt_cache_hit_tokens, chat_result.prompt_cache_miss_tokens
         );
-        (chat_result.content, 0)
+        // Reasoning models behind some relays (e.g. Agnes) prefix the
+        // streamed content with blank lines — trim so the bubble never
+        // starts with empty lines (the agent-loop branch already trims).
+        (chat_result.content.trim().to_string(), 0)
     };
 
     // F2 proposal strip: the patch block never enters the bubble or the
