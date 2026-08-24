@@ -429,12 +429,42 @@ async fn provider_matrix_run() {
     };
 
     let steps = build_script(n, &fs_root, &ungranted, &edit_file);
+
+    // Optional contiguous sharding ("SHARD/TOTAL", e.g. "2/5"): slow reasoning
+    // relays make 500 sequential turns take ~15h; shards run as concurrent
+    // processes. CONTIGUOUS slices keep seed->recall and consent-ask->grant
+    // pairs inside one shard (they are adjacent in the script).
+    let shard_steps: Vec<Step> = if let Some(spec) = std::env::var("MATRIX_SHARD").ok() {
+        let parts: Vec<&str> = spec.split('/').collect();
+        assert!(parts.len() == 2, "MATRIX_SHARD must be SHARD/TOTAL");
+        let (shard, total): (usize, usize) =
+            (parts[0].parse().expect("shard idx"), parts[1].parse().expect("shard total"));
+        assert!(total > 0 && shard < total, "bad shard spec");
+        let per = (steps.len() + total - 1) / total;
+        let start = (shard * per).min(steps.len());
+        let end = ((shard + 1) * per).min(steps.len());
+        println!("[matrix] shard {}/{}: steps [{}..{})", shard, total, start, end);
+        steps[start..end].to_vec()
+    } else {
+        steps
+    };
     println!(
         "[matrix] provider={:?} model={} turns={} (key hidden)",
-        base_url, main_model, steps.len()
+        base_url, main_model, shard_steps.len()
     );
 
     let mut records: Vec<TurnRecord> = Vec::new();
+    // Incremental report: opened before the loop, one JSONL line per turn,
+    // so an externally killed run still leaves a complete partial dataset.
+    let shard_tag = std::env::var("MATRIX_SHARD")
+        .unwrap_or_else(|_| "full".to_string())
+        .replace('/', "-of-");
+    let report_path = std::env::temp_dir().join(format!(
+        "provider_matrix_report_{}_{}.jsonl",
+        shard_tag,
+        chrono::Utc::now().timestamp()
+    ));
+    let mut report_file = std::fs::File::create(&report_path).expect("create report");
     let mut conversation_id = format!("matrix_{}", chrono::Utc::now().timestamp());
     let mut turn_no: i32 = 0;
     let mut edit_proposals_armed = 0usize;
@@ -443,7 +473,10 @@ async fn provider_matrix_run() {
     let mut consent_asks_armed = 0usize;
     let mut consent_grants_followed_up = 0usize;
 
-    for (idx, step) in steps.iter().enumerate() {
+    let idx_offset = n.saturating_sub(shard_steps.len()); // cosmetic only
+    let _ = idx_offset;
+    for (i, step) in shard_steps.iter().enumerate() {
+        let idx = i; // shard-local index (report clarity over global)
         if step.new_session {
             conversation_id = format!("matrix_{}_s{}", chrono::Utc::now().timestamp(), idx);
         }
@@ -540,9 +573,13 @@ async fn provider_matrix_run() {
             }
         }
 
-        if !ok || idx % 50 == 0 {
+        {
+            use std::io::Write;
+            let _ = writeln!(report_file, "{}", serde_json::to_string(records.last().unwrap()).unwrap_or_default());
+        }
+        if !ok || idx % 25 == 0 {
             let r = records.last().unwrap();
-            println!("[{:>4}/{}] {} {} {}ms tools={} {:?}", idx + 1, steps.len(), r.cat, if ok { "OK" } else { "FAIL" }, r.ms, r.tool_rounds, r.verdict);
+            println!("[{:>4}/{}] {} {} {}ms tools={} {:?}", idx + 1, shard_steps.len(), r.cat, if ok { "OK" } else { "FAIL" }, r.ms, r.tool_rounds, r.verdict);
         }
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     }
@@ -583,17 +620,6 @@ async fn provider_matrix_run() {
         }
     }
 
-    // Full JSONL report (temp dir, no key inside).
-    let report_path = std::env::temp_dir().join(format!(
-        "provider_matrix_report_{}.jsonl",
-        chrono::Utc::now().timestamp()
-    ));
-    if let Ok(mut f) = std::fs::File::create(&report_path) {
-        use std::io::Write;
-        for r in &records {
-            let _ = writeln!(f, "{}", serde_json::to_string(r).unwrap_or_default());
-        }
-    }
     println!("full report: {}", report_path.display());
 
     // Cleanup fixtures (best-effort).

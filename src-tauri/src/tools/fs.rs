@@ -1420,6 +1420,13 @@ mod tests {
     use super::*;
     use crate::db::grants::{FsGrant, GrantMode};
 
+    /// The undo slot is ONE process-global; tests that touch it (apply →
+    /// undo) must not run concurrently or they swap each other's entries.
+    fn undo_test_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
     fn grant_for(root: &Path) -> Vec<FsGrant> {
         vec![FsGrant {
             root: root.to_string_lossy().to_string(),
@@ -1481,6 +1488,7 @@ mod tests {
     fn undo_lock_divergence_and_restore() {
         // Single test, both scenarios serialized: the undo slot is ONE global
         // (single-step undo by design), so parallel tests would race for it.
+        let _guard = undo_test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let dir = temp_project(4);
         let file = dir.join("big.rs");
         let grants = grant_for(&dir);
@@ -1864,6 +1872,7 @@ mod tests {
 
     #[test]
     fn apply_proposal_preserves_bom_crlf_and_supports_undo() {
+        let _guard = undo_test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let dir = f2_file("alpha\r\nbeta\r\nUNIQUE 行\r\nomega\r\n");
         let path = dunce::canonicalize(dir.join("target.txt")).unwrap();
         // f2_file wrote LF-only bytes; rebuild with BOM+CRLF and re-record.

@@ -6,6 +6,10 @@ pub enum LlmError {
     Network,
     Auth,
     RateLimit,
+    /// HTTP 429 carrying an "insufficient balance" body (Zhipu code 1113 et
+    /// al). Distinct from RateLimit: waiting does NOT help — the user must
+    /// top up. Surfaced verbatim so the pet can say what is actually wrong.
+    Balance(String),
     Server(String),
     Parse(String),
     NotConfigured,
@@ -18,6 +22,7 @@ impl std::fmt::Display for LlmError {
             LlmError::Network => write!(f, "Network error"),
             LlmError::Auth => write!(f, "Authentication failed (check API key)"),
             LlmError::RateLimit => write!(f, "Rate limited"),
+            LlmError::Balance(msg) => write!(f, "余额不足（需充值）: {}", msg),
             LlmError::Server(msg) => write!(f, "Server error: {}", msg),
             LlmError::Parse(msg) => write!(f, "Parse error: {}", msg),
             LlmError::NotConfigured => write!(f, "LLM not configured (API key empty)"),

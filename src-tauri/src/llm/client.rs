@@ -522,7 +522,7 @@ impl LlmClient {
             max_tokens,
             stream: Some(false),
             stream_options: None,
-            thinking: thinking.cloned(),
+            thinking: if self.thinking_allowed() { thinking.cloned() } else { None },
             reasoning_effort: None,
             tools: tools.map(|t| t.to_vec()),
             // "auto" lets the LLM answer without tools; "required" is used for
@@ -558,6 +558,22 @@ impl LlmClient {
             return Err(LlmError::Auth);
         }
         if status.as_u16() == 429 {
+            // Zhipu returns 429 for INSUFFICIENT BALANCE (code 1113) —
+            // waiting never helps there. Split it from real rate limiting
+            // so the surfaced message tells the user to top up.
+            let body = resp.text().await.unwrap_or_default();
+            if body.contains("1113") || body.contains("余额不足") {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if let Some(msg) = v
+                        .pointer("/error/message")
+                        .and_then(|m| m.as_str())
+                        .map(|m| m.to_string())
+                    {
+                        return Err(LlmError::Balance(msg));
+                    }
+                }
+                return Err(LlmError::Balance(body.chars().take(120).collect()));
+            }
             return Err(LlmError::RateLimit);
         }
         if !status.is_success() {
@@ -624,6 +640,16 @@ impl LlmClient {
         Ok(result)
     }
 
+    /// The `thinking` request field is a DeepSeek-family extension (Agnes
+    /// relays tolerate it; their models ignore it). Strict OpenAI-compat
+    /// servers can reject unknown body fields outright, so it is only sent
+    /// to providers known to accept it. Agnes models mirror DeepSeek's
+    /// reasoning_content protocol, hence included.
+    fn thinking_allowed(&self) -> bool {
+        let hay = format!("{} {}", self.base_url, self.main_model).to_lowercase();
+        hay.contains("deepseek") || hay.contains("agnes")
+    }
+
     /// Build the chat-completions URL from the configured base_url. Shared by
     /// `chat_with_model` (non-streaming) and `chat_stream`.
     fn build_url(&self) -> String {
@@ -678,7 +704,7 @@ impl LlmClient {
             max_tokens,
             stream: Some(true),
             stream_options: Some(StreamOptions { include_usage: true }),
-            thinking: thinking.cloned(),
+            thinking: if self.thinking_allowed() { thinking.cloned() } else { None },
             reasoning_effort: reasoning_effort.map(|s| s.to_string()),
             tools: None,
             tool_choice: None,
