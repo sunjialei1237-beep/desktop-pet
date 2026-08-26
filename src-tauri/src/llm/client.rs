@@ -386,6 +386,27 @@ fn endpoint_thinking_allowed(base_url: &str, model: &str) -> bool {
     hay.contains("deepseek") || hay.contains("agnes") || hay.contains("bigmodel") || hay.contains("glm-")
 }
 
+/// Multi-provider URL assembly (provider-matrix compat, 2026-08-24).
+/// Accepted base_url shapes:
+///   "https://api.deepseek.com/v1"                    -> +/chat/completions
+///   "https://api.deepseek.com"      (bare host)      -> +/v1/chat/completions
+///   "https://open.bigmodel.cn/api/paas/v4" (version) -> +/chat/completions
+///   "https://apihub.agnes-ai.com/v1/chat/completions" -> as-is (full endpoint;
+///     some relays tolerate a doubled path, most providers 404 on it)
+pub fn chat_completions_url(base: &str) -> String {
+    let url = base.trim_end_matches('/');
+    if url.ends_with("chat/completions") {
+        return url.to_string();
+    }
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let has_path = after_scheme.contains('/');
+    if !has_path || url.ends_with("/v1") {
+        format!("{}/v1/chat/completions", url).replace("/v1/v1/", "/v1/")
+    } else {
+        format!("{}/chat/completions", url)
+    }
+}
+
 fn same_host(a: &str, b: &str) -> bool {
     fn host(u: &str) -> &str {
         let rest = u.split_once("://").map(|(_, r)| r).unwrap_or(u);
@@ -594,7 +615,10 @@ impl LlmClient {
         temperature: Option<f64>,
         max_tokens: Option<u32>,
     ) -> Result<ChatResult, LlmError> {
-        let (url, key, model) = self.role_endpoint(role);
+        let (base, key, model) = self.role_endpoint(role);
+        // chat_core expects the FULL endpoint URL (the main path passes
+        // build_url()'s result) — build it for the role's base too.
+        let url = chat_completions_url(&base);
         let no_thinking = ThinkingConfig { type_: "disabled".to_string() };
         let think = if endpoint_thinking_allowed(&url, &model) {
             Some(no_thinking)
@@ -818,26 +842,7 @@ impl LlmClient {
     /// Build the chat-completions URL from the configured base_url. Shared by
     /// `chat_with_model` (non-streaming) and `chat_stream`.
     fn build_url(&self) -> String {
-        // Multi-provider URL assembly (provider-matrix compat, 2026-08-24).
-        // Accepted base_url shapes:
-        //   "https://api.deepseek.com/v1"                    → +/chat/completions
-        //   "https://api.deepseek.com"      (bare host)      → +/v1/chat/completions
-        //   "https://open.bigmodel.cn/api/paas/v4" (version) → +/chat/completions
-        //   "https://apihub.agnes-ai.com/v1/chat/completions" → as-is (full endpoint;
-        //     some relays tolerate a doubled path, most providers 404 on it)
-        let url = self.base_url.trim_end_matches('/');
-        if url.ends_with("chat/completions") {
-            return url.to_string();
-        }
-        // Path presence: anything after the host (and port) begins at the
-        // first '/' following "://".
-        let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-        let has_path = after_scheme.contains('/');
-        if !has_path || url.ends_with("/v1") {
-            format!("{}/v1/chat/completions", url).replace("/v1/v1/", "/v1/")
-        } else {
-            format!("{}/chat/completions", url)
-        }
+        chat_completions_url(&self.base_url)
     }
 
     /// Streaming chat completion (architecture #10: tokens flow out as the
