@@ -83,15 +83,35 @@ pub struct PendingInput {
     pub offset_minutes: Option<i64>,
 }
 
+/// Some providers signal "nothing here" with an EMPTY JSON OBJECT instead
+/// of null (live Agnes payload: `"episode": {}` — 2026-08-26 provider
+/// matrix). Plain `Option<T>` rejects `{}` when T has required fields,
+/// which skipped the WHOLE memory extraction for the turn. Map `{}` and
+/// `null` to None; anything else deserializes normally.
+fn empty_object_as_none<'de, T, D>(de: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(de)?;
+    match &v {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Object(map) if map.is_empty() => Ok(None),
+        _ => T::deserialize(v).map(Some).map_err(serde::de::Error::custom),
+    }
+}
+
 /// Internal struct matching the LLM JSON output.
 #[derive(Debug, Deserialize)]
 struct LlmExtraction {
+    #[serde(default, deserialize_with = "empty_object_as_none")]
     episode: Option<EpisodeInput>,
     #[serde(default)]
     facts: Vec<FactInput>,
     emotion_delta: Option<EmotionDelta>,
+    #[serde(default, deserialize_with = "empty_object_as_none")]
     pending_event: Option<PendingInput>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_object_as_none")]
     pet_promise: Option<PendingInput>,
 }
 
@@ -212,6 +232,26 @@ fn extract_json_block(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Live Agnes payload (provider matrix 2026-08-26): episode is an EMPTY
+    /// OBJECT, the whole extraction used to fail on the required `summary`.
+    #[test]
+    fn test_parse_empty_object_episode_from_agnes() {
+        let raw = "```json\n    {\n      \"episode\": {},\n      \"facts\": [\n        {\n          \"category\": \"preference\",\n          \"key\": \"lucky_number\",\n          \"value\": \"幸运数字是21\",\n          \"confidence\": 0.95\n        }\n      ],\n      \"emotion_delta\": {\n        \"mood\": 0.0,\n        \"stress\": 0.0,\n        \"energy\": 0.0\n      }\n    }\n    ```";
+        let result = parse_extraction(raw).unwrap();
+        assert!(result.episode.is_none(), "empty object episode must map to None");
+        assert_eq!(result.facts.len(), 1);
+        assert_eq!(result.facts[0].key, "lucky_number");
+    }
+
+    #[test]
+    fn test_parse_empty_pending_objects() {
+        let raw = r#"{"episode": {"summary": "x"}, "facts": [], "pending_event": {}, "pet_promise": {}}"#;
+        let result = parse_extraction(raw).unwrap();
+        assert!(result.pending_event.is_none());
+        assert!(result.pet_promise.is_none());
+        assert!(result.episode.is_some());
+    }
 
     #[test]
     fn test_parse_full_extraction() {
