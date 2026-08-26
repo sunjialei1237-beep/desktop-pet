@@ -109,6 +109,15 @@ pub fn goodnight_canned(mood: f64) -> &'static str {
 /// Returns None only when grounding_guard suppresses an invented reply (the
 /// user never sees a hallucinated 早安). Caller falls back to canned on None
 /// when the LLM is unconfigured (the command handles that path).
+/// Temporal-consistency clause shared by the 早安/晚安 directives. User
+/// report 2026-08-26: a Wednesday 早安 said 「新的一周慢慢来」 — the model HAD
+/// the right weekday in [Current time] (it even said 周三) but
+/// free-associated week-start framing from the 早安/新的一天 semantics.
+/// Week-start phrasing is licensed Mon/Tue only; otherwise stick to
+/// 「今天」.
+const TIME_CONSISTENCY_CLAUSE: &str =
+    "你对日子/星期的说法必须和上下文 [Current time] 里给的一致：「新的一周」「这周刚开始」这类周初式的说法只有周一、周二能用，其他日子绝不提；拿不准就只说「今天」。";
+
 pub async fn generate_goodmorning(
     db: &DbState,
     llm: &LlmClient,
@@ -202,7 +211,7 @@ pub async fn generate_goodmorning(
         String::new()
     };
     messages.push(ChatMessage::user(format!(
-        "（{time_clause}{anchor_clause}这条不一定要问问题——一句带着温度的早安陈述就好，真的好奇最多一个问句。简短自然，1-2 句早安招呼。称呼对方用「你」，不要用「用户」。按规则回复。）"
+        "（{time_clause}{anchor_clause}{TIME_CONSISTENCY_CLAUSE}这条不一定要问问题——一句带着温度的早安陈述就好，真的好奇最多一个问句。简短自然，1-2 句早安招呼。称呼对方用「你」，不要用「用户」。按规则回复。）"
     )));
 
     log::info!(
@@ -334,7 +343,7 @@ pub async fn generate_goodnight(
         String::new()
     };
     messages.push(ChatMessage::user(format!(
-        "（{time_clause}{anchor_clause}这条不一定要问问题——一句带着温度的晚安陈述就好。简短自然，1-2 句。称呼对方用「你」，不要用「用户」。按规则回复。）"
+        "（{time_clause}{anchor_clause}{TIME_CONSISTENCY_CLAUSE}这条不一定要问问题——一句带着温度的晚安陈述就好。简短自然，1-2 句。称呼对方用「你」，不要用「用户」。按规则回复。）"
     )));
 
     log::info!(
@@ -377,6 +386,15 @@ mod tests {
     use super::*;
     use crate::db::test_utils::test_db;
     use chrono::Timelike;
+
+    #[test]
+    fn time_consistency_clause_licenses_weekstart_monday_tuesday_only() {
+        // 2026-08-26 翻车：周三早安说「新的一周慢慢来」。护栏必须锚定
+        // [Current time] 且只给周一/周二周初话术许可，不绑定具体某天。
+        assert!(TIME_CONSISTENCY_CLAUSE.contains("[Current time]"));
+        assert!(TIME_CONSISTENCY_CLAUSE.contains("周一、周二"));
+        assert!(TIME_CONSISTENCY_CLAUSE.contains("新的一周"));
+    }
 
     #[test]
     fn should_run_when_never_fired() {
