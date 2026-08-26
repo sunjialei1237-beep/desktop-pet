@@ -74,6 +74,11 @@ const GOOD_NEWS_KEYWORDS: &[&str] = &[
 const EXTERNAL_INFO_KEYWORDS: &[&str] = &[
     "查一下", "查查", "搜一下", "搜索", "搜搜", "帮我查", "查查看",
     "新闻", "天气", "最近有什么", "最新",
+    // 找-family (2026-08-26 live miss): "你帮我找一找具体的内容吧" matched
+    // nothing → capability None → search_web never offered → she answered
+    // "我这边不太搜不到" and the user had to insist. Deliberately NOT a bare
+    // "找": life-topic "找工作/找实习" and emotional "找不到" must stay None.
+    "帮我找", "找一下", "找一找", "找找", "找一篇",
     "search", "look up", "news", "weather", "latest",
 ];
 
@@ -780,6 +785,34 @@ mod tests {
             &empty_retrieval(),
         ));
         assert_eq!(intent.capability, CapabilityMode::ComputerAction);
+    }
+
+    #[test]
+    fn test_capability_find_phrasing_routes_external_info() {
+        // The 2026-08-26 live miss: "你帮我找一找具体的内容吧" matched no
+        // external-info keyword → capability None → search_web never offered →
+        // "小米的芯片新闻我这边不太搜得到" (user had to insist "你可以直接
+        // 调用搜索工具啊" — which matched "搜索" and worked immediately).
+        // 2026-08-19 same class: "帮我详细找一篇…报道" → no tools → answer
+        // from stale memory.
+        for text in [
+            "我最近看到小米发布了一款芯片，很厉害，你帮我找一找具体的内容吧。",
+            "帮我找一下今天有什么好看的",
+            "帮我详细找一篇关于OpenAI停训GPT这件事的报道",
+            "你找找最近有什么新游戏",
+        ] {
+            let intent = plan(&brain(text, &calm_emotion(), None, &[], &empty_retrieval()));
+            assert_eq!(intent.capability, CapabilityMode::ExternalInfo, "for: {text}");
+        }
+    }
+
+    #[test]
+    fn test_capability_find_life_topics_stay_none() {
+        // 找-family arming must not bleed into life-topic / emotional 找.
+        for text in ["我最近在找工作，有点焦虑", "我找不到我的耳机了"] {
+            let intent = plan(&brain(text, &calm_emotion(), None, &[], &empty_retrieval()));
+            assert_eq!(intent.capability, CapabilityMode::None, "for: {text}");
+        }
     }
 
     #[test]
