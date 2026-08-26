@@ -37,6 +37,31 @@ pub fn is_near_end_enabled() -> bool {
     NEAR_END_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+// --- 角色沉浸思考开关（config.toml `[prompt]`，启动时由 lib.rs 设置一次）---
+// 灰度中（2026-08-26）：默认关。开启后主回复流 thinking-on + 近端注入思考
+// 格式指令（deepseek_v4_rolepaly_instruct 指令A）。converse.rs 读取。
+static IMMERSION_THINKING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+// f64 经位模式存 AtomicU64；0.0 = 内心OS 永不许可。
+static INNER_OS_PROBABILITY: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub fn set_immersion_thinking(v: bool) {
+    IMMERSION_THINKING.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_immersion_thinking_enabled() -> bool {
+    IMMERSION_THINKING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_inner_os_probability(p: f64) {
+    INNER_OS_PROBABILITY.store(p.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn inner_os_probability() -> f64 {
+    f64::from_bits(INNER_OS_PROBABILITY.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// Budget allocations per module (in approximate tokens).
 mod budget {
     pub const CONVERSATION: usize = 1600;

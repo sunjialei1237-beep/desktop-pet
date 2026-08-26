@@ -37,6 +37,10 @@ pub fn run() {
     // at startup; `[prompt] near_end_directive = false` restores the v1
     // message layout without a rebuild (Architecture #6 rollback path).
     mind::budget::set_near_end_enabled(config.prompt.near_end_directive);
+    // 角色沉浸思考灰度开关（2026-08-26）：默认关；开启后主回复流 thinking-on
+    // + 近端沉浸指令。内心OS 概率 0.0 = 永不许可。
+    mind::budget::set_immersion_thinking(config.prompt.enable_immersion_thinking);
+    mind::budget::set_inner_os_probability(config.prompt.inner_os_probability);
 
     let db_path = config::resolve_db_path(&config);
     let db_state = match db::DbState::open(&db_path) {

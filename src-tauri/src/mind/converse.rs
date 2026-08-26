@@ -918,6 +918,26 @@ pub async fn converse(
         messages.push(ChatMessage::system(clause));
     }
 
+    // 角色沉浸思考（灰度，config `[prompt] enable_immersion_thinking`）：
+    // QA 轮不启用（直答不需要内心戏），带工具能力的轮不启用（agent 分支的
+    // 终答走 thinking-off 调用，指令对它只剩 OS 泄漏风险）。指令骑近端
+    // （历史之后、用户消息之前）——2026-08-26 A/B 实测该位置前缀缓存零损伤。
+    // OS 许可是 Rust 概率门控（原则 #1），distress 轮让位：她该稳稳接住，
+    // 不该在对方难受时耍俏皮（tone_hint 的 distress 让位同款）。
+    let immersion_on = !qa_mode
+        && intent.capability == crate::tools::CapabilityMode::None
+        && crate::mind::budget::is_immersion_thinking_enabled();
+    if immersion_on {
+        let distress =
+            matches!(intent.goal.as_str(), "care" | "listen") || intent.action == "silence";
+        let os_allowed = !distress
+            && rand::thread_rng().gen::<f64>() < crate::mind::budget::inner_os_probability();
+        messages.push(ChatMessage::system(
+            crate::mind::grounding::build_immersion_clause(os_allowed),
+        ));
+        log::info!("[converse] immersion thinking ON (os_allowed={})", os_allowed);
+    }
+
     messages.push(ChatMessage::user(text.to_string()));
 
     let system_tokens = crate::mind::budget::estimate_tokens(messages[0].content_str());
@@ -1107,17 +1127,23 @@ pub async fn converse(
         }
         (normalize_reply(&outcome.reply), outcome.tool_rounds)
     } else {
-        // Step 9: normal streamed reply. Thinking OFF for first-token latency.
-        let no_thinking = ThinkingConfig::disabled();
+        // Step 9: normal streamed reply. Thinking OFF for first-token latency —
+        // unless immersion thinking is on (2026-08-26 A/B 实测：首字 2.2-2.5s，
+        // 仍在 5s 门槛内；+1s 的思考期由既有 thinking orb 视觉覆盖)。
+        let thinking = if immersion_on {
+            ThinkingConfig::enabled()
+        } else {
+            ThinkingConfig::disabled()
+        };
         let mut chat_result = llm
-            .chat_stream(&messages, Some(0.8), Some(4096), Some(&no_thinking), None, &mut on_token)
+            .chat_stream(&messages, Some(0.8), Some(4096), Some(&thinking), None, &mut on_token)
             .await
             .map_err(|e| format!("LLM error: {:?}", e))?;
         // Retry once on empty content (pitfall #3: flash reasoning eats budget).
         if chat_result.content.trim().is_empty() {
             log::warn!("[converse] main reply empty on first attempt; retrying once");
             chat_result = llm
-                .chat_stream(&messages, Some(0.8), Some(4096), Some(&no_thinking), None, &mut on_token)
+                .chat_stream(&messages, Some(0.8), Some(4096), Some(&thinking), None, &mut on_token)
                 .await
                 .map_err(|e| format!("LLM error on retry: {:?}", e))?;
             if chat_result.content.trim().is_empty() {

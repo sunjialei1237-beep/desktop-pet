@@ -301,12 +301,25 @@ pub struct PromptConfig {
     /// conversation history (near-end directive, CCv2 post_history_instructions).
     /// false = exact v1 layout (runtime rollback without rebuild).
     pub near_end_directive: bool,
+    /// 角色沉浸思考（deepseek_v4_rolepaly_instruct 指令A，2026-08-26 API A/B
+    /// 实测：首字 +1s、每轮 +~80 completion tokens、前缀缓存无损伤）：主回复
+    /// 流开 thinking + 近端注入思考格式指令。默认关（灰度）。QA 轮与工具轮
+    /// 不启用。
+    #[serde(default)]
+    pub enable_immersion_thinking: bool,
+    /// 沉浸开启时，允许回复带一句括号内心OS的轮次比例（0.0 = 永不）。
+    /// Rust 侧概率门控（原则 #1：LLM 只表达不决定）；distress 轮强制关闭。
+    /// 建议 0.1 起步——频率是成败关键，每轮都 OS 会舞台剧化。
+    #[serde(default)]
+    pub inner_os_probability: f64,
 }
 
 impl Default for PromptConfig {
     fn default() -> Self {
         PromptConfig {
             near_end_directive: true,
+            enable_immersion_thinking: false,
+            inner_os_probability: 0.0,
         }
     }
 }
@@ -421,6 +434,43 @@ mod tests {
         // P2 memory reduction defaults: lazy on, unload after 30 idle minutes.
         assert!(config.embedding.lazy_load);
         assert_eq!(config.embedding.idle_unload_minutes, 30);
+        // Immersion gray-run switches default OFF (2026-08-26).
+        assert!(!config.prompt.enable_immersion_thinking);
+        assert_eq!(config.prompt.inner_os_probability, 0.0);
+    }
+
+    #[test]
+    fn prompt_immersion_keys_optional_and_overridable() {
+        // A pre-immersion config whose [prompt] section only has
+        // near_end_directive must still parse (field-level serde defaults).
+        let old = r#"
+[llm]
+base_url = "https://api.deepseek.com"
+api_key = "k"
+main_model = "m"
+reflection_model = "m"
+
+[embedding]
+model_dir = "D:\\models"
+model_name = "bge-m3"
+
+[app]
+db_path = ""
+debug = true
+log_level = "info"
+
+[prompt]
+near_end_directive = true
+"#;
+        let config: AppConfig = toml::from_str(old).unwrap();
+        assert!(config.prompt.near_end_directive);
+        assert!(!config.prompt.enable_immersion_thinking);
+        assert_eq!(config.prompt.inner_os_probability, 0.0);
+
+        let enabled = old.to_string() + "\nenable_immersion_thinking = true\ninner_os_probability = 0.1\n";
+        let config: AppConfig = toml::from_str(&enabled).unwrap();
+        assert!(config.prompt.enable_immersion_thinking);
+        assert!((config.prompt.inner_os_probability - 0.1).abs() < 1e-9);
     }
 
     #[test]

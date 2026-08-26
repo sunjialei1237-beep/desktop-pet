@@ -92,6 +92,31 @@ pub fn build_qa_relationship_section(retrieval: &RetrievalResult) -> Option<Stri
     format_relationship(retrieval).map(|rel| format!("[Relationship]\n{}", rel))
 }
 
+/// 角色沉浸思考指令（deepseek_v4_rolepaly_instruct 指令A 原文，逐字复制）。
+/// 注入位置：近端（历史之后、用户消息之前）的独立 system 消息——绝不进
+/// messages[0]，静态前缀缓存零损伤（2026-08-26 实测 cached_tokens 无回退）。
+/// 效果：thinking-on 时思考过程变成第一人称括号内心独白，回复继承人格而非
+/// 助手规范。QA 轮不注入（直答不需要内心戏）。
+const IMMERSION_THINKING_MARKER: &str = "\
+【角色沉浸要求】在你的思考过程（<think>标签内）中，请遵守以下规则：\n\
+1. 请以角色第一人称进行内心独白，用括号包裹内心活动，例如\"（心想：……）\"或\"(内心OS：……)\"\n\
+2. 用第一人称描写角色的内心感受，例如\"我心想\"\"我觉得\"\"我暗自\"等\n\
+3. 思考内容应沉浸在角色中，通过内心独白分析剧情和规划回复";
+
+/// 构建沉浸指令子句。`os_allowed` = 本轮许可回复带一句括号内心OS（Rust 侧
+/// 概率门控 + distress 让位后传入；许可措辞沿用 tone_hint 的"许可不是命令"
+/// 范式，并显式声明仅此一轮，防止模型把 OS 泄漏到无许可的轮次）。
+pub fn build_immersion_clause(os_allowed: bool) -> String {
+    let mut s = IMMERSION_THINKING_MARKER.to_string();
+    if os_allowed {
+        s.push_str(
+            "\n\n（另外，仅这一轮：你可以在回复里带一句括号的内心OS，轻轻露出你没说出口的真实想法；\
+             没有收到这句许可的轮次绝不带。）",
+        );
+    }
+    s
+}
+
 /// Near-end directive (Soul v2 plan L2a): current time + current mood (with
 /// an optional expressive-permission hint) + this turn's intent, injected as
 /// a trailing system message after the conversation history. The recency
@@ -858,6 +883,19 @@ mod tests {
         let near = build_near_end_directive(&EmotionState::default(), &Intent::default());
         assert!(near.contains("[Current time]"));
         assert!(near.contains("时段"));
+    }
+
+    #[test]
+    fn immersion_clause_marker_and_os_permission() {
+        // 指令A 原文逐字在场；无许可时不带 OS 行（marker 规则1本身含
+        // "(内心OS：……)" 字样，故用许可行的独有措辞做判据）。
+        let base = build_immersion_clause(false);
+        assert!(base.contains("【角色沉浸要求】"));
+        assert!(base.contains("以角色第一人称进行内心独白"));
+        assert!(!base.contains("没说出口的真实想法"));
+        let with_os = build_immersion_clause(true);
+        assert!(with_os.starts_with(&base), "OS line appends to the marker");
+        assert!(with_os.contains("仅这一轮"));
     }
 
     #[test]
