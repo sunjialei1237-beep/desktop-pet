@@ -55,3 +55,11 @@ shot.ps1
 kimi_vision.ps1
 screenshot.mjs
 e2e-chat-test.mjs
+
+# Session artifacts / tool state (HANDOFF 续⁵⁵建议)
+.firecrawl/
+.zcode/
+/_verify_*.jpg
+/app_*.patch
+/filter_err.txt
+/glm_p1.json

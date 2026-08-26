@@ -3,7 +3,7 @@
 
 use crate::commands::AppState;
 use crate::db::DbState;
-use chrono::Datelike;
+use chrono::{Datelike, Timelike};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -65,6 +65,16 @@ pub fn start_life_loop(app: AppHandle) {
     }
 }
 
+/// Pure decision: should the restart/suspend resume-greeting yield to a
+/// date-driven ritual that fires later in this same tick? Single-greeting rule
+/// (2026-08-15 早安 owns morning restarts; 2026-08-17 + 晚安 owns night
+/// restarts): when the moment belongs to a ritual, the local-pool greeting
+/// stays silent so a restart emits exactly ONE bubble (user report 2026-08-17:
+/// 3 bubbles in 5s — zombie 2s fallback + resume greeting + 晚安).
+fn resume_greeting_yields(rituals_enabled: bool, goodmorning_due: bool, goodnight_due: bool) -> bool {
+    rituals_enabled && (goodmorning_due || goodnight_due)
+}
+
 /// Gets the DbState from the managed state.
 fn get_db(app: &AppHandle) -> Option<tauri::State<'_, DbState>> {
     app.try_state::<DbState>()
@@ -113,12 +123,14 @@ fn medium_tick(app: &AppHandle) {
 
     if elapsed > crate::db::emotion::SUSPEND_THRESHOLD_SECS {
         // Single-greeting coordination on restart/suspend-resume (2026-08-15,
-        // user: three bubbles in a row after relaunch). This canned "slept N
-        // hours" used to fire unconditionally — stacking with the 早安 ritual
-        // (which runs later in this same tick) and the Soul startup thought.
+        // user: three bubbles in a row after relaunch; 2026-08-17: zombie 2s
+        // fallback + resume greeting + 晚安 again). This canned "slept N
+        // hours" used to fire unconditionally — stacking with the rituals
+        // (which run later in this same tick) and the Soul startup thought.
         // Yield rules, mirroring check_presence_transition's welcome-back:
-        // 1. Morning/Afternoon + rituals enabled + 早安 due (fires later in
-        //    this same tick) → the ritual owns this restart's greeting.
+        // 1. A date-driven ritual is due (fires later in this same tick):
+        //    早安 owns morning restarts, 晚安 owns night restarts → the
+        //    ritual owns this restart's greeting (resume_greeting_yields).
         // 2. Otherwise the canned fires (user-initiated restart, rate-limited
         //    by the 5-min suspend threshold) and OCCUPIES the shared budget
         //    so nothing proactive stacks after it.
@@ -128,11 +140,12 @@ fn medium_tick(app: &AppHandle) {
             crate::perception::time::TimeOfDay::Morning
                 | crate::perception::time::TimeOfDay::Afternoon
         );
-        // Yield ONLY when 早安 is due (it fires later in this same tick and is
-        // the more specific, date-driven greeting). When 早安 already fired
-        // earlier today, a later relaunch still deserves a (diversified,
-        // local-pool) greeting — the shared bubble budget below keeps them
-        // spaced from the morning's 早安.
+        // Yield ONLY when a date-driven ritual is due (it fires later in this
+        // same tick and is the more specific greeting): 早安 owns morning
+        // restarts, 晚安 owns night restarts (21:00-23:59, same window as
+        // check_goodnight below). When neither is due, a relaunch still
+        // deserves a (diversified, local-pool) greeting — the shared bubble
+        // budget keeps them spaced from the morning's 早安.
         let rituals_enabled = app
             .try_state::<AppState>()
             .map(|s| s.config.scheduler.enable_rituals)
@@ -145,10 +158,23 @@ fn medium_tick(app: &AppHandle) {
                         .ok()
                 })
                 .unwrap_or(false);
-        if goodmorning_due {
+        // 晚安 due 判定与 check_goodnight 完全同窗同门（hour 21..=23 + 当天
+        // 未打 + rituals 开启），避免两处口径漂移（2026-08-17: 夜间重启时
+        // 本地池问候与晚安仪式同 tick 连发）。
+        let goodnight_due = (21..=23).contains(&chrono::Local::now().hour())
+            && rituals_enabled
+            && get_db(app)
+                .and_then(|db| {
+                    db.with_conn(|conn| Ok(crate::soul::ritual::should_run_goodnight(conn)))
+                        .ok()
+                })
+                .unwrap_or(false);
+        if resume_greeting_yields(rituals_enabled, goodmorning_due, goodnight_due) {
             log::info!(
-                "Life loop: suspend/resume ({:.0}s), 早安 due this tick owns the greeting — skipping canned resume bubble",
-                elapsed
+                "Life loop: suspend/resume ({:.0}s), ritual due this tick (早安={} 晚安={}) owns the greeting — skipping canned resume bubble",
+                elapsed,
+                goodmorning_due,
+                goodnight_due
             );
         } else {
             // A restart greeting is user-initiated (they relaunched the app)
@@ -885,5 +911,31 @@ fn slow_tick(app: &AppHandle) {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resume_greeting_yields_to_any_due_ritual() {
+        // 早安 due（清晨重启）→ 让位给仪式。
+        assert!(resume_greeting_yields(true, true, false));
+        // 晚安 due（夜间重启）→ 让位 —— 2026-08-17 回归锚点：此前夜间重启
+        // 会同一 tick 连发本地池问候 + 晚安两条。
+        assert!(resume_greeting_yields(true, false, true));
+        // 两者同时 due → 让位。
+        assert!(resume_greeting_yields(true, true, true));
+    }
+
+    #[test]
+    fn resume_greeting_fires_when_no_ritual_owns_the_moment() {
+        // 无仪式 due → 本地池问候正常发声。
+        assert!(!resume_greeting_yields(true, false, false));
+        // rituals 整体关闭 → 问候永远自己发声（仪式不复存在，无从让位）。
+        assert!(!resume_greeting_yields(false, true, false));
+        assert!(!resume_greeting_yields(false, false, true));
+        assert!(!resume_greeting_yields(false, false, false));
     }
 }
