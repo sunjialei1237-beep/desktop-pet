@@ -382,8 +382,26 @@ async fn provider_matrix_run() {
 
     assert!(!api_key.is_empty(), "no API key configured (config.toml or MATRIX_API_KEY)");
 
-    let llm = LlmClient::new(&base_url, &api_key, &main_model, &reflection_model)
-        .expect("LLM client");
+    let llm = {
+        let mut c = LlmClient::new(&base_url, &api_key, &main_model, &reflection_model)
+            .expect("LLM client");
+        // Optional per-role routing (MATRIX_GATE_* / MATRIX_EXTRACTOR_*),
+        // mirroring config.toml [llm.gate] / [llm.extractor]. The KEY env
+        // defaults to the main key (same-host inheritance semantics).
+        let env_role = |prefix: &str| -> Option<desktop_pet_lib::llm::client::RoleEndpoint> {
+            let b = std::env::var(format!("MATRIX_{}_BASE_URL", prefix)).ok()?;
+            let m = std::env::var(format!("MATRIX_{}_MODEL", prefix)).ok()?;
+            let k = std::env::var(format!("MATRIX_{}_API_KEY", prefix))
+                .unwrap_or_else(|_| api_key.clone());
+            Some(desktop_pet_lib::llm::client::RoleEndpoint {
+                base_url: b,
+                api_key: k,
+                model: m,
+            })
+        };
+        c = c.with_roles(env_role("GATE"), env_role("EXTRACTOR"));
+        c
+    };
 
     // Fresh temp DB — the user's real DB is never touched by matrix runs.
     let db_path = std::env::temp_dir().join(format!(

@@ -1131,13 +1131,21 @@ fn persist_llm_state(state: &AppState, llm: &LlmConfig, profiles: &[LlmProfile])
 /// restart. None (no key yet) is a valid state — chat fails politely until a
 /// key is saved.
 fn rebuild_llm_client(state: &AppState, llm: &LlmConfig) {
+    let role = |r: &Option<crate::config::LlmRoleEndpoint>| {
+        r.as_ref().map(|e| crate::llm::client::RoleEndpoint {
+            base_url: e.base_url.clone(),
+            api_key: e.api_key.clone(),
+            model: e.model.clone(),
+        })
+    };
     let new_llm = LlmClient::new(
         &llm.base_url,
         &llm.api_key,
         &llm.main_model,
         &llm.reflection_model,
     )
-    .ok();
+    .ok()
+    .map(|c| c.with_roles(role(&llm.gate), role(&llm.extractor)));
     if let Ok(mut guard) = state.llm.lock() {
         *guard = new_llm;
     }
@@ -1180,6 +1188,10 @@ pub async fn update_llm_config(
             } else {
                 reflection_model
             },
+            // Per-role overrides are INDEPENDENT of the main provider —
+            // switching profiles must not silently drop them.
+            gate: live.gate.clone(),
+            extractor: live.extractor.clone(),
         };
         live.clone()
     };
@@ -1275,11 +1287,22 @@ pub async fn apply_llm_profile(
             .cloned()
             .ok_or_else(|| format!("没有找到模型方案「{}」", name))?
     };
+    // Profile switching changes the MAIN provider only; per-role gate /
+    // extractor overrides ride along untouched (they are separate knobs).
+    let (keep_gate, keep_extractor) = {
+        let live = state
+            .llm_config
+            .lock()
+            .map_err(|e| format!("LLM config lock error: {}", e))?;
+        (live.gate.clone(), live.extractor.clone())
+    };
     let llm = LlmConfig {
         base_url: profile.base_url,
         api_key: profile.api_key,
         main_model: profile.main_model,
         reflection_model: profile.reflection_model,
+        gate: keep_gate,
+        extractor: keep_extractor,
     };
     *state
         .llm_config

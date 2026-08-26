@@ -64,7 +64,19 @@ pub fn run() {
         &config.llm.main_model,
         &config.llm.reflection_model,
     )
-    .ok();
+    .ok()
+    .map(|c| {
+        // Per-role cost routing (2026-08-26): [llm.gate] / [llm.extractor]
+        // sections override the provider for classification / extraction.
+        let role = |r: &Option<crate::config::LlmRoleEndpoint>| {
+            r.as_ref().map(|e| crate::llm::client::RoleEndpoint {
+                base_url: e.base_url.clone(),
+                api_key: e.api_key.clone(),
+                model: e.model.clone(),
+            })
+        };
+        c.with_roles(role(&config.llm.gate), role(&config.llm.extractor))
+    });
     if llm_client.is_some() {
         log::info!("LLM client initialized (model: {})", config.llm.main_model);
     } else {

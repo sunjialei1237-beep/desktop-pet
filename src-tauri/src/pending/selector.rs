@@ -78,7 +78,7 @@ pub async fn run(
     let valid_ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
     for attempt in 1..=2 {
         let result = llm
-            .chat_reflection(&messages, Some(0.2), Some(2048))
+            .chat_gate(&messages, Some(0.2), Some(2048))
             .await
             .map_err(|e| format!("Selector LLM call failed: {:?}", e))?;
         if let Some(decision) = parse(&result.content, &valid_ids) {

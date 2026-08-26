@@ -154,7 +154,7 @@ pub async fn extract(
     let mut last_err = String::new();
     for attempt in 1..=2 {
         let result = llm
-            .chat_reflection(&messages(), Some(0.3), Some(4096))
+            .chat_extract(&messages(), Some(0.3), Some(4096))
             .await
             .map_err(|e| format!("Extractor LLM call failed: {}", e))?;
 

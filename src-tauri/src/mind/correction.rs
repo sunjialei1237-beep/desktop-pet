@@ -61,7 +61,7 @@ If the correction is unclear or does not match any known fact, respond with: {{\
     let mut last_err = String::new();
     for attempt in 1..=2 {
         let result = llm
-            .chat_reflection(&messages.clone(), Some(0.2), Some(4096))
+            .chat_extract(&messages.clone(), Some(0.2), Some(4096))
             .await
             .map_err(|e| format!("Correction LLM call failed: {}", e))?;
 

@@ -345,6 +345,15 @@ fn local_today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
+/// A per-role endpoint override (gate / extractor cost routing,
+/// 2026-08-26). See config.rs `[llm.gate]` / `[llm.extractor]`.
+#[derive(Debug, Clone)]
+pub struct RoleEndpoint {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
+
 /// OpenAI-compatible LLM client. Works with DeepSeek, OpenAI, Moonshot, Ollama, vLLM, etc.
 #[derive(Clone)]
 pub struct LlmClient {
@@ -353,10 +362,36 @@ pub struct LlmClient {
     api_key: String,
     main_model: String,
     reflection_model: String,
+    /// Per-role overrides; None → the role rides the main reflection_model.
+    gate: Option<RoleEndpoint>,
+    extractor: Option<RoleEndpoint>,
     /// Shared daily cost counters (Architecture #8). Behind `Arc<Mutex<>>` so
     /// every clone reports into one set of totals; `Arc` keeps `LlmClient`
     /// `Clone` (a fresh client is taken per conversation turn).
     cost: std::sync::Arc<std::sync::Mutex<LlmCostStats>>,
+}
+
+/// Which pipeline role a call belongs to (cost routing + accounting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmRole {
+    /// Per-turn gate classification (gate.rs, proactive selector).
+    Gate,
+    /// Memory extraction / correction JSON (extractor.rs, correction.rs).
+    Extractor,
+}
+
+/// Free-function twin of thinking_allowed for arbitrary role endpoints.
+fn endpoint_thinking_allowed(base_url: &str, model: &str) -> bool {
+    let hay = format!("{} {}", base_url, model).to_lowercase();
+    hay.contains("deepseek") || hay.contains("agnes") || hay.contains("bigmodel") || hay.contains("glm-")
+}
+
+fn same_host(a: &str, b: &str) -> bool {
+    fn host(u: &str) -> &str {
+        let rest = u.split_once("://").map(|(_, r)| r).unwrap_or(u);
+        rest.split('/').next().unwrap_or("")
+    }
+    host(a) == host(b)
 }
 
 impl LlmClient {
@@ -383,8 +418,53 @@ impl LlmClient {
             api_key: api_key.to_string(),
             main_model: main_model.to_string(),
             reflection_model: reflection_model.to_string(),
+            gate: None,
+            extractor: None,
             cost: std::sync::Arc::new(std::sync::Mutex::new(LlmCostStats::default())),
         })
+    }
+
+    /// Attach per-role endpoint overrides (callers: lib.rs from config,
+    /// the provider-matrix harness from env). An override whose api_key is
+    /// empty AND whose host differs from the main endpoint is dropped —
+    /// cross-provider roles must carry their own key.
+    pub fn with_roles(
+        mut self,
+        gate: Option<RoleEndpoint>,
+        extractor: Option<RoleEndpoint>,
+    ) -> Self {
+        self.gate = gate.filter(|e| !e.api_key.is_empty() || same_host(&e.base_url, &self.base_url));
+        self.extractor = extractor
+            .filter(|e| !e.api_key.is_empty() || same_host(&e.base_url, &self.base_url));
+        self
+    }
+
+    /// Endpoint a role actually uses: the override, or the main reflection
+    /// fallback. PURE — unit-testable without network.
+    pub fn role_endpoint(&self, role: LlmRole) -> (String, String, String) {
+        let ep = match role {
+            LlmRole::Gate => self.gate.as_ref(),
+            LlmRole::Extractor => self.extractor.as_ref(),
+        };
+        match ep {
+            Some(e) => {
+                let url = e.base_url.trim_end_matches('/').to_string();
+                // Same-host + empty key → inherit the main key (documented in
+                // config.rs); cross-provider roles must carry their own key
+                // (enforced at with_roles time).
+                let key = if e.api_key.is_empty() && same_host(&url, &self.base_url) {
+                    self.api_key.clone()
+                } else {
+                    e.api_key.clone()
+                };
+                (url, key, e.model.clone())
+            }
+            None => (
+                self.base_url.clone(),
+                self.api_key.clone(),
+                self.reflection_model.clone(),
+            ),
+        }
     }
 
     /// Records one successful call's token usage into the shared daily cost
@@ -503,6 +583,67 @@ impl LlmClient {
         .await
     }
 
+    /// Role-routed classification/extraction call (cost routing, 2026-08-26).
+    /// Uses the role's endpoint override when configured, else falls back to
+    /// the main reflection_model. Emits a `[llm-role]` accounting line so the
+    /// cost acceptance harness can attribute tokens per role.
+    pub async fn chat_role(
+        &self,
+        role: LlmRole,
+        messages: &[ChatMessage],
+        temperature: Option<f64>,
+        max_tokens: Option<u32>,
+    ) -> Result<ChatResult, LlmError> {
+        let (url, key, model) = self.role_endpoint(role);
+        let no_thinking = ThinkingConfig { type_: "disabled".to_string() };
+        let think = if endpoint_thinking_allowed(&url, &model) {
+            Some(no_thinking)
+        } else {
+            None
+        };
+        let result = self
+            .chat_core(
+                &url,
+                &key,
+                &model,
+                messages,
+                temperature,
+                max_tokens,
+                think.as_ref(),
+                None,
+                false,
+            )
+            .await?;
+        log::info!(
+            "[llm-role] role={:?} model={} in={} out={} cache_hit={:?}",
+            role,
+            model,
+            result.prompt_tokens,
+            result.completion_tokens,
+            result.prompt_cache_hit_tokens,
+        );
+        Ok(result)
+    }
+
+    /// Convenience wrappers so call sites read their intent.
+    pub async fn chat_gate(
+        &self,
+        messages: &[ChatMessage],
+        temperature: Option<f64>,
+        max_tokens: Option<u32>,
+    ) -> Result<ChatResult, LlmError> {
+        self.chat_role(LlmRole::Gate, messages, temperature, max_tokens).await
+    }
+
+    pub async fn chat_extract(
+        &self,
+        messages: &[ChatMessage],
+        temperature: Option<f64>,
+        max_tokens: Option<u32>,
+    ) -> Result<ChatResult, LlmError> {
+        self.chat_role(LlmRole::Extractor, messages, temperature, max_tokens).await
+    }
+
     async fn chat_with_model(
         &self,
         model: &str,
@@ -514,7 +655,35 @@ impl LlmClient {
         force_tool_call: bool,
     ) -> Result<ChatResult, LlmError> {
         let url = self.build_url();
+        self.chat_core(
+            &url,
+            &self.api_key,
+            model,
+            messages,
+            temperature,
+            max_tokens,
+            thinking,
+            tools,
+            force_tool_call,
+        )
+        .await
+    }
 
+    /// Endpoint-parameterized request core (main provider AND role overrides
+    /// funnel here). Same body the old chat_with_model carried.
+    #[allow(clippy::too_many_arguments)]
+    async fn chat_core(
+        &self,
+        url: &str,
+        api_key: &str,
+        model: &str,
+        messages: &[ChatMessage],
+        temperature: Option<f64>,
+        max_tokens: Option<u32>,
+        thinking: Option<&ThinkingConfig>,
+        tools: Option<&[ToolDef]>,
+        force_tool_call: bool,
+    ) -> Result<ChatResult, LlmError> {
         let request = ChatRequest {
             model: model.to_string(),
             messages: messages.to_vec(),
@@ -539,8 +708,8 @@ impl LlmClient {
 
         let resp = self
             .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .post(url.to_string())
+            .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
@@ -640,16 +809,10 @@ impl LlmClient {
         Ok(result)
     }
 
-    /// The `thinking` request field is a DeepSeek-family extension (Agnes
-    /// relays tolerate it; their models ignore it). Strict OpenAI-compat
-    /// servers can reject unknown body fields outright, so it is only sent
-    /// to providers known to accept it. Agnes models mirror DeepSeek's
-    /// reasoning_content protocol, hence included.
+    /// The `thinking` request field is only sent to providers known to
+    /// accept it (see `endpoint_thinking_allowed`).
     fn thinking_allowed(&self) -> bool {
-        let hay = format!("{} {}", self.base_url, self.main_model).to_lowercase();
-        // GLM coding/general endpoints honor the same field (verified:
-        // thinking:disabled → reasoning_tokens absent, 2026-08-24 probe).
-        hay.contains("deepseek") || hay.contains("agnes") || hay.contains("bigmodel") || hay.contains("glm-")
+        endpoint_thinking_allowed(&self.base_url, &self.main_model)
     }
 
     /// Build the chat-completions URL from the configured base_url. Shared by
@@ -860,6 +1023,58 @@ mod tests {
 
     fn client_for(base: &str) -> LlmClient {
         LlmClient::new(base, "test-key", "m", "m").expect("client")
+    }
+
+    #[test]
+    fn role_endpoint_fallback_and_override() {
+        let c = client_for("https://api.deepseek.com/v1");
+        // No overrides → roles ride the main reflection_model.
+        let (u, _, m) = c.role_endpoint(LlmRole::Gate);
+        assert_eq!(u, "https://api.deepseek.com/v1");
+        assert_eq!(m, "m"); // reflection_model in client_for is "m"
+        // With an override the role gets its own endpoint (trailing slash
+        // normalized).
+        let c = c.with_roles(
+            Some(RoleEndpoint {
+                base_url: "https://open.bigmodel.cn/api/coding/paas/v4/".into(),
+                api_key: "k2".into(),
+                model: "glm-4.7".into(),
+            }),
+            None,
+        );
+        let (u2, k2, m2) = c.role_endpoint(LlmRole::Gate);
+        assert_eq!(u2, "https://open.bigmodel.cn/api/coding/paas/v4");
+        assert_eq!((k2.as_str(), m2.as_str()), ("k2", "glm-4.7"));
+        // The OTHER role still falls back.
+        let (_, _, m3) = c.role_endpoint(LlmRole::Extractor);
+        assert_eq!(m3, "m");
+    }
+
+    #[test]
+    fn with_roles_drops_keyless_cross_provider_override() {
+        let c = client_for("https://api.deepseek.com/v1");
+        // Same host, empty key → allowed (inherits main key).
+        let c2 = c.clone().with_roles(
+            Some(RoleEndpoint {
+                base_url: "https://api.deepseek.com/v1".into(),
+                api_key: String::new(),
+                model: "deepseek-chat".into(),
+            }),
+            None,
+        );
+        assert!(c2.role_endpoint(LlmRole::Gate).1 == "test-key");
+        // Different host + empty key → dropped, falls back.
+        let c3 = c.with_roles(
+            Some(RoleEndpoint {
+                base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
+                api_key: String::new(),
+                model: "glm-4.7".into(),
+            }),
+            None,
+        );
+        let (u, _, m) = c3.role_endpoint(LlmRole::Gate);
+        assert_eq!(u, "https://api.deepseek.com/v1");
+        assert_eq!(m, "m");
     }
 
     #[test]

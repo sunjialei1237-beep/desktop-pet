@@ -33,6 +33,28 @@ pub struct LlmConfig {
     pub api_key: String,
     pub main_model: String,
     pub reflection_model: String,
+    /// Per-role endpoint overrides (2026-08-26 cost routing). When present,
+    /// gate classification / memory extraction calls go to their OWN
+    /// provider+model instead of the main reflection_model — the cost lever:
+    /// classification rides a cheap/free tier, rigor-critical extraction and
+    /// the main reply stay on quality providers. Absent → current behavior.
+    #[serde(default)]
+    pub gate: Option<LlmRoleEndpoint>,
+    #[serde(default)]
+    pub extractor: Option<LlmRoleEndpoint>,
+}
+
+/// One role's endpoint override. Sections in config.toml:
+/// `[llm.gate]` / `[llm.extractor]` with base_url + api_key + model.
+/// A role section with an empty api_key falls back to the main key ONLY
+/// when it shares the main base_url; cross-provider roles must carry their
+/// own key (empty key + different host → role disabled, fallback used).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmRoleEndpoint {
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    pub model: String,
 }
 
 /// One saved switchable LLM configuration (base_url + key + models).
@@ -181,6 +203,8 @@ impl Default for AppConfig {
                 api_key: String::new(),
                 main_model: "deepseek-v4-pro".to_string(),
                 reflection_model: "deepseek-v4-flash".to_string(),
+                gate: None,
+                extractor: None,
             },
             llm_profiles: Vec::new(),
             embedding: EmbeddingConfig {
