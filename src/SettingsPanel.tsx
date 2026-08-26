@@ -289,12 +289,15 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           )}
           {profiles.map((p) => (
             <div className="settings-profile-row" key={p.name}>
-              <span className="settings-grant-root" title={`${p.base_url} · ${p.reflection_model}`}>
+              <span
+                className="settings-grant-root"
+                title={`接口：${p.base_url}\n主模型：${p.main_model}\n反思模型：${p.reflection_model}`}
+              >
                 {p.name}
+                {p.reflection_model !== p.main_model && (
+                  <span className="settings-profile-sub"> · {p.reflection_model}</span>
+                )}
                 {p.active && <span className="settings-profile-active">✓ 使用中</span>}
-              </span>
-              <span className="settings-grant-mode" title={p.base_url}>
-                {p.base_url.replace(/^https?:\/\//, "")}
               </span>
               <button
                 className="settings-grant-revoke"

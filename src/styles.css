@@ -1085,6 +1085,9 @@ html, body, #root {
   color: #2e7d32;
   font-weight: 600;
 }
+.settings-profile-sub {
+  color: #8a725b;
+}
 
 /* -- 首次启动配置向导（SetupWizard，安装包 UX）-- */
 .setup-overlay {
