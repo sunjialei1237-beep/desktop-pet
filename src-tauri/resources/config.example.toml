@@ -60,6 +60,16 @@ enable_open_application = true
 # steering slot, CCv2 post_history_instructions). false = v1 layout (rollback
 # without rebuild).
 near_end_directive = true
+# Immersion thinking (2026-08-26, gray-run): main reply streams with
+# thinking-on + the 角色沉浸 instruction injected near-end (first-person
+# parenthesized inner monologue in the reasoning chain). Measured on
+# deepseek-v4-flash: TTFT 2.2-2.5s (+1s), ~+80 completion tokens/turn,
+# prefix cache untouched. QA turns and tool turns never enable it.
+# enable_immersion_thinking = false
+# Fraction of eligible (non-distress, non-QA) turns allowed to surface ONE
+# parenthesized inner-OS line in the visible reply. Rust-side probability
+# gate — keep it low, an OS every turn turns her into a stage play.
+# inner_os_probability = 0.0
 
 [proactive]
 # min_interval_secs = 3600      # proactive bubble minimum interval (seconds)

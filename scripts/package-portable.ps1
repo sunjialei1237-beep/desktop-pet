@@ -8,7 +8,7 @@ $exe = "D:\cargo-target\desktop-pet\release\desktop-pet.exe"
 $bundleDir = "D:\cargo-target\desktop-pet\release\bundle"
 if (-not (Test-Path $exe)) { throw "release exe not found: $exe" }
 
-$version = "0.1.0"
+$version = "0.1.1"
 $zipName = "Liri-$version-x64-portable.zip"
 $zipPath = Join-Path $bundleDir $zipName
 

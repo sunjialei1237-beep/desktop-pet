@@ -38,6 +38,7 @@
 - **关系成长**：closeness / trust 随真实相处累积——早期不黏人、熟络后更亲
 - **情绪稳态**：mood / energy / social_battery / stress / loneliness 持续漂移；loneliness 高 + 关系够熟时，她会**主动**冒一句"想你"
 - **自我反思**：离线 reflection 生成内心 thought，在恰当时机自然带进对话
+- **沉浸内心戏**（灰度，默认关）：可开启"角色沉浸思考"——她的思维链以第一人称内心独白展开，回复偶尔带一句括号内心 OS（Rust 概率门控，危机时刻永不俏皮）
 - **关系复盘**：阶段性 relationship review，她会"回想"这段关系的进展
 - **仪式感**：早安仪式、久别欢迎、孤独轻戳、昼夜节律的"该睡了"
 
@@ -51,12 +52,13 @@
 ### 🛠️ 会搭手（Agent · 工具层）
 - **联网搜索**："查查最近的 AI 新闻" → 头条搜索源，中文总结给你
 - **打开应用**："打开网易云" → 动态扫描桌面/开始菜单快捷方式，自己判断，零白名单配置
+- **环境与文件感知**："帮我看下我打开的代码" → 感知编辑器（VSCode/记事本等）正在编辑什么；读文件前先征得同意（就这次 / 总是 / 拒绝），改文件走提案确认卡 + 字节级撤销
 - **知道时间**："现在几点" 直接答，不浪费一次工具调用
 - **三层门控 + 安全铁律**：Planner 决定要不要给她工具 → LLM 决定怎么用 → Tool Policy 硬校验（白名单 / https / 超时 / 限流）；工具结果视为不可信输入、绝不进记忆；闲聊语境 **0 工具调用**（黑名单测试优先）
 
 ### 🔒 隐私与成本
 - **全本地**：记忆存 SQLite，向量存 sqlite-vec，嵌入跑本地 BGE-M3，不传任何第三方
-- **模型自配**：默认 DeepSeek，也支持 OpenAI、或 **Ollama 完全本地**运行（一个 API key 都不用）
+- **模型自配**：默认 DeepSeek，也支持 GLM、OpenAI、Agnes 等中转、或 **Ollama 完全本地**运行（一个 API key 都不用）；配置过的方案自动保存，一键切换
 - **成本可控**：budget 管控 + flash/pro 双模型分流（反思用便宜的）+ 流式回复逐字呈现
 - **能力可关**：每个感知层（时间 / 在场 / 窗口）与调度能力（反思 / 固化 / 工具）可独立关闭（Architecture Principle #6）
 
@@ -68,12 +70,12 @@
 
 <div align="center">
 
-[![下载 Windows 版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88-v0.1.0-9d7ee0?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/sunjialei1237-beep/desktop-pet/releases/latest)
+[![下载 Windows 版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88-v0.1.1-9d7ee0?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/sunjialei1237-beep/desktop-pet/releases/latest)
 
 也可以点击下面的直链**直接开始下载**：
 
-[⬇️ Liri_0.1.0_x64-setup.exe — 一键安装（7.7 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.0/Liri_0.1.0_x64-setup.exe) ｜
-[⬇️ Liri-0.1.0-x64-portable.zip — 免安装（9.7 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.0/Liri-0.1.0-x64-portable.zip)
+[⬇️ Liri_0.1.1_x64-setup.exe — 一键安装（8.1 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.1/Liri_0.1.1_x64-setup.exe) ｜
+[⬇️ Liri-0.1.1-x64-portable.zip — 免安装（10.2 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.1/Liri-0.1.1-x64-portable.zip)
 
 </div>
 
@@ -145,8 +147,8 @@ npx tauri build --no-bundle    # 产物：desktop-pet.exe（前端已嵌入）
 | 渲染 | **Spine + PixiJS** | 角色"璃"骨骼动画：呼吸、视线跟随、情绪表情、微行为 |
 | 存储 | **SQLite + sqlite-vec** | 情景记忆 + 原生向量检索 |
 | 嵌入 | **BGE-M3**（本地 ONNX Runtime） | 中文语义检索，离线 |
-| LLM | **DeepSeek v4**（默认）/ OpenAI / Ollama | OpenAI 兼容，用户自配；工具调用 + 流式 |
-| 构建 / 测试 | Vite 6 · Vitest · cargo test | 388 库单测 + 真 LLM 闭环 harness |
+| LLM | **DeepSeek v4**（默认）/ GLM / OpenAI / Ollama | OpenAI 兼容，用户自配；工具调用 + 流式 |
+| 构建 / 测试 | Vite 6 · Vitest · cargo test | 560 库单测 + 真 LLM 闭环 harness |
 
 ---
 
@@ -199,7 +201,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib   # 后端库单测（快�
 - [x] Mind 记忆闭环（情景记忆 + 向量检索 + 巩固 + 遗忘 + 承诺追踪）
 - [x] Soul 关系成长 + loneliness 主动陪伴 + 反思 + 仪式
 - [x] Body 物理交互 + 昼夜作息 + 情绪表情（Spine 角色已上线）
-- [x] Agent 工具层（搜索 / 打开应用 / 时间，三层门控）
+- [x] Agent 工具层（搜索 / 打开应用 / 时间 / 环境与文件感知，三层门控 + 授权管线）
 - [ ] 角色美术资产持续迭代（表情 / 动作时间线补全）
 - [ ] macOS / Linux 支持
 - [ ] 用户自定义形象
