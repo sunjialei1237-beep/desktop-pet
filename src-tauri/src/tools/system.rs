@@ -125,11 +125,75 @@ fn time_of_day_cn(tod: TimeOfDay) -> &'static str {
     }
 }
 
+/// Windows housekeeping processes that may show up spontaneously right after
+/// an explorer launch — never counted as "the app the user asked for". All
+/// entries lowercase (compared via to_lowercase).
+const LAUNCH_NOISE_PROCESSES: &[&str] = &[
+    "explorer.exe", "conhost.exe", "dllhost.exe", "sihost.exe", "runtimebroker.exe",
+    "cmd.exe", "cscript.exe", "wscript.exe", "searchprotocolhost.exe",
+    "searchfilterhost.exe", "applicationframehost.exe", "startmenuexperiencehost.exe",
+    "shellexperiencehost.exe", "textinputhost.exe", "smartscreen.exe",
+    "backgroundtaskhost.exe", "taskhostw.exe", "svchost.exe",
+];
+
+/// Snapshot every running process exe name (ToolHelp walk, same API as
+/// perception::window). Empty on non-Windows so the diff degrades to "no new
+/// process detected" instead of breaking.
+#[cfg(target_os = "windows")]
+fn snapshot_process_names() -> std::collections::HashSet<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
+        PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    let mut names = std::collections::HashSet::new();
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return names;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(&entry.szExeFile);
+                names.insert(name.trim_end_matches('\0').to_lowercase());
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    names
+}
+
+#[cfg(not(target_os = "windows"))]
+fn snapshot_process_names() -> std::collections::HashSet<String> {
+    std::collections::HashSet::new()
+}
+
+/// First process in `now` that is new (not in `before`) and not Windows noise.
+fn first_new_process(
+    before: &std::collections::HashSet<String>,
+    now: &std::collections::HashSet<String>,
+) -> Option<String> {
+    now.iter()
+        .find(|n| !before.contains(*n) && !LAUNCH_NOISE_PROCESSES.contains(&n.as_str()))
+        .cloned()
+}
+
 /// `open_application`: discover and launch an app by spoken name. Scans the
 /// user's Desktop + Start Menu shortcuts (`.lnk`) and fuzzy-matches the
 /// requested name, then hands the resolved shortcut to `explorer` (which opens
 /// the real target through the shell). No static whitelist — the pet finds what
 /// the user actually has installed.
+///
+/// 2026-08-26 live miss (「帮我打开抖音」→「开了」→ 桌面没窗口，重试才出现)：
+/// explorer 的 spawn 成功只代表"shell 收到了命令"，不代表程序起来了——
+/// 抖音这类启动器+守护架构的应用窗口要几十秒才出现。所以 spawn 后做差分
+/// 进程校验（≤2.5s 轮询新进程），按实际检测结果汇报，模型不再凭空打包票。
 pub async fn open_application(args: &serde_json::Value) -> ToolResult {
     let app = args.get("app").and_then(|a| a.as_str()).unwrap_or("");
     if app.trim().is_empty() {
@@ -166,25 +230,62 @@ pub async fn open_application(args: &serde_json::Value) -> ToolResult {
         target.name
     );
 
+    // Differential baseline BEFORE the spawn: a verified launch = a process
+    // that did not exist before the command.
+    let before = snapshot_process_names();
+
     // Open the .lnk through explorer (the shell resolves the real target).
     // No CREATE_NO_WINDOW needed: explorer is a GUI app, no console spawned.
-    match std::process::Command::new("explorer").arg(&target.path).spawn() {
-        Ok(_) => {
+    if let Err(e) = std::process::Command::new("explorer").arg(&target.path).spawn() {
+        log::warn!("[tools] open_application {} failed: {}", target.path, e);
+        return ToolResult {
+            status: ToolStatus::Failed,
+            content: format!("没能打开 {}：{}", target.name, e),
+        };
+    }
+    log::info!(
+        "[tools] open_application: launched {} via {}",
+        target.name,
+        target.path
+    );
+
+    // Poll ≤2.5s for a new non-noise process. A launcher exe shows up within a
+    // second even when the real window takes much longer (抖音 cold start).
+    let mut detected: Option<String> = None;
+    for _ in 0..5 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let now = snapshot_process_names();
+        if let Some(name) = first_new_process(&before, &now) {
+            detected = Some(name);
+            break;
+        }
+    }
+    match detected {
+        Some(proc) => {
             log::info!(
-                "[tools] open_application: launched {} via {}",
-                target.name,
-                target.path
+                "[tools] open_application: verified new process {} for {}",
+                proc,
+                target.name
             );
             ToolResult {
                 status: ToolStatus::Success,
-                content: format!("已经帮你打开 {} 了。", target.name),
+                content: format!(
+                    "已启动 {}（检测到新进程 {}）。如果几秒后窗口还没出现，程序可能还在慢启动，让用户等一下；还没有就告诉我，我再开一次。",
+                    target.name, proc
+                ),
             }
         }
-        Err(e) => {
-            log::warn!("[tools] open_application {} failed: {}", target.path, e);
+        None => {
+            log::info!(
+                "[tools] open_application: no new process within 2.5s for {}",
+                target.name
+            );
             ToolResult {
-                status: ToolStatus::Failed,
-                content: format!("没能打开 {}：{}", target.name, e),
+                status: ToolStatus::Success,
+                content: format!(
+                    "已向系统发出启动 {} 的指令，但 2 秒内没检测到新进程——它可能已在后台运行，或正在慢启动。请如实告诉用户：如果几秒后窗口没出现，就再说一声，我重新开一次。",
+                    target.name
+                ),
             }
         }
     }
@@ -311,6 +412,31 @@ mod tests {
             path: "b.lnk".to_string(),
         }];
         assert!(fuzzy_match_app("完全不存在的应用xyz", &apps).is_none());
+    }
+
+    #[test]
+    fn test_noise_list_is_lowercase_for_diff_comparison() {
+        // first_new_process compares lowercase snapshots — a mixed-case entry
+        // here would silently never match. Lock the invariant.
+        assert!(LAUNCH_NOISE_PROCESSES
+            .iter()
+            .all(|n| *n == n.to_lowercase()));
+        assert!(LAUNCH_NOISE_PROCESSES.contains(&"explorer.exe"));
+    }
+
+    #[test]
+    fn test_first_new_process_ignores_noise_and_known() {
+        let mut before = std::collections::HashSet::new();
+        before.insert("douyin.exe".to_string());
+        before.insert("desktop-pet.exe".to_string());
+
+        let mut now = before.clone();
+        now.insert("explorer.exe".to_string()); // noise: explorer spawn echo
+        now.insert("conhost.exe".to_string()); // noise
+        assert_eq!(first_new_process(&before, &now), None);
+
+        now.insert("zcode.exe".to_string()); // the real launch
+        assert_eq!(first_new_process(&before, &now), Some("zcode.exe".to_string()));
     }
 
     #[tokio::test]
