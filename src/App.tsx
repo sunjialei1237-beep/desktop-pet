@@ -404,6 +404,20 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     setInputVisible(true);
   }, [showBubble]);
 
+  // 访谈兜底网（2026-08-27）：当前问题气泡可能被漏网气泡源顶掉，或 120s
+  // 超时自然消失（用户中途去玩桌宠很常见）。只要访谈还活着而屏幕上没有
+  // 气泡，就把当前问题重新亮出来——访谈绝不能静默卡死。延迟一拍再判定，
+  // 避开 handleSend 推进下一题时的同帧中间态误触发。
+  useEffect(() => {
+    if (!onboarding?.active || bubbleVisible) return;
+    const t = window.setTimeout(() => {
+      if (onboardingActiveRef.current && !bubbleVisibleRef.current) {
+        showBubble(ONBOARD_QUESTIONS[onboarding.step].ask, 120000, "bubble-calm");
+      }
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [onboarding, bubbleVisible, showBubble]);
+
   // Receive model bounds (canvas-local CSS px) from SpineCanvas for click-through.
   const handleModelBounds = useCallback((b: { x: number; y: number; width: number; height: number }) => {
     modelBoundsRef.current = b;
@@ -554,6 +568,8 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     listen<{ title: string; event_id: string }>("proactive-prompt", (event) => {
       // Backend emitted a due pending event; route through the memory-grounded
       // generator instead of a canned "怎么样啦？" string.
+      // 访谈/向导期间问题气泡独占（同 bubble-show 守卫，2026-08-27 补）。
+      if (onboardingActiveRef.current || setupOpenRef.current) return;
       invoke<string | null>("proactive_bubble")
         .then((reply) => {
           if (reply) showBubble(reply, 15000, "bubble-calm");
@@ -663,6 +679,9 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const proactiveTimer = setInterval(async () => {
       if (awayMode) return;
+      // 访谈/向导期间问题气泡独占（2026-08-27 补）：冷启动访谈与主动冒泡
+      // 都不得覆盖当前问题。
+      if (onboardingActiveRef.current || setupOpenRef.current) return;
       try {
         // Cold-start interview check (bypasses closeness gate).
         const interview = await invoke<string | null>("check_cold_start");
@@ -1510,6 +1529,19 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     window.addEventListener("mouseup", onUp);
   }, []);
 
+  // 手动拖拽的光标↔窗口偏移是固定的（grabOffsetRef），松手时 mousedown/
+  // mouseup 的 client 坐标几乎重合，浏览器会照常合成 click/dblclick ——
+  // "拖完就被当成摸头/戳一下"的元凶（访谈期间甚至会顶掉当前问题气泡，
+  // 2026-08-27）。wasDraggedRef 从拖拽生效起为 true，直到松手 ≥300ms 后
+  // armed-fall 才清除，恰好覆盖合成点击到达的时刻：捕获阶段截停，不让它
+  // 到达画布的点击监听。
+  const swallowPostDragClick = useCallback((e: React.SyntheticEvent) => {
+    if (wasDraggedRef.current) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, []);
+
   // overrideText lets Escape submit an empty answer during onboarding (see onKeyDown).
   const handleApplyEdit = useCallback(async (approve: boolean) => {
     const proposal = editProposal;
@@ -1712,13 +1744,16 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
       invoke("pet_head").catch(() => {});
       fsmRef.current?.transition(BehaviorState.Embarrassed);
       // 摸头反应按亲密度分档（与音效一致）：熟络=撒娇开心，陌生=拘谨害羞
-      // （害羞用 bubble-shy 慢浮现，与 续³ 低亲密度→害羞 的情绪设计对齐）
-      const intimate = closenessRef.current >= INTIMATE_THRESHOLD;
-      const pool = intimate
-        ? ["嘿嘿…", "谢谢你～", "抹抹～", "最喜欢你摸头啦～"]
-        : ["呜…", "啊…", "怎、怎么了…？"];
-      const variant = intimate ? "bubble-happy" : "bubble-shy";
-      showBubble(pool[Math.floor(Math.random() * pool.length)], 3000, variant, "bubble-pet");
+      // （害羞用 bubble-shy 慢浮现，与 续³ 低亲密度→害羞 的情绪设计对齐）。
+      // 访谈中不弹（2026-08-27）：摸头照常生效，但反应气泡会覆盖当前问题。
+      if (!onboardingActiveRef.current) {
+        const intimate = closenessRef.current >= INTIMATE_THRESHOLD;
+        const pool = intimate
+          ? ["嘿嘿…", "谢谢你～", "抹抹～", "最喜欢你摸头啦～"]
+          : ["呜…", "啊…", "怎、怎么了…？"];
+        const variant = intimate ? "bubble-happy" : "bubble-shy";
+        showBubble(pool[Math.floor(Math.random() * pool.length)], 3000, variant, "bubble-pet");
+      }
       setTimeout(() => fsmRef.current?.forceState(BehaviorState.Idle), 1500);
     }, 280);
  }, [showBubble]);
@@ -1954,6 +1989,8 @@ const handleBodyClick = useCallback(() => {
        ref={petRef}
       className={`pet-char-wrapper ${isBeingDragged ? "dragging" : ""}`}
       data-behavior={behavior}
+      onClickCapture={swallowPostDragClick}
+      onDoubleClickCapture={swallowPostDragClick}
       onDoubleClick={() => {
         markInteraction();
         sound.play("dblclick");
