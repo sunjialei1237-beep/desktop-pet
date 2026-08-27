@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-config-schema/schema.json",
   "productName": "Liri",
   "mainBinaryName": "desktop-pet",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.desktoppet.app",
   "build": {
     "frontendDist": "../dist",

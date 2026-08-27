@@ -70,12 +70,12 @@
 
 <div align="center">
 
-[![下载 Windows 版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88-v0.1.1-9d7ee0?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/sunjialei1237-beep/desktop-pet/releases/latest)
+[![下载 Windows 版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88-v0.1.2-9d7ee0?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/sunjialei1237-beep/desktop-pet/releases/latest)
 
 也可以点击下面的直链**直接开始下载**：
 
-[⬇️ Liri_0.1.1_x64-setup.exe — 一键安装（8.1 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.1/Liri_0.1.1_x64-setup.exe) ｜
-[⬇️ Liri-0.1.1-x64-portable.zip — 免安装（10.2 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.1/Liri-0.1.1-x64-portable.zip)
+[⬇️ Liri_0.1.2_x64-setup.exe — 一键安装（8.1 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.2/Liri_0.1.2_x64-setup.exe) ｜
+[⬇️ Liri-0.1.2-x64-portable.zip — 免安装（10.3 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.2/Liri-0.1.2-x64-portable.zip)
 
 </div>
 
