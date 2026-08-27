@@ -44,9 +44,18 @@ fn scan_apps() -> Vec<AppEntry> {
     for dir in &dirs_to_scan {
         scan_dir(dir, &mut apps);
     }
-    // Dedup by name (case-insensitive), keeping the first occurrence.
-    apps.dedup_by(|a, b| a.name.eq_ignore_ascii_case(&b.name));
-    apps
+    dedup_first_seen(apps)
+}
+
+/// 首见优先去重（大小写不敏感）。原 `dedup_by` 只合并**相邻**重复——同名
+/// lnk 分布在不同扫描根（如桌面 vs C:\ProgramData）时两个都会留下；虽然
+/// `fuzzy_match_app` 取首个匹配把它掩盖了，但列表语义应当唯一。顺序保持
+/// 不变（先 Desktop 后 Start Menu），首见者胜。
+fn dedup_first_seen(apps: Vec<AppEntry>) -> Vec<AppEntry> {
+    let mut seen = std::collections::HashSet::with_capacity(apps.len());
+    apps.into_iter()
+        .filter(|a| seen.insert(a.name.to_ascii_lowercase()))
+        .collect()
 }
 
 fn scan_dir(dir: &Path, apps: &mut Vec<AppEntry>) {
@@ -437,6 +446,34 @@ mod tests {
 
         now.insert("zcode.exe".to_string()); // the real launch
         assert_eq!(first_new_process(&before, &now), Some("zcode.exe".to_string()));
+    }
+
+    #[test]
+    fn test_dedup_first_seen_across_scan_roots() {
+        // 同名 lnk 分布在不同根（桌面 vs ProgramData）不相邻——原 dedup_by
+        // 只去相邻重复，两个都会留下。锁死「首见优先、顺序不变」语义。
+        let apps = vec![
+            AppEntry { name: "微信".to_string(), path: "desktop.lnk".to_string() },
+            AppEntry { name: "Chrome".to_string(), path: "a.lnk".to_string() },
+            AppEntry { name: "微信".to_string(), path: "programdata.lnk".to_string() },
+            AppEntry { name: "WeChat".to_string(), path: "c.lnk".to_string() },
+        ];
+        let out = dedup_first_seen(apps);
+        let names: Vec<&str> = out.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["微信", "Chrome", "WeChat"]);
+        assert_eq!(out[0].path, "desktop.lnk", "first-seen entry must win");
+    }
+
+    #[test]
+    fn test_dedup_first_seen_keeps_unique_apps() {
+        let apps = vec![
+            AppEntry { name: "VS Code".to_string(), path: "a.lnk".to_string() },
+            AppEntry { name: "vs code".to_string(), path: "b.lnk".to_string() },
+            AppEntry { name: "Notion".to_string(), path: "c.lnk".to_string() },
+        ];
+        let out = dedup_first_seen(apps);
+        assert_eq!(out.len(), 2, "case-insensitive duplicate must collapse");
+        assert_eq!(out[0].path, "a.lnk");
     }
 
     #[tokio::test]

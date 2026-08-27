@@ -386,7 +386,7 @@ pub fn hydrate_relative_path(raw: &str) -> Option<String> {
         // shortcuts still carry that file's real absolute path.
         #[cfg(target_os = "windows")]
         {
-            if let Some(found) = window::recent_shortcut_target(trimmed) {
+            if let Some(found) = crate::lnk::recent_target_for(trimmed) {
                 if found.is_file() {
                     log::info!(
                         "[environment] file hint '{}' resolved via Recent shortcut -> '{}'",
@@ -422,7 +422,7 @@ pub fn repair_absolute_hint(raw: &str) -> Option<String> {
     let Some(name) = Path::new(trimmed).file_name().map(|n| n.to_string_lossy()) else {
         return None;
     };
-    let Some(found) = window::recent_shortcut_target(&name) else {
+    let Some(found) = crate::lnk::recent_target_for(&name) else {
         return None;
     };
     if found.is_file() && found.to_string_lossy() != trimmed {
@@ -596,7 +596,7 @@ pub fn start(enable_window: bool) {
                     .map(|r| !std::path::Path::new(r).join(file_name).exists())
                     .unwrap_or(true);
                 if joined_missing {
-                    if let Some(target) = window::recent_shortcut_target(file_name) {
+                    if let Some(target) = crate::lnk::recent_target_for(file_name) {
                         if target.exists() {
                             let parent = target
                                 .parent()
