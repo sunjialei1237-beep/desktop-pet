@@ -185,99 +185,203 @@ html, body, #root {
 
 .settings-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  background: rgba(0, 0, 0, 0.3);
+  inset: 0;
+  background: rgba(45, 33, 22, 0.35);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
 }
 
+/* 面板 = 固定头部 + 可滚动主体。max-height 兜底：内容再多也只在体内滚动，
+   关闭按钮永远可见（此前无上限导致顶部连同 × 被裁出窗口外）。 */
 .settings-panel {
-  background: rgba(255, 255, 255, 0.98);
-  border-radius: 16px;
-  padding: 20px 24px;
-  width: 320px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  --sp-accent: #b5714f;
+  --sp-accent-soft: rgba(181, 113, 79, 0.15);
+  --sp-ink: #3f3021;
+  --sp-ink-2: #6d5843;
+  --sp-ink-3: #ac9780;
+  --sp-line: #eee1cb;
+  display: flex;
+  flex-direction: column;
+  width: min(352px, calc(100vw - 28px));
+  max-height: calc(100vh - 36px);
+  background: linear-gradient(168deg, #fffdf9 0%, #faf4ea 100%);
+  border: 1px solid var(--sp-line);
+  border-radius: 18px;
+  box-shadow:
+    0 24px 64px rgba(63, 48, 33, 0.28),
+    0 2px 8px rgba(63, 48, 33, 0.10);
+  overflow: hidden;
 }
 
 .settings-header {
+  flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 16px;
-  font-weight: 600;
-  color: #333;
-  margin-bottom: 16px;
+  padding: 15px 20px 13px;
+  border-bottom: 1px solid var(--sp-line);
+  background: rgba(255, 253, 248, 0.75);
+}
+
+.settings-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-title > span:first-child {
+  font-size: 15px;
+  font-weight: 700;
+  color: #46341f;
+  letter-spacing: 0.08em;
+}
+.settings-subtitle {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--sp-ink-3);
+  letter-spacing: 0.18em;
 }
 
 .settings-close {
+  width: 28px;
+  height: 28px;
   border: none;
-  background: none;
-  font-size: 22px;
-  color: #999;
-  cursor: pointer;
-  padding: 0;
+  border-radius: 50%;
+  background: #f4ecdc;
+  color: #8a725b;
+  font-size: 17px;
   line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.2s;
+}
+.settings-close:hover {
+  background: #eadbc0;
+  color: #54402b;
+  transform: rotate(90deg);
 }
 
+/* ── 可滚动主体 ── */
+.settings-body {
+  overflow-y: auto;
+  padding: 14px 20px 18px;
+  scrollbar-width: thin;
+  scrollbar-color: #ddcbab transparent;
+}
+.settings-body::-webkit-scrollbar {
+  width: 6px;
+}
+.settings-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.settings-body::-webkit-scrollbar-thumb {
+  background: #ddcbab;
+  border-radius: 999px;
+}
+.settings-body::-webkit-scrollbar-thumb:hover {
+  background: #c9b38c;
+}
+
+.settings-body label,
 .settings-panel label {
   display: block;
-  font-size: 12px;
-  color: #888;
-  margin-top: 12px;
-  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sp-ink-2);
+  letter-spacing: 0.05em;
+  margin-top: 13px;
+  margin-bottom: 6px;
+}
+.settings-body > label:first-of-type {
+  margin-top: 4px;
 }
 
 .settings-panel input {
   width: 100%;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  padding: 8px 12px;
+  border: 1px solid #e7d7bb;
+  border-radius: 10px;
+  background: #fffdf8;
+  padding: 9px 12px;
   font-size: 13px;
-  color: #333;
+  color: var(--sp-ink);
   font-family: inherit;
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
-
+.settings-panel input::placeholder {
+  color: #c9b597;
+}
 .settings-panel input:focus {
-  border-color: #9d7ee0;
+  border-color: #c48a66;
+  background: #fff;
+  box-shadow: 0 0 0 3px var(--sp-accent-soft);
 }
 
 .settings-save {
   width: 100%;
-  margin-top: 20px;
-  padding: 10px;
+  margin-top: 18px;
+  padding: 11px;
   border: none;
-  border-radius: 8px;
-  background: #9d7ee0;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #c98f6d, #ad6a47);
   color: white;
-  font-size: 14px;
-  font-weight: 500;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   cursor: pointer;
-  transition: background 0.2s;
+  box-shadow: 0 6px 16px rgba(173, 106, 71, 0.30);
+  transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
 }
 
 .settings-save:hover {
-  background: #8a6ed0;
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(173, 106, 71, 0.36);
+}
+
+.settings-save:active {
+  transform: translateY(0);
 }
 
 .settings-save:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
+  cursor: default;
+  transform: none;
+  box-shadow: none;
 }
 
 .settings-divider {
   height: 1px;
-  background: #eee;
-  margin: 20px 0 4px;
+  margin-top: 18px;
+  background: linear-gradient(90deg, transparent, var(--sp-line) 18%, var(--sp-line) 82%, transparent);
+}
+
+/* 分区标题：左侧紫罗兰短竖条 + 墨棕粗体 */
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--sp-ink-2);
+  letter-spacing: 0.06em;
+}
+.settings-section-head::before {
+  content: "";
+  width: 4px;
+  height: 14px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #c98f6d, #ad6a47);
 }
 
 .emb-status {
   margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
 }
 
 .emb-badge {
@@ -304,11 +408,12 @@ html, body, #root {
 }
 
 .emb-download-btn {
-  background: #66bb6a;
+  background: linear-gradient(135deg, #72c179, #55a85d);
+  box-shadow: 0 5px 14px rgba(76, 175, 80, 0.28);
 }
 
 .emb-download-btn:hover {
-  background: #4caf50;
+  filter: brightness(1.05);
 }
 
 .emb-progress-text {
@@ -984,30 +1089,59 @@ html, body, #root {
 }
 
 /* ── U5 Settings：工具开关与路径授权 ──────────────────────────────────── */
-.settings-tools-toggle {
+/* 优先级须压过 .settings-panel label 的 display:block，否则 flex/gap 失效 */
+.settings-panel label.settings-tools-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 14px;
   margin: 6px 0;
-  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-size: 12.5px;
   color: #4a3424;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.settings-panel label.settings-tools-toggle:hover {
+  background: rgba(234, 219, 192, 0.45);
 }
 .settings-tools-toggle input {
-  width: auto;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
   min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 1.5px solid #d9c69f;
+  border-radius: 4px;
+  background: #fffdf8;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.settings-tools-toggle input:checked {
+  border-color: #ad6a47;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.4 2.4L9.5 4' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 8px 8px no-repeat,
+    linear-gradient(135deg, #c98f6d, #ad6a47);
+  box-shadow: 0 1px 3px rgba(173, 106, 71, 0.3);
 }
 .settings-grants {
   margin-top: 10px;
-  max-height: 160px;
+  max-height: 170px;
   overflow-y: auto;
-  border-top: 1px dashed rgba(120, 94, 70, 0.25);
-  padding-top: 8px;
+  border: 1px solid var(--sp-line, #eee1cb);
+  border-radius: 12px;
+  background: rgba(251, 245, 234, 0.7);
+  padding: 9px 12px;
 }
 .settings-grants-title {
   font-size: 11px;
   font-weight: 700;
   color: #8a725b;
-  margin-bottom: 4px;
+  letter-spacing: 0.03em;
+  margin-bottom: 5px;
 }
 .settings-grant-row {
   display: flex;
@@ -1029,15 +1163,22 @@ html, body, #root {
 }
 .settings-grant-revoke {
   border: none;
-  background: #eee4d8;
+  background: #f1e6d0;
   color: #6d5843;
   border-radius: 999px;
-  padding: 2px 8px;
+  padding: 3px 11px;
   font-size: 11px;
+  font-weight: 500;
   cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.settings-grant-revoke:hover:not(:disabled) {
+  background: #e5d5b5;
+  color: #46341f;
 }
 .settings-grant-revoke:disabled {
-  opacity: 0.5;
+  opacity: 0.55;
   cursor: default;
 }
 
@@ -1052,17 +1193,19 @@ html, body, #root {
   min-width: 0;
 }
 .settings-key-toggle {
-  border: 1px solid #ddd;
-  background: #f7f7f9;
-  border-radius: 8px;
-  padding: 6px 10px;
+  border: 1px solid #e7d7bb;
+  background: #fffdf8;
+  border-radius: 10px;
+  padding: 6px 11px;
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
   flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
 }
 .settings-key-toggle:hover {
-  background: #eeeef2;
+  background: #f7efdd;
+  border-color: #d9c69f;
 }
 .setup-key-row {
   display: flex;
@@ -1087,6 +1230,14 @@ html, body, #root {
 }
 .settings-profile-sub {
   color: #8a725b;
+}
+
+/* 模型行处于「使用中」时整行淡紫高亮（:has 渐进增强，旧内核仅无高亮） */
+.settings-profile-row:has(.settings-profile-active) {
+  margin: 0 -8px;
+  padding: 5px 8px;
+  background: rgba(181, 113, 79, 0.10);
+  border-radius: 9px;
 }
 
 /* -- 首次启动配置向导（SetupWizard，安装包 UX）-- */

@@ -100,6 +100,15 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     refreshProfiles();
   }, []);
 
+  // 桌面惯例：Esc 也能关闭设置，不依赖任何可见控件。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const refreshProfiles = useCallback(async () => {
     try {
       setProfiles(await invoke<LlmProfile[]>("list_llm_profiles"));
@@ -228,10 +237,14 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     <div className="settings-overlay" onClick={onClose}>
       <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
         <div className="settings-header">
-          <span>LLM Settings</span>
-          <button className="settings-close" onClick={onClose}>&times;</button>
+          <div className="settings-title">
+            <span>设置</span>
+            <span className="settings-subtitle">模型 · 工具 · 记忆</span>
+          </div>
+          <button className="settings-close" onClick={onClose} aria-label="关闭设置">&times;</button>
         </div>
 
+        <div className="settings-body">
         <label>API Base URL</label>
         <input
           type="text"
@@ -315,9 +328,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
         <div className="settings-divider" />
 
-        <div className="settings-header">
-          <span>Tools &amp; Permission</span>
-        </div>
+        <div className="settings-section-head">工具与授权</div>
         <p className="emb-hint">功能开关（保存即生效，无需重启）；文件读取与修改还需要按路径授权/确认。</p>
         {tools && (
           <>
@@ -374,9 +385,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
         <div className="settings-divider" />
 
-        <div className="settings-header">
-          <span>Memory Model</span>
-        </div>
+        <div className="settings-section-head">记忆模型</div>
         <div className="emb-status">
           {embReady && (!embLazy || embLoaded) ? (
             <span className="emb-badge emb-ok">Ready</span>
@@ -407,6 +416,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           </button>
         )}
         <p className="emb-hint">Local semantic search for memory recall (int8, ~570 MB; lazy-loaded)</p>
+        </div>
       </div>
     </div>
   );
