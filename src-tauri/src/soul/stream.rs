@@ -63,6 +63,54 @@ const POOL_CAP: i64 = 12;
 // Ingest (zero LLM)
 // ---------------------------------------------------------------------------
 
+/// Environment stimulus for bubble seeds — mirrors the [Environment] section
+/// sources (current_hints + recent file/page transitions) instead of the
+/// file-transitions-only `recent_summary` (which is None for browser/terminal
+/// foregrounds — the "环境内容从没进过气泡" gap: seeds were never created).
+/// Sanitized through the same untrusted-data pipeline the section uses.
+pub fn env_stimulus() -> Option<String> {
+    let hints = crate::perception::environment::current_hints();
+    let recent = crate::perception::environment::recent_summary();
+    if hints.app.is_none() && hints.title.is_none() && recent.is_none() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(app) = &hints.app {
+        parts.push(format!(
+            "ta 正在用 {}",
+            crate::perception::environment::sanitize_env_text(app, 64)
+        ));
+    }
+    if let Some(file) = &hints.file_hint {
+        let f = crate::perception::environment::sanitize_env_text(file, 64);
+        if !f.is_empty() {
+            let with_proj = hints
+                .project_hint
+                .as_deref()
+                .map(|p| format!("（{}）", crate::perception::environment::sanitize_env_text(p, 64)))
+                .unwrap_or_default();
+            parts.push(format!("正在编辑 {}{}", f, with_proj));
+        }
+    }
+    if let Some(r) = recent.as_deref() {
+        parts.push(format!("最近切换过：{}", r));
+    }
+    if parts.is_empty() {
+        // Title-only foreground (no parseable app/file): still a noticing.
+        if let Some(title) = &hints.title {
+            parts.push(format!(
+                "屏幕上是一个窗口：{}",
+                crate::perception::environment::sanitize_env_text(title, 80)
+            ));
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("；"))
+    }
+}
+
 /// Synthesizes seeds from what is observable NOW. Pure over its `env_summary`
 /// argument (the process-global environment ring is read by the caller) so the
 /// logic is unit-testable. Dedup: identical pending stimuli never pile up.
@@ -883,7 +931,7 @@ pub async fn tick(
     cfg: &ProactiveConfig,
 ) -> Result<Option<BubbleOutcome>, String> {
     let now = Utc::now();
-    let env_summary = crate::perception::environment::recent_summary();
+    let env_summary = env_stimulus();
     ingest(db, env_summary.as_deref(), &now);
 
     // Pool check BEFORE the gate: an empty pool must not burn the budget
