@@ -855,15 +855,17 @@ html, body, #root {
   position: relative;
   /* Hard width cap so long streaming replies wrap instead of stretching the
      bubble wide. max-width alone on an inline-flex parent can let content
-     overflow; width:max-content + max-width forces the cap. */
+     overflow; width:max-content + max-width forces the cap. 续⁶⁷: cap 180→150
+     and the type scale shrunk a notch — the 0.5-scale Liri's head is small
+     and the bubble read "比头都大" (用户 2026-08-28). */
   width: max-content;
-  max-width: var(--pet-bubble-max-width, 180px);
-  padding: 10px 14px 11px;
+  max-width: var(--pet-bubble-max-width, 150px);
+  padding: 7px 11px 8px;
   color: rgba(52, 56, 65, 0.94);
   /* Warm ivory, not generic white. Opacity lets the desktop atmosphere show. */
   background: rgba(250, 248, 243, 0.90);
   /* Deliberately NOT a pill — slightly uneven radii avoid the "UI component" look. */
-  border-radius: 17px 20px 19px 14px / 16px 18px 15px 13px;
+  border-radius: 14px 17px 16px 12px / 13px 15px 12px 11px;
   /* No visible border — edge definition comes from contrast + shadow. */
   border: none;
   /* Very restrained shadow; the bubble recedes behind the character. */
@@ -872,16 +874,16 @@ html, body, #root {
     0 1px 2px rgba(40, 44, 54, 0.04);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
-  font-size: 14px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.5;
   font-weight: 450;
   letter-spacing: 0.01em;
   overflow-wrap: break-word;
   word-break: break-word;
-  /* Height cap: the bubble sits at bottom:532 with ~200px of headroom to the
-     window top. Without a cap, a long streaming reply grows upward past the
-     window edge and its top is clipped (unreadable). */
-  max-height: var(--pet-bubble-max-height, 200px);
+  /* Height cap: the bubble sits above her head with headroom to the window
+     top. Without a cap, a long streaming reply grows upward past the window
+     edge and its top is clipped (unreadable). */
+  max-height: var(--pet-bubble-max-height, 150px);
   /* Below the cap the bubble streams/grows naturally with the text: NO
      scrollbar and NOT user-scrollable. overflow-y:hidden can never draw a
      scrollbar — some WebView2/Windows builds render a persistent track for
@@ -920,15 +922,15 @@ html, body, #root {
    stays fully visible. */
 .pet-bubble-tail {
   position: absolute;
-  left: 15px;
-  /* bottom:-10px + height:12px => tail top sits 2px INTO the bubble body.
-     It was -12px (flush) but the -5deg rotation tilts the tail's top edge
+  left: 13px;
+  /* bottom:-8px + height:10px => tail top sits 2px INTO the bubble body.
+     It was flush once, but the -5deg rotation tilts the tail's top edge
      (left corner dips ~0.7px below the pivot), leaving a visible ~1px
      wedge gap between the tail top and the bubble bottom. Overlapping 2px
      is invisible (tail and bubble share the same fill) and kills the gap. */
-  bottom: -10px;
-  width: 17px;
-  height: 12px;
+  bottom: -8px;
+  width: 14px;
+  height: 10px;
   background: rgba(250, 248, 243, 0.90);
   clip-path: polygon(
     0 0,

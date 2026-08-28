@@ -46,9 +46,10 @@ export interface PetBubbleProps {
   onBubbleBounds?: (rect: { left: number; top: number; width: number; height: number } | null) => void;
   /** Live head anchor in WINDOW coords (CSS px) — reported by SpineCanvas via
       App. The tail tip lands just above it, a touch to the right (用户:
-      "气泡尖端在角色头部上方偏右一点点"). Null until the model reports; falls
-      back to the scale-0.7-era hardcoded spot (210, 235), which drifted when
-      the fit factor became 0.5 — the anchor replaces that class of bug. */
+      "气泡尖端在角色头部上方偏右一点点"; 续⁶⁷ 再右移 10px => +22). Null until
+      the model reports; falls back to the scale-0.7-era hardcoded spot
+      (210, 235), which drifted when the fit factor became 0.5 — the anchor
+      replaces that class of bug. */
   headAnchor?: { x: number; y: number } | null;
 }
 
@@ -125,7 +126,7 @@ export function PetBubble({
   variant = "calm",
   mode,
   tail = "left-bottom",
-  maxWidth = 200,
+  maxWidth = 140,
   below = false,
   className = "",
   onBubbleBounds,
@@ -136,18 +137,18 @@ export function PetBubble({
   const motionConfig = getMotionConfig(v);
   // Tail-tip target: just above the head, a touch right (anchored to the live
   // model pose; fallback = the old hardcoded 0.7-scale spot). The tip sits at
-  // the bubble body's bottom-left corner (tail at left:15px of the body, tip
-  // at ~45% of its 17px width, bottom edge 10px below the body) =>
-  // tip ≈ (left + 22, windowBottom - bottomCSS + 10). Solving for the tip:
-  const tip = headAnchor ? { x: headAnchor.x + 12, y: headAnchor.y - 10 } : { x: 210, y: 235 };
+  // the bubble body's bottom-left corner (tail at left:13px of the 14px-wide
+  // tail, tip at ~45% of its width, bottom edge 8px below the body — top
+  // tucked 2px INTO the body so the -5deg rotation doesn't leave a visible
+  // gap at the seam) => tip ≈ (left + 19, windowBottom - bottomCSS + 8).
+  const tip = headAnchor ? { x: headAnchor.x + 22, y: headAnchor.y - 10 } : { x: 210, y: 235 };
   const WINDOW_H = 760; // fixed window size (tauri.conf.json), see PetBubble CSS
-  const anchorLeft = tip.x - 22;
-  const anchorBottom = WINDOW_H - tip.y + 10;
+  const anchorLeft = tip.x - 19;
+  const anchorBottom = WINDOW_H - tip.y + 8;
   // Below mode parks the bubble at the head's top-right (not over her body).
-  // The window is only 400px wide and the head's right edge sits at ~x230, so
-  // a bubble at left:240 has ~152px to the window edge — cap the width there
-  // so long text wraps instead of clipping past the window.
-  const effectiveMaxWidth = below ? Math.min(maxWidth, 150) : maxWidth;
+  // 续⁶⁷ shrank the bubble a size (font/padding/width — the 0.5-scale Liri's
+  // head is small); the beside-head cap shrinks with it.
+  const effectiveMaxWidth = below ? Math.min(maxWidth, 110) : maxWidth;
   // True once text actually exceeds the height cap. Below the cap the bubble
   // stays overflow-y:hidden (no scrollbar, not user-scrollable — it just
   // streams/grows with the text); .pet-bubble--scrollable flips it to

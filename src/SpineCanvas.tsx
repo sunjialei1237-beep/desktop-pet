@@ -245,14 +245,34 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
             height: h * (1 + 2 * PAD) + h * TOP_BIAS,
           });
           // Head/feet anchor for the bubble tail tip + input box (see prop doc).
+          // feetY uses the FOOT BONES, not bounds: getBounds' bottom is the
+          // setup-pose skeleton extent — the tail chain hangs to canvas bottom
+          // there — so bounds bottom sits ~60px (at fit 0.5) BELOW her soles,
+          // which pushed the input box too low (用户 2026-08-28). Ankle bone +
+          // 40 model-units of shoe ≈ sole. Sanity-clamped to the lower half of
+          // the bounds; falls back to bounds bottom if the bones are missing
+          // or the convention ever changes under us.
           const headBoneForAnchor = spine.skeleton.findBone("head");
+          const footL = spine.skeleton.findBone("foot_L");
+          const footR = spine.skeleton.findBone("foot_R");
+          let feetY = b.y + b.height;
+          const ankleY = Math.max(footL?.worldY ?? -Infinity, footR?.worldY ?? -Infinity);
+          if (Number.isFinite(ankleY)) {
+            const boneFeet = spine.y + ankleY * spine.scale.y + 40 * fit;
+            if (boneFeet > b.y + b.height * 0.5 && boneFeet <= b.y + b.height) feetY = boneFeet;
+          }
           onBodyAnchor?.({
             headX: headBoneForAnchor
               ? spine.x + headBoneForAnchor.worldX * spine.scale.x
               : b.x + b.width / 2,
             headY: b.y + 8, // model top = ear tips; +8 lands at the crown
-            feetY: b.y + b.height,
+            feetY,
           });
+          console.log(
+            "[anchor] head/feet reported",
+            Math.round(feetY),
+            Number.isFinite(ankleY) && feetY !== b.y + b.height ? "(foot bone)" : "(bounds fallback)",
+          );
         } catch (e) {
           // getBounds unavailable -- App keeps fully interactive (safe default).
           // Log so a silent throw (the click-through "never reports bounds"
