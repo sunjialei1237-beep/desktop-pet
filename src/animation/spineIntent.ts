@@ -1,56 +1,326 @@
 // Spine intent translation layer for Liri.
-// Maps FSM BehaviorState → Spine track / slot ops, plus a single serial action
-// channel for sporadic life. Contract: docs/specs/liri/animation_spec.md,
-// skeleton_structure.md.
+// Maps FSM BehaviorState / life timers → Spine track ops, and runs EMOTION
+// PROGRAMS: named composites of parallel channel members (per the user-approved
+// combination plan, 2026-08-27). Contract: docs/specs/liri/animation_spec.md
+// (17-animation edition), skeleton_structure.md.
+//
+// ARCHITECTURE — three mechanisms (v2 asset, 17 animations):
+//
+// 1. DISJOINT BONE DOMAINS. liriAssetPatch strips the cross-domain flatline
+//    pins so every concurrently-playable track owns a disjoint bone set:
+//      skirt/hair/arm own their parts; ear owns ear_l2/ear_r2; tail owns
+//      tail_1..5; breath owns head/spine chain/ribbons; hair additionally owns
+//      the bangs (breath's lh pins are stripped for that reason).
+// 2. ALWAYS-ON LOOP BASE. Tracks breath..tail loop forever from boot. Nothing
+//    is ever "cleared to setup" — there is always a live animated pose below,
+//    which is why swaps/blends can't produce the historic "从最右跳到最左" jump.
+// 3. BREATH-ALIGNED PROGRAMS. Emotion programs (sad/happy/curious/gesture)
+//    START at a body_breath loop boundary (track0 `complete`) and END exactly
+//    n boundaries later — all member channels revert in parallel on a beat, per
+//    the rule 「所有动作在一个完整的呼吸动作开始时并行结束」.
 
 import { BehaviorState } from "./fsm";
 
-// Track layout. body_breath (track0) is the ONLY continuously-looping track
-// (base life). ear/tail idle fire as ONE-SHOT events on their own tracks and
-// never loop. The expression track sits highest so its slot keys beat all.
-const TRACK = {
-  breath: 0, // body_breath (continuous base life)
-  ear: 1, // ear_idle one-shot
-  tail: 2, // tail_idle one-shot
-  expr: 5, // blink / wink / smile (transient, one at a time)
+// Track layout, bottom → top. Higher index wins per keyed property. With the
+// patch's disjoint domains this order is belt-and-braces, not correctness.
+export const TRACK = {
+  breath: 0, // body_breath — looping base life (spine sway/head bob/ribbons)
+  skirt: 1, // Skirt_l — slow skirt flutter
+  hair: 2, // hair_idle — side/back hair + bangs (domain-stripped)
+  arm: 3, // arm_idle — forearm/sleeve micro-sway
+  ear: 4, // ear variant loop: ear_idle ↔ ear_2 ↔ ear_sad
+  tail: 5, // tail variant loop: tail_idle ↔ tail_2 ↔ tail_happy ↔ tail_sad
+  gesture: 6, // thing (+ future touch reactions) — one-shot above everything
+  expr: 7, // blink/wink/smile/eye_sad — serial one-shot queue
+} as const;
+
+export type VariantChannel = "ear" | "tail";
+export type ProgramChannel = VariantChannel | "expr" | "gesture";
+
+// ── Durations (parsed from v2 public/spine/liri/liri.json; pinned by test) ──
+export const SECONDS = {
+  breath: 4.3333, // one full body_breath cycle = one "beat"
+  smile: 3.9333,
+  eyeSad: 2.0,
+  thing: 0.3333,
+} as const;
+
+// Expression re-trigger cadence while a sad program is active: restart eye_sad
+// just past its end so the 难过眼/难过嘴 attachments never visibly drop between
+// loops (attachment switch is discrete; the ~50ms gap is invisible).
+const EYE_SAD_RETRIGGER = SECONDS.eyeSad + 0.05;
+
+// Programs: named emotion composites. beats × SECONDS.breath is the window;
+// every member ends with the window at the next breath boundary.
+//
+//   sad        ear_sad ×1 (self-returning hold) + tail_sad loop + sustained
+//              难过脸 (eye_sad re-triggered)                 → 8.67s window
+//   happyLong  tail_happy loop + smile at start & midbeat  → 8.67s
+//   happyShort tail_happy loop + smile once                → 4.33s
+//   curious    ear_2 twitch + tail_2 lively swing          → 4.33s
+//   thing      hands-up gesture (kept pose, code blends it back down) → 4.33s
+export interface ProgramMember {
+  channel: ProgramChannel;
+  /** Loop-variant channels: swap this channel's loop animation. */
+  anim?: string;
+  /**
+   * Variant-channel playback mode. Default true (loop through the window).
+   * loop:false plays ONCE and holds its last frame — used by ear_sad, whose
+   * final frame IS the neutral base (a self-returning one-shot), so holding
+   * reads as "she did her sad ears, now she rests" (the approved recipe), not
+   * a droop repeating like a metronome.
+   */
+  loop?: boolean;
+  /** expr/gesture members fire as ONE-SHOT this many beats into the window. */
+  triggerAtBeat?: number;
+}
+
+export interface ProgramDef {
+  id: string;
+  beats: number;
+  members: ProgramMember[];
+}
+
+export const PROGRAMS: Record<string, ProgramDef> = {
+  sad: {
+    id: "sad",
+    beats: 2,
+    members: [
+      { channel: "ear", anim: "ear_sad", loop: false },
+      { channel: "tail", anim: "tail_sad" },
+      { channel: "expr", anim: "eye_sad" }, // first fire at beat 0
+    ],
+  },
+  happyLong: {
+    id: "happyLong",
+    beats: 2,
+    members: [
+      { channel: "tail", anim: "tail_happy" },
+      { channel: "expr", anim: "smile", triggerAtBeat: 0 },
+      { channel: "expr", anim: "smile", triggerAtBeat: 1 },
+    ],
+  },
+  happyShort: {
+    id: "happyShort",
+    beats: 1,
+    members: [
+      { channel: "tail", anim: "tail_happy" },
+      { channel: "expr", anim: "smile", triggerAtBeat: 0 },
+    ],
+  },
+  curious: {
+    id: "curious",
+    beats: 1,
+    members: [
+      { channel: "ear", anim: "ear_2" },
+      { channel: "tail", anim: "tail_2" },
+    ],
+  },
+  thing: {
+    id: "thing",
+    beats: 1,
+    members: [{ channel: "gesture", anim: "thing" }],
+  },
 };
 
-// WHY ONE-SHOT, NOT LOOP: every Liri idle animation (ear/tail/arm/hair) keys
-// the whole spine chain + head, not just its named part. Looping any of them
-// yanks the body sideways and snaps it back at the loop seam (the "身体摆到右→
-// 跳到最左" jump). A one-shot plays once (first frame IS setup), then
-// setEmptyAnimation fades smoothly back to setup — zero jump at entry/exit.
-//
-// WHY BREATH-ALIGNED: ear/tail also key the spine chain, so they override
-// body_breath while active. Firing mid-breath makes the body jump from the
-// breath's mid-cycle pose to the idle's first frame. So ear/tail only fire at
-// body_breath's loop boundary (each `complete`), where the body is back at
-// setup — the idle's first frame then matches the current pose, no jump.
-// blink/smile key only eye SLOTS, never the spine, so they need no alignment.
-export type ActionKind = "ear" | "tail" | "blink" | "smile";
+// Idle variants each variant-channel falls back to when a program ends.
+export const IDLE_VARIANT: Record<VariantChannel, string> = {
+  ear: "ear_idle",
+  tail: "tail_idle",
+};
 
-export const IDLE_FADE = 0.3; // setEmptyAnimation mix: smooth return to setup
-const EAR_SECONDS = 1.0; // ear_idle one-shot length (liri.json: 1.0s)
-const TAIL_SECONDS = 1.1; // tail_idle one-shot length (1.07s)
+export const GESTURE_FADE = 0.35; // setEmptyAnimation mix for the gesture track
 
 /// Set transition (mix) times once on the AnimationStateData (animation_spec §Mix).
 export function setupMix(stateData: any) {
-  // Global crossfade so one-shot idles ease in/out from setup rather than snap.
-  stateData.defaultMix = 0.15;
-  ["blink", "wink_L", "wink_R", "smile"].forEach((a) =>
+  stateData.defaultMix = 0.15; // every swap/fade eases in/out instead of snapping
+  ["blink", "wink_L", "wink_R", "smile", "eye_sad"].forEach((a) =>
     stateData.setMixByName(a, a, 0.12),
   );
 }
 
-/// One-time: lay down the continuous base breath track ONLY.
+/// One-time: lay down ALL continuous base tracks (loops run forever underneath
+/// everything — the always-live pose that makes every later transition smooth).
 export function setupIdleTracks(spine: any) {
   spine.state.setAnimation(TRACK.breath, "body_breath", true);
+  spine.state.setAnimation(TRACK.skirt, "Skirt_l", true);
+  spine.state.setAnimation(TRACK.hair, "hair_idle", true);
+  spine.state.setAnimation(TRACK.arm, "arm_idle", true);
+  spine.state.setAnimation(TRACK.ear, IDLE_VARIANT.ear, true);
+  spine.state.setAnimation(TRACK.tail, IDLE_VARIANT.tail, true);
 }
 
-/// FSM behavior → expression. Only Embarrassed drives an anim (single-eye wink
-/// stands in — no dedicated anim). Blinking is physiological (fixed timer),
-/// not the FSM's scattered Blink state; other behaviors leave the track alone.
-export function triggerBehavior(spine: any, behavior: BehaviorState) {
+// ── Program runner (pure-ish state; canvas drives it from updateFn/timers) ──
+
+export interface RunnerState {
+  activeDef: ProgramDef | null;
+  elapsed: number; // wall-clock seconds since program start
+  beatsDone: number; // breath boundaries elapsed since the current program started
+  nextEyeSadAt: number | null; // wall-clock offset for the next eye_sad re-fire
+  pendingBeatsFired: Set<number>; // one-shot members already fired
+}
+
+export function createProgramRunner(): RunnerState {
+  return {
+    activeDef: null,
+    elapsed: 0,
+    beatsDone: 0,
+    nextEyeSadAt: null,
+    pendingBeatsFired: new Set(),
+  };
+}
+
+// Expression one-shot lengths, for spacing the serial expr queue (a second
+// setAnimation would CUT a playing one — they share the track).
+export const EXPR_DURATIONS: Record<string, number> = {
+  blink: 0.1,
+  wink_L: 0.1,
+  wink_R: 0.1,
+  smile: SECONDS.smile,
+  eye_sad: SECONDS.eyeSad,
+};
+
+export function isProgramActive(runner: RunnerState): boolean {
+  return runner.activeDef !== null;
+}
+
+function startProgram(spine: any, runner: RunnerState, def: ProgramDef): void {
+  runner.activeDef = def;
+  runner.elapsed = 0;
+  runner.beatsDone = 0;
+  runner.nextEyeSadAt = null;
+  runner.pendingBeatsFired = new Set();
+  // Pre-compute the eye_sad retrigger schedule (interval fires handled in tick).
+  if (def.members.some((m) => m.anim === "eye_sad")) {
+    runner.nextEyeSadAt = EYE_SAD_RETRIGGER;
+  }
+  applyProgramStart(spine, def);
+}
+
+function applyProgramStart(spine: any, def: ProgramDef): void {
+  for (const m of def.members) {
+    if (!m.anim) continue;
+    if (m.channel === "expr") {
+      if ((m.triggerAtBeat ?? 0) === 0) fireExpression(spine, m.anim);
+    } else if (m.channel === "gesture") {
+      spine.state.setAnimation(TRACK.gesture, m.anim, false);
+    } else {
+      // Loop-variant channel swap. Loop=true keeps the channel alive through
+      // the whole window (seams are safe: these variants start/end on their
+      // base values); loop=false (self-returning one-shots like ear_sad) plays
+      // once and holds its neutral last frame until the window closes.
+      spine.state.setAnimation(TRACK[m.channel], m.anim, m.loop !== false);
+    }
+  }
+}
+
+function fireExpression(spine: any, anim: string): void {
+  spine.state.setAnimation(TRACK.expr, anim, false);
+}
+
+/**
+ * Advance the runner by dt wall-clock seconds: fire scheduled one-shot members
+ * (mid-window smile repeats), keep the sad face alive via eye_sad re-triggers.
+ * Returns without side effects when no program is running.
+ */
+export function tickProgram(spine: any, runner: RunnerState, def: ProgramDef | null, dt: number): void {
+  if (!def || runner.activeDef === null) return;
+  runner.elapsed += dt;
+
+  // Scheduled one-shot expression members (e.g. happyLong's second smile at
+  // beat 1). Trigger offsets convert to seconds at fire time.
+  for (const m of def.members) {
+    if (m.channel !== "expr" || !m.anim || !(m.triggerAtBeat && m.triggerAtBeat > 0)) continue;
+    if (runner.pendingBeatsFired.has(m.triggerAtBeat)) continue;
+    const at = m.triggerAtBeat * SECONDS.breath;
+    if (runner.elapsed >= at - 1 / 60) {
+      runner.pendingBeatsFired.add(m.triggerAtBeat);
+      fireExpression(spine, m.anim);
+    }
+  }
+
+  // Sustained sad face: re-fire eye_sad every EYE_SAD_RETRIGGER seconds.
+  if (runner.nextEyeSadAt !== null && runner.elapsed >= runner.nextEyeSadAt) {
+    const windowLeft = def.beats * SECONDS.breath - runner.elapsed;
+    if (windowLeft > SECONDS.eyeSad * 0.5) {
+      fireExpression(spine, "eye_sad");
+      runner.nextEyeSadAt += EYE_SAD_RETRIGGER;
+    } else {
+      runner.nextEyeSadAt = null; // too close to the window edge — let it rest
+    }
+  }
+}
+
+/**
+ * Revert all channels touched by `def` back to their idle variants — called ON
+ * the closing breath boundary so every member ends in parallel, aligned with
+ * a complete breathing cycle starting fresh.
+ */
+export function finishProgram(spine: any, runner: RunnerState, def: ProgramDef | null): void {
+  runner.activeDef = null;
+  runner.elapsed = 0;
+  runner.beatsDone = 0;
+  runner.nextEyeSadAt = null;
+  runner.pendingBeatsFired.clear();
+  if (!def) return;
+  const touched = new Set<VariantChannel>();
+  for (const m of def.members) {
+    if (m.channel === "ear" || m.channel === "tail") touched.add(m.channel);
+    else if (m.channel === "gesture") {
+      // thing has no return keys (ends holding the raised pose); fade the
+      // track out over GESTURE_FADE so the arms lower smoothly onto whatever
+      // the live tracks show at this moment.
+      spine.state.setEmptyAnimation(TRACK.gesture, GESTURE_FADE);
+    }
+  }
+  for (const ch of touched) {
+    spine.state.setAnimation(TRACK[ch], IDLE_VARIANT[ch], true);
+  }
+}
+
+/** Request the next program (queued; starts on the next breath boundary). */
+let queued: ProgramDef | null = null;
+export function requestProgram(id: string): boolean {
+  if (!PROGRAMS[id] || queued) return false;
+  queued = PROGRAMS[id];
+  return true;
+}
+
+/**
+ * ONE sync point with the breath clock — call from track0's `complete` listener.
+ * Closes an active program whose window just ended (all members revert in
+ * parallel), then starts the queued program, if any, exactly when body_breath
+ * loops back to its initial pose. Returns the id of a program that finished
+ * (debug/logging only).
+ */
+export function breathBoundary(spine: any, runner: RunnerState): string | null {
+  let finishedId: string | null = null;
+  if (runner.activeDef) {
+    runner.beatsDone++;
+    if (runner.beatsDone >= runner.activeDef.beats) {
+      finishedId = runner.activeDef.id;
+      finishProgram(spine, runner, runner.activeDef);
+    }
+  }
+  if (!runner.activeDef && queued) {
+    const next = queued;
+    queued = null;
+    startProgram(spine, runner, next);
+  }
+  return finishedId;
+}
+
+/** Wall-clock guard for tests/debug: how many beats a program needs. */
+export function programWindow(def: ProgramDef): number {
+  return def.beats * SECONDS.breath;
+}
+
+// ── FSM behavior → expression (unchanged semantics from v1) ──
+// Embarrassed winks; blinking is physiological (fixed timer), not the FSM's
+// scattered Blink state; other behaviors leave the track alone. Suppressed
+// while a program is active (the serial discipline extends to expressions).
+export function triggerBehavior(spine: any, behavior: BehaviorState, programRunning: boolean): boolean {
+  if (programRunning) return false;
   switch (behavior) {
     case BehaviorState.Embarrassed:
       spine.state.setAnimation(
@@ -58,81 +328,10 @@ export function triggerBehavior(spine: any, behavior: BehaviorState) {
         Math.random() < 0.5 ? "wink_L" : "wink_R",
         false,
       );
-      break;
+      return true;
     default:
-      break;
+      return false;
   }
-}
-
-// ── Face: smile duration only ──
-// ARCHITECTURE (user directive): 状态/情绪 → 播放对应动画；动画 timeline 自己
-// 管 slot attachment（美术在 Spine 里做）。代码绝不 setAttachment 改 slot——之前
-// 试过运行时手动切嘴/眼，破坏了美术 timeline，导致空眼/双层。FaceState 现在只
-// 保留 smile 动画的时长（用于串行通道的 busy 计时），不再捕获任何 slot 引用。
-export interface FaceState {
-  smileDuration: number;
-}
-
-export function initFace(spine: any): FaceState | null {
-  try {
-    const sk = spine.skeleton;
-    const smileAnim = sk.data.findAnimation("smile");
-    return { smileDuration: smileAnim ? smileAnim.duration : 1.5 };
-  } catch {
-    return null;
-  }
-}
-
-// ── Single serial action channel ──
-// The scheduler (SpineCanvas) fires ONE action at a time behind a shared busy
-// flag, so blink/ear/tail/smile never overlap. ear/tail additionally wait for a
-// body_breath loop boundary (breath-aligned) to avoid spine-chain jumps.
-function playEar(spine: any) {
-  spine.state.setAnimation(TRACK.ear, "ear_idle", false);
-}
-function playTail(spine: any) {
-  spine.state.setAnimation(TRACK.tail, "tail_idle", false);
-}
-function triggerBlink(spine: any) {
-  spine.state.setAnimation(TRACK.expr, "blink", false);
-}
-function triggerSmile(spine: any) {
-  spine.state.setAnimation(TRACK.expr, "smile", false);
-}
-
-/// Start a one-shot action on its track.
-export function playAction(spine: any, kind: ActionKind, _face: FaceState | null) {
-  switch (kind) {
-    case "ear": playEar(spine); break;
-    case "tail": playTail(spine); break;
-    case "blink": triggerBlink(spine); break;
-    case "smile": triggerSmile(spine); break;
-  }
-}
-
-/// Wall-clock time the channel stays busy for this action. For ear/tail this
-/// includes the fade-back so the channel only frees once the body has settled.
-export function actionDuration(kind: ActionKind, face: FaceState | null): number {
-  switch (kind) {
-    case "ear": return EAR_SECONDS + IDLE_FADE;
-    case "tail": return TAIL_SECONDS + IDLE_FADE;
-    case "blink": return 0.2;
-    case "smile": return face ? face.smileDuration : 1.5;
-  }
-}
-
-/// Mid-action: when only IDLE_FADE remains, start the smooth return for ear/tail.
-/// No-op for blink/smile (they don't touch the spine, nothing to fade back).
-export function beginFadeOut(spine: any, kind: ActionKind) {
-  if (kind === "ear") spine.state.setEmptyAnimation(TRACK.ear, IDLE_FADE);
-  else if (kind === "tail") spine.state.setEmptyAnimation(TRACK.tail, IDLE_FADE);
-}
-
-/// End-of-action cleanup. smile's mouth slot is owned by the animation timeline
-/// (artist keys 嘴/张大笑嘴 attachment in the smile anim), so there is nothing
-/// for code to restore — kept as a hook in case a future anim needs it.
-export function endAction(_kind: ActionKind, _face: FaceState | null) {
-  // intentionally empty: animations own their slot cleanup now
 }
 
 // ── Random intervals (seconds, wall-clock) ──
@@ -142,7 +341,15 @@ export function nextBlinkDelay(): number {
 export function nextSmileDelay(): number {
   return 12 + Math.random() * 6; // 12-18s sparse warmth
 }
-/// ear/tail cadence: with a 50/50 pick each part shows ~every 10-16s.
+/// Life-program cadence: a composite fires roughly every 10-14s.
 export function nextSpineDelay(): number {
-  return 5 + Math.random() * 3; // 5-8s between ear/tail one-shots
+  return 10 + Math.random() * 4;
+}
+/// Weighted pick among idle-life programs. thing is rare (hands-up gesture).
+export function pickIdleProgram(): string {
+  const r = Math.random();
+  if (r < 0.4) return "curious";
+  if (r < 0.75) return "happyShort";
+  if (r < 0.9) return "happyLong";
+  return "thing";
 }

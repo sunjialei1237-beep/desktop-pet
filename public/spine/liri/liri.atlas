@@ -1,279 +1,300 @@
 
 skeleton.png
-size: 2017,517
+size: 1365,776
 format: RGBA8888
 filter: Linear,Linear
 repeat: none
 刘海
   rotate: false
-  xy: 805, 123
+  xy: 1212, 173
   size: 115, 130
   orig: 115, 130
   offset: 0, 0
   index: -1
 半张笑嘴
-  rotate: true
-  xy: 991, 232
+  rotate: false
+  xy: 836, 8
   size: 21, 6
   orig: 21, 6
   offset: 0, 0
   index: -1
 半睁眼右
   rotate: false
-  xy: 1913, 118
+  xy: 1098, 14
   size: 101, 60
   orig: 101, 60
   offset: 0, 0
   index: -1
 半睁眼左
-  rotate: false
-  xy: 1920, 310
+  rotate: true
+  xy: 1313, 486
   size: 95, 47
   orig: 95, 47
   offset: 0, 0
   index: -1
 右半笑眼
-  rotate: false
-  xy: 1913, 66
+  rotate: true
+  xy: 1313, 583
   size: 84, 50
   orig: 84, 50
   offset: 0, 0
   index: -1
 右头发
-  rotate: false
-  xy: 1455, 7
+  rotate: true
+  xy: 999, 640
   size: 134, 297
   orig: 134, 297
   offset: 0, 0
   index: -1
 右手
   rotate: false
-  xy: 930, 12
+  xy: 1280, 354
   size: 54, 62
   orig: 54, 62
   offset: 0, 0
   index: -1
 右眉毛
-  rotate: true
-  xy: 794, 47
+  rotate: false
+  xy: 999, 535
   size: 26, 8
   orig: 26, 8
   offset: 0, 0
   index: -1
 右眼
   rotate: true
-  xy: 1591, 262
+  xy: 1279, 48
   size: 42, 29
   orig: 42, 29
   offset: 0, 0
   index: -1
 右眼高光
-  rotate: true
-  xy: 991, 214
+  rotate: false
+  xy: 1279, 40
   size: 16, 6
   orig: 16, 6
   offset: 0, 0
   index: -1
 右笑眯眼
   rotate: false
-  xy: 135, 2
+  xy: 1313, 453
   size: 47, 31
   orig: 47, 31
   offset: 0, 0
   index: -1
 右耳
   rotate: true
-  xy: 1884, 180
+  xy: 836, 16
   size: 79, 131
   orig: 79, 131
   offset: 0, 0
   index: -1
 右腿
   rotate: true
-  xy: 999, 405
+  xy: 425, 402
   size: 110, 615
   orig: 110, 615
   offset: 0, 0
   index: -1
 右袖
   rotate: true
-  xy: 425, 75
+  xy: 458, 123
   size: 178, 378
   orig: 178, 379
   offset: 0, 1
   index: -1
 右闭眼
-  rotate: true
-  xy: 922, 148
+  rotate: false
+  xy: 1100, 76
   size: 105, 67
   orig: 105, 67
   offset: 0, 0
   index: -1
+右难过眼
+  rotate: true
+  xy: 756, 7
+  size: 114, 78
+  orig: 114, 78
+  offset: 0, 0
+  index: -1
 右飘带
   rotate: true
-  xy: 2, 10
+  xy: 1212, 148
   size: 23, 131
   orig: 23, 131
   offset: 0, 0
   index: -1
 后头发
   rotate: false
-  xy: 2, 35
+  xy: 2, 294
   size: 421, 480
   orig: 421, 483
   offset: 0, 0
   index: -1
 嘴
-  rotate: true
-  xy: 1999, 96
+  rotate: false
+  xy: 458, 15
   size: 20, 8
   orig: 20, 8
   offset: 0, 0
   index: -1
 头饰
-  rotate: true
-  xy: 1702, 9
+  rotate: false
+  xy: 1283, 444
   size: 28, 99
   orig: 28, 99
   offset: 0, 0
   index: -1
 小笑嘴
   rotate: true
-  xy: 922, 127
+  xy: 999, 514
   size: 19, 6
   orig: 19, 6
   offset: 0, 0
   index: -1
 尾巴
   rotate: true
-  xy: 425, 255
+  xy: 425, 514
   size: 260, 572
   orig: 260, 573
   offset: 0, 0
   index: -1
 左半笑眼
-  rotate: false
-  xy: 1920, 266
+  rotate: true
+  xy: 1310, 76
   size: 70, 42
   orig: 70, 42
   offset: 0, 0
   index: -1
 左头发
   rotate: true
-  xy: 1591, 39
+  xy: 1042, 418
   size: 125, 239
   orig: 125, 239
   offset: 0, 0
   index: -1
 左手
-  rotate: false
-  xy: 930, 76
+  rotate: true
+  xy: 1207, 38
   size: 52, 70
   orig: 52, 70
   offset: 0, 0
   index: -1
 左眉毛
   rotate: false
-  xy: 1884, 171
+  xy: 425, 294
   size: 26, 7
   orig: 26, 7
   offset: 0, 0
   index: -1
 左眼
   rotate: false
-  xy: 184, 2
+  xy: 1310, 43
   size: 44, 31
   orig: 44, 31
   offset: 0, 0
   index: -1
 左眼高光
-  rotate: false
-  xy: 1803, 27
+  rotate: true
+  xy: 1298, 652
   size: 15, 10
   orig: 15, 10
   offset: 0, 0
   index: -1
 左笑眯眼
   rotate: false
-  xy: 1913, 33
+  xy: 1201, 5
   size: 48, 31
   orig: 48, 31
   offset: 0, 0
   index: -1
 左耳
-  rotate: false
-  xy: 1832, 37
+  rotate: true
+  xy: 969, 16
   size: 79, 127
   orig: 79, 128
   offset: 0, 1
   index: -1
 左腿
   rotate: true
-  xy: 999, 306
+  xy: 425, 303
   size: 97, 621
   orig: 97, 621
   offset: 0, 0
   index: -1
 左袖
   rotate: true
-  xy: 1622, 359
+  xy: 838, 145
   size: 156, 372
   orig: 156, 374
   offset: 0, 0
   index: -1
 左闭眼
-  rotate: false
-  xy: 687, 14
+  rotate: true
+  xy: 1298, 669
   size: 105, 59
   orig: 105, 59
   offset: 0, 0
   index: -1
+左难过眼
+  rotate: true
+  xy: 1048, 303
+  size: 113, 78
+  orig: 113, 78
+  offset: 0, 0
+  index: -1
 左飘带
   rotate: true
-  xy: 425, 27
+  xy: 838, 97
   size: 46, 260
   orig: 46, 261
   offset: 0, 0
   index: -1
 张大笑嘴
   rotate: true
-  xy: 1996, 491
+  xy: 1283, 418
   size: 24, 15
   orig: 24, 15
   offset: 0, 0
   index: -1
 脸
   rotate: true
-  xy: 805, 10
+  xy: 1128, 305
   size: 111, 123
   orig: 111, 123
   offset: 0, 0
   index: -1
 衣服主体
   rotate: true
-  xy: 999, 14
+  xy: 2, 2
   size: 290, 454
   orig: 290, 455
   offset: 0, 0
   index: -1
 裙1
   rotate: true
-  xy: 1591, 166
+  xy: 999, 545
   size: 93, 291
   orig: 93, 291
   offset: 0, 0
   index: -1
 裙2
-  rotate: true
-  xy: 1591, 12
+  rotate: false
+  xy: 1253, 307
   size: 25, 109
   orig: 25, 109
   offset: 0, 0
   index: -1
 裙3
   rotate: true
-  xy: 1622, 261
+  xy: 458, 25
   size: 96, 296
   orig: 96, 296
+  offset: 0, 0
+  index: -1
+难过嘴
+  rotate: false
+  xy: 1212, 92
+  size: 96, 54
+  orig: 96, 54
   offset: 0, 0
   index: -1

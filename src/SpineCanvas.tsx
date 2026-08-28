@@ -1,19 +1,35 @@
 import { useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
 import { BehaviorState } from "./animation/fsm";
-import { setupMix, setupIdleTracks, triggerBehavior, initFace, playAction, actionDuration, beginFadeOut, endAction, nextBlinkDelay, nextSmileDelay, nextSpineDelay, IDLE_FADE } from "./animation/spineIntent";
-import type { ActionKind } from "./animation/spineIntent";
+import {
+  setupMix,
+  setupIdleTracks,
+  triggerBehavior,
+  createProgramRunner,
+  isProgramActive,
+  tickProgram,
+  requestProgram,
+  breathBoundary,
+  nextBlinkDelay,
+  nextSmileDelay,
+  nextSpineDelay,
+  pickIdleProgram,
+  EXPR_DURATIONS,
+  TRACK,
+} from "./animation/spineIntent";
+import type { RunnerState } from "./animation/spineIntent";
 import { patchLiriJson, isLiriSkeleton, LIRI_JSON_URL } from "./animation/liriAssetPatch";
 
 // Spine (3.8) + PixiJS rendering layer for Liri (the sole renderer).
 //
-// Driver layer (this file + spineIntent.ts): a SINGLE SERIAL action channel
-// fires one of blink/ear/tail/smile at a time over a continuous body_breath
-// base (track0) — they never overlap. ear/tail are one-shots (never looped —
-// every Liri idle keys the spine chain) AND breath-aligned (fire only at
-// body_breath's loop boundary so the body is at setup, killing spine jumps);
-// blink/smile key only eye slots, so they fire freely on their own timers. The
-// FSM BehaviorState drives an extra expression (wink) on behavior change.
+// Driver layer (this file + spineIntent.ts): ALL base loops (breath/skirt/
+// hair/arm/ear_idle/tail_idle) run continuously from boot on their own tracks —
+// there is always a live animated pose underneath, so no transition can snap
+// to setup. Life & emotion run as COMPOSITE PROGRAMS (spineIntent.PROGRAMS):
+// each starts at a body_breath loop boundary and ends n boundaries later when
+// every member channel reverts in parallel (the breath-aligned rule). Blink and
+// smile fire on their own wall-clock timers while no program is running; the
+// FSM BehaviorState drives wink on change.
 // Contract: docs/specs/liri/{skeleton_structure, animation_spec}.md.
 
 interface Rect {
@@ -100,6 +116,9 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const spineRef = useRef<any>(null);
+  // Program runner lives inside the load effect's closure; mirror it here so
+  // the [behavior] effect can ask whether a program owns the face channel.
+  const runnerRef = useRef<RunnerState | null>(null);
   // Mirror latest props into refs read each ticker frame / effect (avoids
   // re-running the heavy load effect on every prop change).
   const speedRef = useRef(speedModifier);
@@ -165,7 +184,7 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         // giving a known post-update hook point for Phase 3 slot overrides.
         spine.autoUpdate = false;
         setupMix(spine.stateData);
-        setupIdleTracks(spine); // track0 body_breath only; ear/tail fire as one-shots
+        setupIdleTracks(spine); // ALL base loops breathe/skirt/hair/arm/ear/tail
         spine.update(0); // apply pose before measuring
 
         // Measure at scale=1. pixi-spine bakes mesh vertices into a cache at
@@ -232,25 +251,20 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         //           "how often" is stable day or night (scaling it once made the
         //           user see ~1min gaps).
         //
-        // SINGLE SERIAL ACTION CHANNEL: blink/ear/tail/smile fire ONE at a time
-        // behind a shared busy flag — they never overlap (user: "做完才下一个",
-        // "不要同时"). Within that:
-        //  - blink/smile key only eye SLOTS, never the spine → no jump; they fire
-        //    on their own independent wall-clock timers when the channel is free.
-        //  - ear/tail key the SPINE chain → firing mid-breath makes the body jump
-        //    from the breath's mid-cycle pose to the idle's first frame. So they
-        //    fire ONLY at body_breath's loop boundary (each `complete`), where the
-        //    body is back at setup and the idle's first frame (also setup) matches
-        //    — zero jump. spinePending arms the fire; the breath completes it.
-        const face = initFace(spine);
-        let busy = false; // channel occupied by the current action
-        let busyRem = 0; // wall-clock remaining for the current action
-        let busyKind: ActionKind | null = null;
-        let faded = false; // ear/tail: setEmptyAnimation already issued for this action
+        // COMPOSITE PROGRAM MODEL: idle-life programs (curious/happy/thing) are
+        // requested behind a one-slot queue and START on the next body_breath
+        // boundary, where every member channel swaps in together; they end n
+        // boundaries later with all members reverting in parallel. Blink/smile
+        // fire freely between programs on wall-clock timers (their staging keys
+        // only eye/mouth slots — no body channels involved). Expressions stay
+        // serial via exprBusyUntil so a later setAnimation can't cut a playing
+        // smile in half.
+        const runner: RunnerState = createProgramRunner();
+        runnerRef.current = runner;
         let blinkT = nextBlinkDelay(); // ~5s
         let smileT = nextSmileDelay(); // 12-18s
-        let spineT = nextSpineDelay(); // 5-8s → ear/tail each ~every 10-16s
-        let spinePending = false; // spineT elapsed; wait for a breath boundary to fire
+        let programT = nextSpineDelay(); // → queues an idle-life program
+        let exprBusyUntil = 0; // wall-clock timestamp; expr queue free after it
 
         // Gaze state: smoothed head/body rotation (deg). Applied INSIDE the
         // update() bake pipeline via the updateWorldTransform wrapper below —
@@ -285,23 +299,12 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         (app as any).__gazeDiag = gazeDiag;
         (window as any).__gazeDiag = gazeDiag;
 
-        const fireSpineAction = () => {
-          const k: ActionKind = Math.random() < 0.5 ? "ear" : "tail";
-          playAction(spine, k, face);
-          busy = true;
-          busyKind = k;
-          busyRem = actionDuration(k, face);
-          faded = false;
-          spineT = nextSpineDelay();
-        };
-
-        // body_breath (track0) completes once per loop — the only moment the body
-        // is guaranteed back at setup. Fire a pending ear/tail here.
+        // body_breath (track0) completes once per loop — the only moment the
+        // body is guaranteed back at its start pose. One sync point closes the
+        // active program (all members revert in parallel) and starts a queued
+        // one, keeping the 「动作在呼吸起点并行结束」 contract exactly.
         const onBreathComplete = (entry: any) => {
-          if (entry.trackIndex === 0 && spinePending && !busy) {
-            spinePending = false;
-            fireSpineAction();
-          }
+          if (entry.trackIndex === 0) breathBoundary(spine, runner);
         };
         spine.state.addListener({ complete: onBreathComplete });
 
@@ -354,30 +357,29 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
 
           spine.update(dt);
 
-          if (busy) {
-            busyRem -= wall;
-            if (!faded && busyRem <= IDLE_FADE) {
-              beginFadeOut(spine, busyKind!);
-              faded = true;
-            }
-            if (busyRem <= 0) {
-              endAction(busyKind!, face);
-              busy = false;
-              busyKind = null;
-            }
-            return; // channel busy: freeze the independent timers until it frees
+          // Advance the active program (mid-window smile repeats, sustained
+          // sad face re-triggers). No-op when nothing is running.
+          tickProgram(spine, runner, runner.activeDef, wall);
+          const programRunning = isProgramActive(runner);
+
+          if (programRunning) {
+            return; // program owns the face channels; freeze the idle timers
+          }
+          if (wall < exprBusyUntil) {
+            return; // an expression one-shot is still playing on track 7
           }
           // Channel free — advance independent timers, fire the first to elapse.
           if ((blinkT -= wall) <= 0) {
-            playAction(spine, "blink", face);
-            busy = true; busyKind = "blink"; busyRem = actionDuration("blink", face); faded = true;
+            spine.state.setAnimation(TRACK.expr, "blink", false);
+            exprBusyUntil = wall + EXPR_DURATIONS.blink;
             blinkT = nextBlinkDelay();
           } else if ((smileT -= wall) <= 0) {
-            playAction(spine, "smile", face);
-            busy = true; busyKind = "smile"; busyRem = actionDuration("smile", face); faded = true;
+            spine.state.setAnimation(TRACK.expr, "smile", false);
+            exprBusyUntil = wall + EXPR_DURATIONS.smile;
             smileT = nextSmileDelay();
-          } else if ((spineT -= wall) <= 0) {
-            spinePending = true; // ear/tail wait for the next breath boundary
+          } else if ((programT -= wall) <= 0) {
+            requestProgram(pickIdleProgram());
+            programT = nextSpineDelay(); // queue slot frees at the next boundary
           }
         };
         app.ticker.add(updateFn);
@@ -386,7 +388,7 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         // Seed expression for the behavior already active at load — the
         // [behavior] effect below may have run before the spine finished
         // loading (it no-ops while spineRef is null).
-        triggerBehavior(spine, behaviorRef.current);
+        triggerBehavior(spine, behaviorRef.current, false);
         lastBehaviorRef.current = behaviorRef.current;
 
         // Click hit testing: Liri has no Spine hit boxes wired yet, so map by a
@@ -428,12 +430,14 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
 
   // Behavior → expression track. No-ops until the spine is loaded (the load
   // effect seeds the initial value once the spine exists), and skips repeats.
+  // Winks are also suppressed while a composite program owns the face channel.
   useEffect(() => {
     const spine = spineRef.current;
     if (!spine) return;
     if (lastBehaviorRef.current === behavior) return;
     lastBehaviorRef.current = behavior;
-    triggerBehavior(spine, behavior);
+    const running = runnerRef.current ? isProgramActive(runnerRef.current) : false;
+    triggerBehavior(spine, behavior, running);
   }, [behavior]);
 
   return (
