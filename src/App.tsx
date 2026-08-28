@@ -1608,11 +1608,25 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
           document.querySelector<HTMLInputElement>(".input-bubble input")?.focus();
         });
       } else {
+        let finale = "认识你真高兴！以后就这么陪着你啦~";
+        // 问题文案承诺"想让我自己起，就回你来想"——这里兑现：一次小 LLM
+        // 调用让她给自己起名，失败回退"璃"，访谈绝不因网络错误卡死。
+        // save_onboarding_answer 是 upsert，此处覆盖上面存入的原始"你来想"。
+        if (key === "pet_name" && text.replace(/[。.!！~～\s]/g, "") === "你来想") {
+          setIsThinking(true);
+          let name = "璃";
+          try { name = await invoke<string>("generate_pet_name"); }
+          catch (e) { console.warn("generate_pet_name", e); }
+          setIsThinking(false);
+          try { await invoke("save_onboarding_answer", { key, value: name }); }
+          catch (e) { console.warn("save_onboarding_answer pet_name", e); }
+          finale = `嗯…让我想想——就叫「${name}」吧！以后就这么陪着你啦～`;
+        }
         try { await invoke("complete_onboarding"); }
         catch (e) { console.warn("complete_onboarding", e); }
         onboardingActiveRef.current = false;
         setOnboarding(null);
-        showBubble("认识你真高兴！以后就这么陪着你啦~", 10000, "bubble-happy");
+        showBubble(finale, 12000, "bubble-happy");
       }
       return;
     }

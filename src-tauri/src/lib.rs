@@ -346,6 +346,7 @@ pub fn run() {
            commands::needs_onboarding,
            commands::save_onboarding_answer,
            commands::complete_onboarding,
+           commands::generate_pet_name,
            commands::get_user_profile,
            commands::open_devtools,
            commands::open_debug_window,

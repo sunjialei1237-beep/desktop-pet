@@ -1174,6 +1174,49 @@ pub async fn complete_onboarding(db: State<'_, DbState>) -> Result<(), String> {
     db.with_conn(|conn| db_onboarding::save(conn, "onboard_completed", "true"))
 }
 
+/// The interview's last question promises "想让我自己起，就回你来想" — this
+/// delivers it: one small LLM call where she names herself. Fails soft to
+/// "璃" so the interview can never hang on a network error.
+#[tauri::command]
+pub async fn generate_pet_name(state: State<'_, AppState>) -> Result<String, String> {
+    // Bind the cloned Option before any await so the MutexGuard drops
+    // (non-Send guard; same pattern as welcome_back_bubble / lonely_bubble).
+    let llm = state
+        .llm
+        .lock()
+        .map_err(|e| format!("LLM lock error: {}", e))?
+        .as_ref()
+        .cloned();
+    if let Some(llm) = llm {
+        let messages = vec![
+            ChatMessage::system(
+                "你是璃，一只住在你桌面上的小狐灵，安静温柔、有点狡黠。\
+                 用户让你给自己起一个名字。只输出名字本身：2-6 个汉字，\
+                 不要引号、不要标点、不要任何解释。名字要贴合你小狐灵的身份，\
+                 可以带「璃」字的谐音或变体，也可以完全另起。",
+            ),
+            ChatMessage::user("你来想吧，你叫什么好呢？"),
+        ];
+        if let Ok(result) = llm.chat(&messages, Some(0.9), Some(48), None).await {
+            // 只留名字本身：取第一行，剥首尾空白/引号/括号/标点，最长 12 字。
+            let name: String = result
+                .content
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_matches(|c: char| "「」『』“”\"'· \t。.！!～~—-".contains(c))
+                .to_string();
+            if !name.is_empty() {
+                log::info!("[onboarding] pet self-named: {}", name);
+                return Ok(name.chars().take(12).collect());
+            }
+        }
+    }
+    log::warn!("[onboarding] pet name generation fell back to 璃");
+    Ok("璃".to_string())
+}
+
 /// Loads the full onboarding profile for the system prompt.
 #[tauri::command]
 pub async fn get_user_profile(
