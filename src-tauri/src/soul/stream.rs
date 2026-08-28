@@ -214,6 +214,148 @@ pub fn ingest(db: &DbState, env_summary: Option<&str>, now: &DateTime<Utc>) {
     });
 }
 
+/// 近曰表达倾向 (v3 P3) — a DERIVED quantity, never LLM-written (avoids a
+/// third personality state fighting persona_traits/emotion, Principle #2).
+/// Rust rolls it from bubble_log + ack rates; the evaluator consumes it as
+/// one context line: "今天可以自然一点 / 收着说" style inertia.
+pub fn expressive_tendency(db: &DbState) -> String {
+    let bubbles = db
+        .with_conn(|conn| crate::db::bubble_log::get_recent(conn, 10))
+        .unwrap_or_default();
+    if bubbles.is_empty() {
+        return String::new();
+    }
+    let mut acked = 0usize;
+    let mut unacked_trailing = 0usize;
+    for b in &bubbles {
+        let Ok(bt) = DateTime::parse_from_rfc3339(&b.time) else { continue };
+        let until = (bt + chrono::Duration::minutes(ACK_WINDOW_MINS)).to_rfc3339();
+        let hit: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM conversations WHERE created_at > ?1 AND created_at <= ?2",
+                    rusqlite::params![b.time, until],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())
+            })
+            .unwrap_or(0);
+        if hit > 0 {
+            acked += 1;
+            unacked_trailing = 0;
+        } else {
+            unacked_trailing += 1;
+        }
+    }
+    let rate = acked as f64 / bubbles.len() as f64;
+    let closeness = db
+        .with_conn(|conn| Ok(crate::db::relationship::get(conn).map(|r| r.closeness).unwrap_or(0.0)))
+        .unwrap_or(0.0);
+    if unacked_trailing >= 3 {
+        format!(
+            "（她最近连说了 {} 条都没被回应——今天的倾向是收着说，除非念头真的很强。）",
+            unacked_trailing
+        )
+    } else if rate > 0.5 && closeness >= 50.0 {
+        "（她最近说的话常被回应，关系亲近——今天的倾向是从容自然，不用刻意找话。）".to_string()
+    } else {
+        "（她最近的倾诉没有得到多少回应——今天的倾向是少而轻，把开口留给真正值得说的。）".to_string()
+    }
+}
+
+/// 夜间整理 (v3 P3, Letta sleep-time lite): pure-Rust housekeeping of the
+/// seed pool — per origin keep only the top-2 salience pending seeds (the
+/// rest are absorbed), unspoken older than 72h expire (true forgetting).
+/// Called at the end of each reflection run.
+pub fn consolidate_night(db: &DbState) {
+    let _ = db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE thought_stream SET state = 'expired'
+             WHERE state = 'unspoken' AND created_at < ?1",
+            rusqlite::params![(Utc::now() - chrono::Duration::hours(72)).to_rfc3339()],
+        )
+        .map_err(|e| e.to_string())
+    });
+    let origins: Vec<String> = db
+        .with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT DISTINCT origin FROM thought_stream WHERE state = 'pending'")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>(rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+    for origin in origins {
+        let _ = db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE thought_stream SET state = 'absorbed'
+                 WHERE state = 'pending' AND origin = ?1 AND id NOT IN (
+                     SELECT id FROM thought_stream WHERE state = 'pending' AND origin = ?1
+                     ORDER BY salience DESC LIMIT 2)",
+                rusqlite::params![origin],
+            )
+            .map_err(|e| e.to_string())
+        });
+    }
+}
+
+/// Harness/test hook (v3 P4): voice an ad-hoc seed through the FULL
+/// evaluate→voice path (no gate — the judge harness supplies its own
+/// scenarios). Not called by production emitters.
+#[doc(hidden)]
+pub async fn debug_voice_seed(
+    db: &DbState,
+    llm: &LlmClient,
+    stimulus: &str,
+    origin: &str,
+    relation: Option<&str>,
+) -> Result<Option<BubbleOutcome>, String> {
+    let now = Utc::now();
+    let seed = ThoughtSeed {
+        id: format!("ts_{}", uuid::Uuid::new_v4()),
+        stimulus: stimulus.to_string(),
+        emotion_tone: Some("平静".to_string()),
+        relation_hint: relation.map(|s| s.to_string()),
+        origin: origin.to_string(),
+        salience: 0.8,
+        created_at: now.to_rfc3339(),
+        state: STATE_PENDING.to_string(),
+        unspoken_reason: None,
+        voiced_at: None,
+        evolved_from: None,
+    };
+    db.with_conn(|conn| thoughts::insert(conn, &seed))?;
+    let recent: Vec<String> = db
+        .with_conn(|conn| crate::db::bubble_log::get_recent(conn, 3))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|b| b.text.chars().take(40).collect())
+        .collect();
+    let candidates = vec![&seed];
+    let tendency = expressive_tendency(db);
+    let ev = match evaluate(llm, &candidates, &recent, None, &tendency).await {
+        Ok(ev) => ev,
+        Err(e) => return Err(e),
+    };
+    if !ev.speak {
+        db.with_conn(|conn| thoughts::mark_unspoken(conn, &seed.id, &ev.reason))?;
+        return Ok(None);
+    }
+    let reply = match voice(db, llm, &seed, &ev, None).await? {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    db.with_conn(|conn| thoughts::mark_voiced(conn, &seed.id, &now.to_rfc3339()))?;
+    log_bubble(db, "thought_stream", &reply, stimulus, Some(&ev.reason));
+    Ok(Some(BubbleOutcome {
+        reply,
+        anchor: stimulus.to_string(),
+        anchor_reason: Some(ev.reason),
+    }))
+}
+
 /// Observability snapshot: recent seeds of any state, newest first (the
 /// monitoring surface for "她此刻在心里过了些什么" — Debug Panel + harness).
 pub fn snapshot(db: &DbState, limit: usize) -> Vec<ThoughtSeed> {
@@ -442,8 +584,9 @@ fn evaluate_messages(
     recent: &[String],
     now_local: &str,
     occasion_clause: &str,
+    tendency: &str,
 ) -> Vec<ChatMessage> {
-    let mut user = format!("现在是 {now_local}。\n\n［她最近主动说过的话（新→旧）］\n");
+    let mut user = format!("现在是 {now_local}。{tendency}\n\n［她最近主动说过的话（新→旧）］\n");
     if recent.is_empty() {
         user.push_str("（还没有。）\n");
     } else {
@@ -535,12 +678,13 @@ async fn evaluate(
     candidates: &[&ThoughtSeed],
     recent: &[String],
     occasion: Option<&str>,
+    tendency: &str,
 ) -> Result<Evaluation, String> {
     let occasion_clause = occasion
         .and_then(occasion_label)
         .map(|l| format!("【场合】{l}——这一句几乎一定要说，你评估的重点是\"怎么说才不生硬、不像在完成任务\"，speak 一般为 true。"))
         .unwrap_or_default();
-    let messages = evaluate_messages(candidates, recent, &now_local_display(), &occasion_clause);
+    let messages = evaluate_messages(candidates, recent, &now_local_display(), &occasion_clause, tendency);
     for attempt in 1..=2 {
         let result = llm
             .chat_gate(&messages, Some(0.2), Some(2048))
@@ -696,7 +840,7 @@ pub async fn occasion_bubble(
         .map(|b| b.text.chars().take(40).collect())
         .collect();
     let candidates = vec![&seed];
-    let ev = match evaluate(llm, &candidates, &recent, Some(occasion)).await {
+    let ev = match evaluate(llm, &candidates, &recent, Some(occasion), &expressive_tendency(db)).await {
         Ok(ev) => ev,
         Err(e) => {
             log::warn!("[stream:{}] evaluate failed ({})", occasion, e);
@@ -824,7 +968,7 @@ pub async fn tick(
 
     // Top-3 to the flash judge.
     let top: Vec<&ThoughtSeed> = scored.iter().take(3).map(|(_, i)| &candidates[*i]).collect();
-    let ev = match evaluate(llm, &top, &recent_texts, None).await {
+    let ev = match evaluate(llm, &top, &recent_texts, None, &expressive_tendency(db)).await {
         Ok(ev) => ev,
         Err(e) => {
             log::warn!("[stream] evaluate failed ({}); window silent", e);

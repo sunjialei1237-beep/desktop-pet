@@ -183,6 +183,11 @@ pub async fn run_reflection(
         Ok::<_, String>(())
     })?;
 
+    // Sleep-time lite (v3 P3): the nightly reflection also tidies the thought
+    // stream — absorb duplicate pending seeds per origin, expire stale
+    // unspoken. Pure Rust, zero extra LLM.
+    crate::soul::stream::consolidate_night(db);
+
     log::info!("Reflection complete: {} traits, {} thoughts, trigger={}", new_trait_count, new_thought_count, trigger.as_str());
     Ok(ReflectionResult { reflection_id, summary: parsed.reflection, new_trait_count, new_thought_count })
 }
