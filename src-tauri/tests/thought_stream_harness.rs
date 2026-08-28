@@ -131,8 +131,10 @@ async fn thought_stream_scenarios() {
         Some("正在编辑：stream.rs（desktop-pet 项目），已连续 40 分钟"),
         &chrono::Utc::now(),
     );
-    reset_gates(&db);
+    // print_gate burns the budget (check-and-occupy) — reset AFTER it so the
+    // real tick below actually reaches the pipeline.
     print_gate(&db);
+    reset_gates(&db);
     match stream::tick(&db, &llm, None, &config::ProactiveConfig::default()).await {
         Ok(Some(o)) => {
             println!("[voice] 「{}」(锚: {})", o.reply, o.anchor);
@@ -189,8 +191,8 @@ async fn thought_stream_scenarios() {
     // --- S6 到期提醒（时间触发：due pending → seed → tick）---
     println!("\n=== S6 到期提醒（pending 时间触发 → tick）===");
     stream::ingest(&db, None, &chrono::Utc::now());
-    reset_gates(&db);
     print_gate(&db);
+    reset_gates(&db);
     match stream::tick(&db, &llm, None, &config::ProactiveConfig::default()).await {
         Ok(Some(o)) => {
             println!("[voice] 「{}」(锚: {})", o.reply, o.anchor);
