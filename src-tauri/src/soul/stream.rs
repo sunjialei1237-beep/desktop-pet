@@ -222,8 +222,8 @@ pub fn expressive_tendency(db: &DbState) -> String {
     let bubbles = db
         .with_conn(|conn| crate::db::bubble_log::get_recent(conn, 10))
         .unwrap_or_default();
-    if bubbles.is_empty() {
-        return String::new();
+    if bubbles.len() < 3 {
+        return String::new(); // insufficient evidence — no tendency line
     }
     let mut acked = 0usize;
     let mut unacked_trailing = 0usize;
@@ -611,8 +611,8 @@ fn evaluate_messages(
     let contract = r#"{"speak": <true/false>, "pick": "<S1 这样的 id，不选则 S1>", "expression_type": "<自言自语|观察|回应环境|关心|提问>", "intent": "<一句话：她想达到什么>", "hook": "<一句话：从什么切口说起>", "reason": "<一句话：为什么说/为什么忍住>"}"#;
     vec![
         ChatMessage::system(format!(
-            "你是「璃」的开口评估器。她安静、不黏人；她在考虑要不要把心里的一个念头说出来。你来判断：此刻说出来，ta 听到会觉得自己被轻轻陪到了，还是被打扰了？\n判断标准：\n- 刚聊过没多久、ta 在专注、念头和她最近说过的话太像 → 不说。speak=false 是正常判断，不是失败；她大部分时候选择不说。
-- ［她最近主动说过的话］是硬边界：这条开口不得重复它们的内容、不得沿用它们的开头（比如她刚说过「你回来了」，这次就绝不能再以「你回来了」起头）；做不到避开就 speak=false。\n- 值得说的：此刻真的在她心里的事——ta 正在做的、惦记着的、时间到了的。\n- expression_type 从这五类里选：自言自语（说给自己听的）、观察（注意到的一个具体事实，不带凝视感）、回应环境（对身边此刻的轻反应）、关心（指向 ta 具体事的一句温度）、提问（真的好奇才用）。\n只输出 JSON，不要任何其他文字。格式：{contract}"
+            "你是「璃」的开口评估器。她安静、不黏人；她在考虑要不要把心里的一个念头说出来。你来判断：此刻说出来，ta 听到会觉得自己被轻轻陪到了，还是被打扰了？\n判断标准：\n- 碎碎念不需要「值得」的理由：一个轻的念头（犯困、时段流转、身边的动静、想起 ta 的事）本身就够说一句——她的常态就是一天里偶尔飘出几句这种轻话。开口是默认，沉默才需要理由：明显打扰（ta 深度专注、刚说过话）、和她最近说的重复、或念头确实空洞到像硬找话。
+- ［她最近主动说过的话］是硬边界：这条开口不得重复它们的内容、不得沿用它们的开头（比如她刚说过「你回来了」，这次就绝不能再以「你回来了」起头）；做不到避开就 speak=false。\n- 值得说的：此刻真的在她心里的事——ta 正在做的、惦记着的、时间到了的。\n- expression_type 从这五类里选：自言自语（说给自己听的）、观察（注意到的一个具体事实，不带凝视感）、回应环境（对身边此刻的轻反应）、关心（指向 ta 具体事的一句温度）、提问。「提问」是最贵的表达——只在真的需要 ta 回答时选；关心优先用陈述句实现（「面试完就好好歇歇」优于「面试怎么样？」）。\n只输出 JSON，不要任何其他文字。格式：{contract}"
         )),
         ChatMessage::user(user),
     ]

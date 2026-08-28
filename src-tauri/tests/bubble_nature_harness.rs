@@ -73,7 +73,11 @@ async fn bubble_nature_judge() {
             }
             Ok(None) => {
                 declined += 1;
-                println!("[voice] （评估拒绝——沉默也是结果）");
+                let reason = stream::snapshot(&db, 1)
+                    .first()
+                    .and_then(|sd| sd.unspoken_reason.clone())
+                    .unwrap_or_else(|| "（未记录）".to_string());
+                println!("[voice] （评估拒绝：{}）", reason);
             }
             Err(e) => println!("[voice] Err: {}", e),
         }
@@ -81,7 +85,7 @@ async fn bubble_nature_judge() {
     println!("\n=== 批次：{} 条开口 / {} 条沉默 ===", lines.len(), declined);
 
     // --- Hard invariants (deterministic) ---
-    assert!(!lines.is_empty(), "批次至少应有开口");
+    assert!(lines.len() >= 3, "日常碎碎念批次开口过少（{} 条）——评估器过度沉默", lines.len());
     let question_rate = lines
         .iter()
         .filter(|(_, r)| r.contains('？') || r.contains('?'))
@@ -96,13 +100,15 @@ async fn bubble_nature_judge() {
         assert!(r.chars().count() <= 100, "超长({}字) {}: {}", r.chars().count(), tag, r);
     }
     println!("[metrics] 问句率 {:.0}% | 开头多样性 {:.0}%", question_rate * 100.0, opening_diversity * 100.0);
-    assert!(question_rate <= 0.34, "问句率过高: {:.0}%", question_rate * 100.0);
+    if lines.len() >= 3 {
+        assert!(question_rate <= 0.34, "问句率过高: {:.0}%", question_rate * 100.0);
+    }
 
     // --- LLM judge (advisory scores, printed) ---
     let judge_ctx = lines
         .iter()
         .enumerate()
-        .map(|(i, (tag, r)| format!("[{}]（场景 {}）「{}」", i + 1, tag, r))
+        .map(|(i, (tag, r))| format!("[{}]（场景 {}）「{}」", i + 1, tag, r))
         .collect::<Vec<_>>()
         .join("\n");
     let now_local = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
