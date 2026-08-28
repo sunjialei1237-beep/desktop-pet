@@ -8,28 +8,28 @@ import {
   createProgramRunner,
   isProgramActive,
   tickProgram,
-  requestProgram,
   breathBoundary,
+  firePartAction,
+  pickPartAction,
   nextBlinkDelay,
   nextSmileDelay,
-  nextSpineDelay,
-  pickIdleProgram,
+  nextPartDelay,
   EXPR_DURATIONS,
+  PART_ACTION_DURATION,
+  IDLE_FADE,
   TRACK,
 } from "./animation/spineIntent";
-import type { RunnerState } from "./animation/spineIntent";
+import type { RunnerState, PartAction } from "./animation/spineIntent";
 import { patchLiriJson, isLiriSkeleton, LIRI_JSON_URL } from "./animation/liriAssetPatch";
 
 // Spine (3.8) + PixiJS rendering layer for Liri (the sole renderer).
 //
-// Driver layer (this file + spineIntent.ts): ALL base loops (breath/skirt/
-// hair/arm/ear_idle/tail_idle) run continuously from boot on their own tracks —
-// there is always a live animated pose underneath, so no transition can snap
-// to setup. Life & emotion run as COMPOSITE PROGRAMS (spineIntent.PROGRAMS):
-// each starts at a body_breath loop boundary and ends n boundaries later when
-// every member channel reverts in parallel (the breath-aligned rule). Blink and
-// smile fire on their own wall-clock timers while no program is running; the
-// FSM BehaviorState drives wink on change.
+// Driver layer (this file + spineIntent.ts): calm-idle base = body_breath sway
+// (+ subtle skirt/arm ambience) looping forever; ear/hair/tail fire as one-shot
+// part actions at random ≥15s intervals; blink/smile run on facial timers.
+// Emotion programs (sad/happy/curious/thing) are special cases driven by the
+// runner: they start at a body_breath loop boundary and end n boundaries later
+// when every member channel reverts in parallel (the breath-aligned rule).
 // Contract: docs/specs/liri/{skeleton_structure, animation_spec}.md.
 
 interface Rect {
@@ -194,10 +194,10 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         // scale 1, then do the scaled centering math ourselves.
         const b1 = spine.getBounds(true);
         // Scale factor:璃缩到刚好填满 canvas(取宽高较小者)再 ×系数。
-        // 0.7 = 缩到约原来的 78%(0.7/0.9),璃精致居中、留更多空白。
+        // 0.5 = 再小一号（用户 2026-08-28：0.7 → 0.5）。
         // 改这一个值即可——居中(spine.x/y)、穿透判定(onModelBounds)、
         // 边界框全部基于 fit 自动联动。
-        const fit = Math.min(app.screen.width / b1.width, app.screen.height / b1.height) * 0.7;
+        const fit = Math.min(app.screen.width / b1.width, app.screen.height / b1.height) * 0.5;
         spine.scale.set(fit);
         spine.x = app.screen.width / 2 - (b1.x + b1.width / 2) * fit;
         spine.y = app.screen.height / 2 - (b1.y + b1.height / 2) * fit;
@@ -249,22 +249,26 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         //           so animation PLAYBACK slows at night (circadian, Principle #10).
         //  - wall = elapsedMS/1000, real wall-clock → drives event INTERVALS, so
         //           "how often" is stable day or night (scaling it once made the
-        //           user see ~1min gaps).
+        //           user see ~1min gaps). NOTE: elapsedMS is a PER-FRAME delta,
+        //           NOT a clock — countdowns subtract it every frame; never
+        //           store "wall + duration" as a timestamp (that bug froze the
+        //           whole scheduler after the first blink, 续⁶⁵).
         //
-        // COMPOSITE PROGRAM MODEL: idle-life programs (curious/happy/thing) are
-        // requested behind a one-slot queue and START on the next body_breath
-        // boundary, where every member channel swaps in together; they end n
-        // boundaries later with all members reverting in parallel. Blink/smile
-        // fire freely between programs on wall-clock timers (their staging keys
-        // only eye/mouth slots — no body channels involved). Expressions stay
-        // serial via exprBusyUntil so a later setAnimation can't cut a playing
-        // smile in half.
+        // CALM-IDLE MODEL (user 2026-08-28): base = breath + skirt/arm ambience.
+        // Ear/hair/tail fire as ONE-SHOT part actions at random ≥15s intervals.
+        // Blink/smile run on their own facial timers. Emotion programs are
+        // special cases, started/ended on breath boundaries via the runner;
+        // while one runs, all idle timers hold. Expressions stay serial via a
+        // countdown so a later setAnimation can't cut a playing smile in half.
         const runner: RunnerState = createProgramRunner();
         runnerRef.current = runner;
         let blinkT = nextBlinkDelay(); // ~5s
         let smileT = nextSmileDelay(); // 12-18s
-        let programT = nextSpineDelay(); // → queues an idle-life program
-        let exprBusyUntil = 0; // wall-clock timestamp; expr queue free after it
+        let partT = nextPartDelay(); // ≥15s between ear/hair/tail actions
+        let exprBusyRem = 0; // countdown: expr queue busy while > 0
+        let partRem = 0; // countdown: current part action remaining (incl. fade)
+        let partFaded = false; // setEmptyAnimation already issued for the part action
+        let partTrack: number = TRACK.ear; // which track the current part action runs on
 
         // Gaze state: smoothed head/body rotation (deg). Applied INSIDE the
         // update() bake pipeline via the updateWorldTransform wrapper below —
@@ -360,26 +364,48 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
           // Advance the active program (mid-window smile repeats, sustained
           // sad face re-triggers). No-op when nothing is running.
           tickProgram(spine, runner, runner.activeDef, wall);
-          const programRunning = isProgramActive(runner);
+          if (isProgramActive(runner)) {
+            return; // a program owns every channel; idle timers hold
+          }
 
-          if (programRunning) {
-            return; // program owns the face channels; freeze the idle timers
+          // Run down the expression queue and the part action. Counters are
+          // decremented by the per-frame delta (see the two-clocks note above).
+          let exprBusy = false;
+          if (exprBusyRem > 0 && (exprBusyRem -= wall) > 0) exprBusy = true;
+          let partBusy = false;
+          if (partRem > 0) {
+            partRem -= wall;
+            if (!partFaded && partRem <= IDLE_FADE) {
+              // Fade the part track out so the body settles back to base.
+              spine.state.setEmptyAnimation(partTrack, IDLE_FADE);
+              partFaded = true;
+            }
+            if (partRem > 0) partBusy = true;
+            else partRem = 0;
           }
-          if (wall < exprBusyUntil) {
-            return; // an expression one-shot is still playing on track 7
+
+          // Facial timers (blink/smile): independent of part actions — the
+          // expr track is serial only against itself.
+          if (!exprBusy) {
+            if ((blinkT -= wall) <= 0) {
+              spine.state.setAnimation(TRACK.expr, "blink", false);
+              exprBusyRem = EXPR_DURATIONS.blink;
+              blinkT = nextBlinkDelay();
+            } else if ((smileT -= wall) <= 0) {
+              spine.state.setAnimation(TRACK.expr, "smile", false);
+              exprBusyRem = EXPR_DURATIONS.smile;
+              smileT = nextSmileDelay();
+            }
           }
-          // Channel free — advance independent timers, fire the first to elapse.
-          if ((blinkT -= wall) <= 0) {
-            spine.state.setAnimation(TRACK.expr, "blink", false);
-            exprBusyUntil = wall + EXPR_DURATIONS.blink;
-            blinkT = nextBlinkDelay();
-          } else if ((smileT -= wall) <= 0) {
-            spine.state.setAnimation(TRACK.expr, "smile", false);
-            exprBusyUntil = wall + EXPR_DURATIONS.smile;
-            smileT = nextSmileDelay();
-          } else if ((programT -= wall) <= 0) {
-            requestProgram(pickIdleProgram());
-            programT = nextSpineDelay(); // queue slot frees at the next boundary
+
+          // Sporadic part action: ear/hair/tail one-shot, ≥15s apart.
+          if (!partBusy && (partT -= wall) <= 0) {
+            const part: PartAction = pickPartAction();
+            partTrack = TRACK[part];
+            firePartAction(spine, part);
+            partRem = PART_ACTION_DURATION[part] + IDLE_FADE;
+            partFaded = false;
+            partT = nextPartDelay();
           }
         };
         app.ticker.add(updateFn);

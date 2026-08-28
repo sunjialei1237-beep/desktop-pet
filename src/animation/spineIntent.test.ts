@@ -3,7 +3,8 @@ import {
   PROGRAMS,
   SECONDS,
   EXPR_DURATIONS,
-  IDLE_VARIANT,
+  PART_ACTIONS,
+  PART_ACTION_DURATION,
   TRACK,
   createProgramRunner,
   isProgramActive,
@@ -11,7 +12,8 @@ import {
   requestProgram,
   breathBoundary,
   triggerBehavior,
-  pickIdleProgram,
+  pickPartAction,
+  firePartAction,
 } from "./spineIntent";
 import { BehaviorState } from "./fsm";
 
@@ -50,9 +52,13 @@ describe("PROGRAMS data integrity", () => {
     }
   });
 
-  it("variant channels swap to known idle fallbacks when the window closes", () => {
-    expect(IDLE_VARIANT.ear).toBe("ear_idle");
-    expect(IDLE_VARIANT.tail).toBe("tail_idle");
+  it("part actions are the calm-idle palette (ear/hair/tail one-shots)", () => {
+    expect(PART_ACTIONS.ear).toBe("ear_idle");
+    expect(PART_ACTIONS.hair).toBe("hair_idle");
+    expect(PART_ACTIONS.tail).toBe("tail_idle");
+    for (let i = 0; i < 100; i++) {
+      expect(pickPartAction()).toMatch(/^(ear|hair|tail)$/);
+    }
   });
 
   it("sad is the approved 2-beat recipe: ear_sad once + tail_sad loop + sustained face", () => {
@@ -88,12 +94,21 @@ describe("program runner lifecycle", () => {
     expect(spine.lastOn(TRACK.ear)).toMatchObject({ name: "ear_2", loop: true });
     expect(spine.lastOn(TRACK.tail)).toMatchObject({ name: "tail_2", loop: true });
 
-    // Boundary 2 (1-beat window closes): both revert to idle IN PARALLEL.
+    // Boundary 2 (1-beat window closes): both revert to EMPTY in parallel —
+    // calm-idle has no loops on these tracks, the body returns to breath base.
     const finished = breathBoundary(spine, runner);
     expect(finished).toBe("curious");
     expect(isProgramActive(runner)).toBe(false);
-    expect(spine.lastOn(TRACK.ear)).toMatchObject({ name: "ear_idle", loop: true });
-    expect(spine.lastOn(TRACK.tail)).toMatchObject({ name: "tail_idle", loop: true });
+    expect(spine.lastOn(TRACK.ear)).toMatchObject({ op: "empty" });
+    expect(spine.lastOn(TRACK.tail)).toMatchObject({ op: "empty" });
+  });
+
+  it("firePartAction plays the matching one-shot on its own track", () => {
+    const spine = fakeSpine();
+    firePartAction(spine, "hair");
+    expect(spine.lastOn(TRACK.hair)).toMatchObject({ name: "hair_idle", loop: false });
+    firePartAction(spine, "tail");
+    expect(spine.lastOn(TRACK.tail)).toMatchObject({ name: "tail_idle", loop: false });
   });
 
   it("sad: fires the sad face at start, sustains it, reverts after 2 boundaries", () => {
@@ -116,10 +131,10 @@ describe("program runner lifecycle", () => {
     expect(isProgramActive(runner)).toBe(true);
     expect(spine.lastOn(TRACK.tail)).toMatchObject({ name: "tail_sad" });
 
-    // Boundary 2: everything reverts together.
+    // Boundary 2: everything reverts together (channels fade to empty).
     expect(breathBoundary(spine, runner)).toBe("sad");
-    expect(spine.lastOn(TRACK.ear)).toMatchObject({ name: "ear_idle" });
-    expect(spine.lastOn(TRACK.tail)).toMatchObject({ name: "tail_idle" });
+    expect(spine.lastOn(TRACK.ear)).toMatchObject({ op: "empty" });
+    expect(spine.lastOn(TRACK.tail)).toMatchObject({ op: "empty" });
     expect(isProgramActive(runner)).toBe(false);
   });
 
@@ -176,10 +191,11 @@ describe("triggerBehavior serial discipline", () => {
   });
 });
 
-describe("pickIdleProgram weights", () => {
-  it("only returns known program ids", () => {
-    for (let i = 0; i < 200; i++) {
-      expect(PROGRAMS[pickIdleProgram()]).toBeDefined();
+describe("pickPartAction palette", () => {
+  it("only returns the three part actions", () => {
+    for (let i = 0; i < 100; i++) {
+      const p = pickPartAction();
+      expect(PART_ACTION_DURATION[p]).toBeGreaterThan(0);
     }
   });
 });

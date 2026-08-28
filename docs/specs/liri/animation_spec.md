@@ -6,34 +6,38 @@
 
 ## 关键约定
 
-1. **常驻循环底座**：breath / skirt / hair / arm / ear_idle / tail_idle 六条循环从启动起**永不下轨**。
-   任何时刻下方都有一条活着的动画姿态，所以任何变奏/收束都有平滑的混合目标——
-   历史上"身体摆到最右跳回最左"的跳变由此从结构上消除。
-2. **骨骼域互斥（补丁 C 剥钉保证）**：所有次要动画在 t=0 的跨域钉扎（head=0.57 / spine=0.54 /
+1. **骨骼域互斥（补丁 C 剥钉保证）**：所有次要动画在 t=0 的跨域钉扎（head=0.57 / spine=0.54 /
    spine3=-0.03 / lh3=-4.47 / liuhai2=3.95 / ear_r2=-12.54 等，0 值钉以无 angle 字段出现）
    由 `liriAssetPatch.stripCrossDomainPins` 在加载期剥除，使**每个并发轨道拥有互不相交的骨骼集**：
    - `body_breath`：脊柱链+head 摆+双飘带（其 lh3/lh4/liuhai2 纯钉被剥，刘海归 hair）
    - `hair_idle`：侧发/后发束+刘海（其 ear/tail_1/spine 系钉被剥）
    - `ear_*`：仅 ear_l2/ear_r2（tail_1 钉剥除）；`tail_*`：仅 tail_1..5；`arm_idle`/`Skirt_l`：各自部件
    - **例外**：`thing`（手势）保留全部真实关键帧，在最高身体轨短暂接管，结束用空轨 mix 收势
-3. **呼吸边界对齐**：程序（情绪组合）只在 body_breath `complete`（每 4.3333s）时启动；
-   收束同样发生在边界上——所有成员通道**并行**还原为 idle 变体。
+2. **安静常态（2026-08-28 用户裁定）**：底座常驻 = **呼吸左右摆 + 裙摆/手臂微动氛围**。
+   耳/发/尾为**间隔 ≥15s（15–25s 随机）的单部位一次性动作**（ear_idle/hair_idle/tail_idle，
+   播完空轨淡出）——不再常驻循环。开心/难过/好奇等组合程序为"特殊情况"，只由事件触发
+   （`requestProgram(id)` 待接情绪桥），idle 随机器不碰它们。
+3. **呼吸边界对齐（组合程序）**：程序只在 body_breath `complete`（每 4.3333s）时启动；
+   收束同样发生在边界上——所有成员通道**并行**淡出回空轨。
    即制作人规则「所有动画动作在一个完整的呼吸动作开始时并行结束」。
+4. **模型显示比例 0.5**（2026-08-28 用户：0.7 → 0.5，`SpineCanvas` fit 系数）。
 
 ## 轨道布局（SpineCanvas / spineIntent.TRACK，低→高）
 
 | Track | 内容 | 循环 | 角色 |
 |---|---|---|---|
-| 0 | `body_breath` | ✅ | 基础呼吸（身体主轴摆动+飘带） |
-| 1 | `Skirt_l` | ✅ | 裙摆慢飘（制作人确认常驻） |
-| 2 | `hair_idle` | ✅ | 头发+刘海（域剥离后） |
-| 3 | `arm_idle` | ✅ | 左臂微动 |
-| 4 | 耳朵通道：`ear_idle` ↔ `ear_2` ↔ `ear_sad` | ✅/一次性 | 变奏交换 |
-| 5 | 尾巴通道：`tail_idle` ↔ `tail_2` ↔ `tail_happy` ↔ `tail_sad` | ✅ | 变奏交换（恒高于耳轨，防 tail_1 互踩） |
+| 0 | `body_breath` | ✅ | 基础呼吸（身体主轴摆动+飘带）**常驻** |
+| 1 | `Skirt_l` | ✅ | 裙摆慢飘（常驻氛围） |
+| 2 | `hair_idle` | 空→一次性 | 随机单部位动作（≥15s 间隔） |
+| 3 | `arm_idle` | ✅ | 左臂微动（常驻氛围） |
+| 4 | 耳通道 | 空→一次性/程序成员 | 随机动作 & 情绪程序成员 |
+| 5 | 尾通道 | 空→一次性/程序成员 | 同上（恒高于耳轨，防 tail_1 互踩） |
 | 6 | 手势：`thing`（+未来摸头/戳尾） | ❌ | 一次性，GESTURE_FADE=0.35s 空轨收势 |
-| 7 | 表情队列：`blink`/`wink_L`/`wink_R`/`smile`/`eye_sad` | ❌ | 串行（`exprBusyUntil` 防打断）；程序激活期整体冻结 |
+| 7 | 表情队列：`blink`/`wink_L`/`wink_R`/`smile`/`eye_sad` | ❌ | 串行 countdown（`exprBusyRem`）防打断；程序激活期整体冻结 |
 
 > mix：`defaultMix=0.15`；表情自切 `setMixByName(a,a,0.12)`。
+> ⚠️ 教训（续⁶⁵）：调度器倒计时**不可**把 per-frame `elapsedMS` 当时钟存 "now+dur" 时间戳——
+> 第一次眨眼后 `wall < exprBusyUntil` 恒真，整个调度器冻结（笑/眨眼/程序全停）。一律用 countdown。
 
 ## 动画清单（17，时长=JSON 实测）
 
@@ -66,8 +70,10 @@
 | `curious` | 1 | ear_2 ＋ tail_2 | ✓ |
 | `thing` | 1 | 手势轨道 thing；收势空轨 mix | ✓ |
 
-Idle 生活随机器：每 10–14s 以 40/35/15/10 权重请求 curious/happyShort/happyLong/thing（`pickIdleProgram`），
-在下一个呼吸边界统一开演；`requestProgram(id)` 是给情绪桥（后续 emotionBridge 接线）的入口。
+Idle 生活随机器（安静常态）：每 **15–25s** 一次性动作，均匀三选一：ear_idle / hair_idle /
+tail_idle（`pickPartAction` + `nextPartDelay`）。眨眼 4–6s、微笑 12–18s 照旧独立走表情轨。
+组合程序（sad/happyLong/happyShort/curious/thing）**只**由事件经 `requestProgram(id)` 触发
+（情绪桥接线 follow-up），idle 不再轮盘它们。
 
 ## 数据级补丁（liriAssetPatch v2，运行时加载期，三族）
 

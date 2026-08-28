@@ -4,17 +4,19 @@
 // combination plan, 2026-08-27). Contract: docs/specs/liri/animation_spec.md
 // (17-animation edition), skeleton_structure.md.
 //
-// ARCHITECTURE — three mechanisms (v2 asset, 17 animations):
+// ARCHITECTURE — three mechanisms (v2 asset, 17 animations; calm-idle tuned
+// per user 2026-08-28):
 //
 // 1. DISJOINT BONE DOMAINS. liriAssetPatch strips the cross-domain flatline
 //    pins so every concurrently-playable track owns a disjoint bone set:
-//      skirt/hair/arm own their parts; ear owns ear_l2/ear_r2; tail owns
-//      tail_1..5; breath owns head/spine chain/ribbons; hair additionally owns
-//      the bangs (breath's lh pins are stripped for that reason).
-// 2. ALWAYS-ON LOOP BASE. Tracks breath..tail loop forever from boot. Nothing
-//    is ever "cleared to setup" — there is always a live animated pose below,
-//    which is why swaps/blends can't produce the historic "从最右跳到最左" jump.
-// 3. BREATH-ALIGNED PROGRAMS. Emotion programs (sad/happy/curious/gesture)
+//      skirt/arm own their parts; ear owns ear_l2/ear_r2; tail owns tail_1..5;
+//      hair owns hair chains + bangs; breath owns head/spine chain/ribbons.
+// 2. CALM-IDLE BASE. Only breath (+ subtle skirt/arm ambience) loops forever.
+//    Ear/hair/tail fire as SPORADIC ONE-SHOTS — never more often than every
+//    15s (user rule), picked at random — so idle reads as: breathing sway,
+//    occasionally a ear twitch / hair sway / tail wave. Emotion programs are
+//    special cases ("另算") fired by events, never by the idle randomizer.
+// 3. BREATH-ALIGNED PROGRAMS. Emotion programs (sad/happy/curious/thing)
 //    START at a body_breath loop boundary (track0 `complete`) and END exactly
 //    n boundaries later — all member channels revert in parallel on a beat, per
 //    the rule 「所有动作在一个完整的呼吸动作开始时并行结束」.
@@ -23,13 +25,16 @@ import { BehaviorState } from "./fsm";
 
 // Track layout, bottom → top. Higher index wins per keyed property. With the
 // patch's disjoint domains this order is belt-and-braces, not correctness.
+// ear/tail/hair are EMPTY at boot — they only carry sporadic one-shot part
+// actions (the calm-idle rule: no part action more often than every 15s) and
+// program members while a special emotion runs.
 export const TRACK = {
   breath: 0, // body_breath — looping base life (spine sway/head bob/ribbons)
-  skirt: 1, // Skirt_l — slow skirt flutter
-  hair: 2, // hair_idle — side/back hair + bangs (domain-stripped)
-  arm: 3, // arm_idle — forearm/sleeve micro-sway
-  ear: 4, // ear variant loop: ear_idle ↔ ear_2 ↔ ear_sad
-  tail: 5, // tail variant loop: tail_idle ↔ tail_2 ↔ tail_happy ↔ tail_sad
+  skirt: 1, // Skirt_l — slow skirt flutter (permanent ambient)
+  hair: 2, // hair_idle one-shot (sporadic)
+  arm: 3, // arm_idle — forearm/sleeve micro-sway (permanent ambient)
+  ear: 4, // ear actions / program members
+  tail: 5, // tail actions / program members (kept above ear: tail_1 ownership)
   gesture: 6, // thing (+ future touch reactions) — one-shot above everything
   expr: 7, // blink/wink/smile/eye_sad — serial one-shot queue
 } as const;
@@ -50,8 +55,9 @@ export const SECONDS = {
 // loops (attachment switch is discrete; the ~50ms gap is invisible).
 const EYE_SAD_RETRIGGER = SECONDS.eyeSad + 0.05;
 
-// Programs: named emotion composites. beats × SECONDS.breath is the window;
-// every member ends with the window at the next breath boundary.
+// Programs: named emotion composites ("特殊情况，另算" — fired by events/the
+// future emotion bridge, never by the idle randomizer). beats × SECONDS.breath
+// is the window; every member ends with the window at the next breath boundary.
 //
 //   sad        ear_sad ×1 (self-returning hold) + tail_sad loop + sustained
 //              难过脸 (eye_sad re-triggered)                 → 8.67s window
@@ -123,13 +129,23 @@ export const PROGRAMS: Record<string, ProgramDef> = {
   },
 };
 
-// Idle variants each variant-channel falls back to when a program ends.
-export const IDLE_VARIANT: Record<VariantChannel, string> = {
+// Part one-shot actions (the calm-idle randomizer's palette). All three are
+// self-returning one-shots on their own (empty-at-boot) tracks — they own
+// disjoint bones, so they fire freely between breath cycles without alignment.
+export type PartAction = "ear" | "hair" | "tail";
+export const PART_ACTIONS: Record<PartAction, string> = {
   ear: "ear_idle",
+  hair: "hair_idle",
   tail: "tail_idle",
+};
+export const PART_ACTION_DURATION: Record<PartAction, number> = {
+  ear: 3.1,
+  hair: 2.7,
+  tail: 1.2,
 };
 
 export const GESTURE_FADE = 0.35; // setEmptyAnimation mix for the gesture track
+export const IDLE_FADE = 0.3; // fade-back mix for part actions / variant channels
 
 /// Set transition (mix) times once on the AnimationStateData (animation_spec §Mix).
 export function setupMix(stateData: any) {
@@ -139,15 +155,19 @@ export function setupMix(stateData: any) {
   );
 }
 
-/// One-time: lay down ALL continuous base tracks (loops run forever underneath
-/// everything — the always-live pose that makes every later transition smooth).
+/// One-time: lay down the PERMANENT base loops only. Per the calm-idle rule
+/// (2026-08-28 user) the base is breath sway + subtle skirt/arm ambience;
+/// ear/hair/tail fire as sporadic one-shots instead of looping.
 export function setupIdleTracks(spine: any) {
   spine.state.setAnimation(TRACK.breath, "body_breath", true);
   spine.state.setAnimation(TRACK.skirt, "Skirt_l", true);
-  spine.state.setAnimation(TRACK.hair, "hair_idle", true);
   spine.state.setAnimation(TRACK.arm, "arm_idle", true);
-  spine.state.setAnimation(TRACK.ear, IDLE_VARIANT.ear, true);
-  spine.state.setAnimation(TRACK.tail, IDLE_VARIANT.tail, true);
+}
+
+/// Fire a sporadic part action (one-shot; the canvas fades the track back out
+/// via setEmptyAnimation once PART_ACTION_DURATION is nearly spent).
+export function firePartAction(spine: any, part: PartAction): void {
+  spine.state.setAnimation(TRACK[part], PART_ACTIONS[part], false);
 }
 
 // ── Program runner (pure-ish state; canvas drives it from updateFn/timers) ──
@@ -274,7 +294,9 @@ export function finishProgram(spine: any, runner: RunnerState, def: ProgramDef |
     }
   }
   for (const ch of touched) {
-    spine.state.setAnimation(TRACK[ch], IDLE_VARIANT[ch], true);
+    // No idle loops beneath anymore (calm-idle rule): fade the channel back to
+    // empty so the body returns to breath-only base with the part at rest.
+    spine.state.setEmptyAnimation(TRACK[ch], IDLE_FADE);
   }
 }
 
@@ -341,15 +363,13 @@ export function nextBlinkDelay(): number {
 export function nextSmileDelay(): number {
   return 12 + Math.random() * 6; // 12-18s sparse warmth
 }
-/// Life-program cadence: a composite fires roughly every 10-14s.
-export function nextSpineDelay(): number {
-  return 10 + Math.random() * 4;
+/// Part-action cadence: never more often than every 15s (user calm-idle rule),
+/// with random stretch to 25s so she doesn't tick like a clock.
+export function nextPartDelay(): number {
+  return 15 + Math.random() * 10;
 }
-/// Weighted pick among idle-life programs. thing is rare (hands-up gesture).
-export function pickIdleProgram(): string {
-  const r = Math.random();
-  if (r < 0.4) return "curious";
-  if (r < 0.75) return "happyShort";
-  if (r < 0.9) return "happyLong";
-  return "thing";
+/// Uniform pick among the three idle part actions.
+export function pickPartAction(): PartAction {
+  const parts: PartAction[] = ["ear", "hair", "tail"];
+  return parts[Math.floor(Math.random() * parts.length)];
 }
