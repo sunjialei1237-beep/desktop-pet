@@ -14,6 +14,7 @@ pub mod changelog;
 pub mod onboarding;
 pub mod bubble_log;
 pub mod grants;
+pub mod thoughts;
 
 use rusqlite::Connection;
 use std::sync::Mutex;

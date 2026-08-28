@@ -777,28 +777,33 @@ pub async fn proactive_bubble(
         .cloned()
         .ok_or("LLM not configured")?;
 
-    let wm_context = {
-        let wm = state
-            .working_memory
-            .lock()
-            .map_err(|e| format!("WM lock error: {}", e))?;
-        wm.get_context()
+    // Engine routing (thought-stream plan v3): "stream" = thought-stream
+    // three-tier pipeline (ingest → hard gate → motivation score → flash
+    // silent evaluation → unified renderer); "legacy" = the occasion-template
+    // generators. Runtime rollback via config, no rebuild (#6).
+    let outcome = if state.config.proactive.engine == "stream" {
+        crate::soul::stream::tick(&db, &llm, Some(&state.embedding), &state.config.proactive).await?
+    } else {
+        let wm_context = {
+            let wm = state
+                .working_memory
+                .lock()
+                .map_err(|e| format!("WM lock error: {}", e))?;
+            wm.get_context()
+        };
+        // Business logic lives in pending::proactive::generate so the
+        // closed-loop-2 path is testable without AppState (Architecture
+        // Principle 1: thin command layer; logic in modules).
+        crate::pending::proactive::generate(
+            &db,
+            &llm,
+            Some(&state.embedding),
+            &wm_context,
+            state.config.proactive.memory_bubble_ratio,
+            state.config.proactive.enable_llm_selector,
+        )
+        .await?
     };
-
-    // Business logic lives in pending::proactive::generate so the closed-loop-2
-    // path is testable without AppState (Architecture Principle 1: thin command
-    // layer; logic in modules). The command's IPC contract stays Option<String>
-    // (the reply); the anchor is dropped here — it is consumed only by tests and
-    // (eventually) the Debug Panel, not the frontend bubble.
-    let outcome = crate::pending::proactive::generate(
-        &db,
-        &llm,
-        Some(&state.embedding),
-        &wm_context,
-        state.config.proactive.memory_bubble_ratio,
-        state.config.proactive.enable_llm_selector,
-    )
-    .await?;
     Ok(outcome.map(|o| o.reply))
 }
 

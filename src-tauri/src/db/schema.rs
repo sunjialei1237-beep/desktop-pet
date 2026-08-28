@@ -10,7 +10,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     // v6 bubble_log migration was unreachable on real v5 DBs; caught by the
     // 2026-08-16 selector smoke, lib tests never saw it because fresh test
     // DBs run the full chain from version 0).
-    if current_version >= 7 {
+    if current_version >= 8 {
         log::info!("Database schema at version {}, no migration needed", current_version);
         return Ok(());
     }
@@ -77,6 +77,15 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
         log::info!("Migration v7 applied successfully");
     }
 
+    let current_version = get_schema_version(conn)?;
+    if current_version < 8 {
+        log::info!("Running migration v8 (thought_stream)...");
+        let sql = include_str!("../../migrations/008_thought_stream.sql");
+        conn.execute_batch(sql)
+            .map_err(|e| format!("Migration v8 failed: {}", e))?;
+        log::info!("Migration v8 applied successfully");
+    }
+
     Ok(())
 }
 
@@ -114,11 +123,11 @@ mod tests {
     fn test_migration_runs_once() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 7);
+        assert_eq!(get_schema_version(&conn).unwrap(), 8);
 
         // Running again should be a no-op
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 7);
+        assert_eq!(get_schema_version(&conn).unwrap(), 8);
     }
 
     #[test]
@@ -133,7 +142,7 @@ mod tests {
         )
         .unwrap();
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 7);
+        assert_eq!(get_schema_version(&conn).unwrap(), 8);
         let has_table: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='bubble_log'",
@@ -155,7 +164,7 @@ mod tests {
         )
         .unwrap();
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), 7);
+        assert_eq!(get_schema_version(&conn).unwrap(), 8);
         let has_table: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='fs_grants'",
@@ -164,6 +173,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has_table, 1, "fs_grants must exist after v6→v7 migration");
+    }
+
+    #[test]
+    fn test_v7_database_migrates_to_v8() {
+        // Same regression class as v5→v6: a real DB stamped at version 7 must
+        // run the v8 migration (thought_stream).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+             INSERT INTO schema_migrations (version, applied_at) VALUES (7, datetime('now'));",
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(get_schema_version(&conn).unwrap(), 8);
+        let has_table: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='thought_stream'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_table, 1, "thought_stream must exist after v7→v8 migration");
     }
 
     #[test]
@@ -188,6 +219,7 @@ mod tests {
             "relationship_reviews",
             "bubble_log",
             "fs_grants",
+            "thought_stream",
         ];
 
         for table in &expected {
