@@ -54,15 +54,15 @@ fn seed(db: &DbState) -> Result<(), String> {
         .map_err(|e| format!("seed pending: {}", e))?;
         conn.execute(
             "INSERT OR REPLACE INTO relationship (id, closeness, trust, days_known,
-                total_conversations, shared_events, updated_at)
-             VALUES ('rel', 70.0, 60.0, 30, 42, 3, ?1)",
+                total_conversations, shared_events, last_interaction_at, updated_at)
+             VALUES (1, 70.0, 60.0, 30, 42, 3, ?1, ?1)",
             rusqlite::params![now],
         )
         .map_err(|e| format!("seed relationship: {}", e))?;
         conn.execute(
             "INSERT OR REPLACE INTO emotion_state (id, mood, mood_label, physical_energy,
-                social_battery, stress, loneliness, rest_need, updated_at)
-             VALUES (1, 0.62, '平静', 0.7, 0.65, 0.3, 0.55, 0.3, ?1)",
+                social_battery, stress, loneliness, rest_need, last_homeostasis_at, updated_at)
+             VALUES (1, 0.62, '平静', 0.7, 0.65, 0.3, 0.55, 0.3, ?1, ?1)",
             rusqlite::params![now],
         )
         .map_err(|e| format!("seed emotion: {}", e))?;

@@ -198,12 +198,16 @@ pub fn ingest(db: &DbState, env_summary: Option<&str>, now: &DateTime<Utc>) {
 
     // 7. Unspoken reinforcement (v3 P2): overnight unspoken seeds return to
     //    pending with a salience bump — "昨天忍住没说的事今天轻轻带出".
+    //    Occasion seeds (welcome/lonely/ritual) are one-shot: reviving
+    //    "ta 刚回来" a day later would be exactly the time-mismatch class
+    //    this whole redesign exists to kill (review catch ①).
     let overnight = (*now - chrono::Duration::hours(6)).to_rfc3339();
     let _ = db.with_conn(|conn| {
         conn.execute(
             "UPDATE thought_stream SET state = 'pending',
                     salience = MIN(salience + 0.15, 0.9)
-             WHERE state = 'unspoken' AND created_at < ?1",
+             WHERE state = 'unspoken' AND created_at < ?1
+               AND origin NOT IN ('welcome', 'lonely', 'goodmorning', 'goodnight')",
             rusqlite::params![overnight],
         )
         .map_err(|e| e.to_string())
@@ -734,20 +738,23 @@ pub async fn tick(
     let env_summary = crate::perception::environment::recent_summary();
     ingest(db, env_summary.as_deref(), &now);
 
-    match gate(db, cfg, &now) {
-        GateVerdict::Silent(reason) => {
-            log::info!("[stream] gate silent: {}", reason);
-            return Ok(None);
-        }
-        GateVerdict::Proceed => {}
-    }
-
+    // Pool check BEFORE the gate: an empty pool must not burn the budget
+    // window (review catch ② — gate's budget check is the only state-writing
+    // tier; skipping it on emptiness keeps the next real seed on schedule).
     let candidates = db
         .with_conn(|conn| thoughts::get_pending(conn, 5))
         .unwrap_or_default();
     if candidates.is_empty() {
         log::info!("[stream] no pending seeds — silent");
         return Ok(None);
+    }
+
+    match gate(db, cfg, &now) {
+        GateVerdict::Silent(reason) => {
+            log::info!("[stream] gate silent: {}", reason);
+            return Ok(None);
+        }
+        GateVerdict::Proceed => {}
     }
 
     let (loneliness, closeness, last_interaction) = db
