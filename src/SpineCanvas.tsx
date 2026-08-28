@@ -110,9 +110,16 @@ export interface SpineCanvasProps {
   // Visual body rect WITHOUT padding (the rendered pixels). Drives the drag
   // screen walls so the head/feet can touch the screen edges exactly.
   onVisualBounds?: (b: Rect) => void;
+  // Live head/feet anchor (canvas-local CSS px), reported once after measure.
+  // headX = head-bone origin x (≈ face center), headY = model top + 8 (≈
+  // crown below the ear tips), feetY = model bottom. App converts to window
+  // coords (+150 canvas top offset) and anchors the speech-bubble tail tip
+  // and the input box to the REAL model pose — replacing the scale-0.7-era
+  // hardcoded pixels that drifted when the fit factor changed to 0.5.
+  onBodyAnchor?: (a: { headX: number; headY: number; feetY: number }) => void;
 }
 
-export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onVisualBounds }: SpineCanvasProps) {
+export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onVisualBounds, onBodyAnchor }: SpineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const spineRef = useRef<any>(null);
@@ -236,6 +243,15 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
             y: b.y - h * PAD - h * TOP_BIAS,
             width: w * (1 + 2 * PAD),
             height: h * (1 + 2 * PAD) + h * TOP_BIAS,
+          });
+          // Head/feet anchor for the bubble tail tip + input box (see prop doc).
+          const headBoneForAnchor = spine.skeleton.findBone("head");
+          onBodyAnchor?.({
+            headX: headBoneForAnchor
+              ? spine.x + headBoneForAnchor.worldX * spine.scale.x
+              : b.x + b.width / 2,
+            headY: b.y + 8, // model top = ear tips; +8 lands at the crown
+            feetY: b.y + b.height,
           });
         } catch (e) {
           // getBounds unavailable -- App keeps fully interactive (safe default).

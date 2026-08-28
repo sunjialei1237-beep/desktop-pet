@@ -30,9 +30,9 @@ import { BehaviorState } from "./fsm";
 // program members while a special emotion runs.
 export const TRACK = {
   breath: 0, // body_breath — looping base life (spine sway/head bob/ribbons)
-  skirt: 1, // Skirt_l — slow skirt flutter (permanent ambient)
+  skirt: 1, // Skirt_l — slow skirt flutter (the one permanent ambient)
   hair: 2, // hair_idle one-shot (sporadic)
-  arm: 3, // arm_idle — forearm/sleeve micro-sway (permanent ambient)
+  arm: 3, // arm_idle one-shot (sporadic — 用户: 手臂不要常驻)
   ear: 4, // ear actions / program members
   tail: 5, // tail actions / program members (kept above ear: tail_1 ownership)
   gesture: 6, // thing (+ future touch reactions) — one-shot above everything
@@ -129,19 +129,21 @@ export const PROGRAMS: Record<string, ProgramDef> = {
   },
 };
 
-// Part one-shot actions (the calm-idle randomizer's palette). All three are
+// Part one-shot actions (the calm-idle randomizer's palette). All four are
 // self-returning one-shots on their own (empty-at-boot) tracks — they own
 // disjoint bones, so they fire freely between breath cycles without alignment.
-export type PartAction = "ear" | "hair" | "tail";
+export type PartAction = "ear" | "hair" | "tail" | "arm";
 export const PART_ACTIONS: Record<PartAction, string> = {
   ear: "ear_idle",
   hair: "hair_idle",
   tail: "tail_idle",
+  arm: "arm_idle",
 };
 export const PART_ACTION_DURATION: Record<PartAction, number> = {
   ear: 3.1,
   hair: 2.7,
   tail: 1.2,
+  arm: 1.13,
 };
 
 export const GESTURE_FADE = 0.35; // setEmptyAnimation mix for the gesture track
@@ -156,12 +158,12 @@ export function setupMix(stateData: any) {
 }
 
 /// One-time: lay down the PERMANENT base loops only. Per the calm-idle rule
-/// (2026-08-28 user) the base is breath sway + subtle skirt/arm ambience;
-/// ear/hair/tail fire as sporadic one-shots instead of looping.
+/// (2026-08-28 user) the base is breath sway + subtle skirt ambience only;
+/// ear/hair/tail/arm all fire as sporadic one-shots instead of looping
+/// (用户 2026-08-28 续：手臂也不要常驻).
 export function setupIdleTracks(spine: any) {
   spine.state.setAnimation(TRACK.breath, "body_breath", true);
   spine.state.setAnimation(TRACK.skirt, "Skirt_l", true);
-  spine.state.setAnimation(TRACK.arm, "arm_idle", true);
 }
 
 /// Fire a sporadic part action (one-shot; the canvas fades the track back out

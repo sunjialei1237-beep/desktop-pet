@@ -52,12 +52,13 @@ describe("PROGRAMS data integrity", () => {
     }
   });
 
-  it("part actions are the calm-idle palette (ear/hair/tail one-shots)", () => {
+  it("part actions are the calm-idle palette (ear/hair/tail/arm one-shots)", () => {
     expect(PART_ACTIONS.ear).toBe("ear_idle");
     expect(PART_ACTIONS.hair).toBe("hair_idle");
     expect(PART_ACTIONS.tail).toBe("tail_idle");
+    expect(PART_ACTIONS.arm).toBe("arm_idle"); // 用户: 手臂也不要常驻
     for (let i = 0; i < 100; i++) {
-      expect(pickPartAction()).toMatch(/^(ear|hair|tail)$/);
+      expect(pickPartAction()).toMatch(/^(ear|hair|tail|arm)$/);
     }
   });
 
@@ -192,7 +193,7 @@ describe("triggerBehavior serial discipline", () => {
 });
 
 describe("pickPartAction palette", () => {
-  it("only returns the three part actions", () => {
+  it("only returns the four part actions", () => {
     for (let i = 0; i < 100; i++) {
       const p = pickPartAction();
       expect(PART_ACTION_DURATION[p]).toBeGreaterThan(0);

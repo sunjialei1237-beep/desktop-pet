@@ -462,6 +462,23 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     visualBoundsRef.current = b;
   }, []);
 
+  // Live head/feet anchor (canvas-local CSS px) from SpineCanvas, reported
+  // once after measure. Anchors the speech-bubble tail tip (head) and the
+  // input box (feet) to the model's REAL pose — the old hardcoded pixels
+  // (tip 210/235, input bottom 110) were tuned for the 0.7 fit and drifted
+  // when the scale changed (用户 2026-08-28: 气泡尖端在头顶偏右、输入框在脚下方).
+  const [bodyAnchor, setBodyAnchor] = useState<{ headX: number; headY: number; feetY: number } | null>(null);
+  const handleBodyAnchor = useCallback((a: { headX: number; headY: number; feetY: number }) => {
+    setBodyAnchor(a);
+  }, []);
+  // Canvas-local → window coords. The canvas (400×600) is bottom-anchored in
+  // the 400×760 window with 10px bottom padding: its top sits at window y=150.
+  const CANVAS_TOP_IN_WINDOW = 150;
+  const headAnchorWin = bodyAnchor
+    ? { x: bodyAnchor.headX, y: bodyAnchor.headY + CANVAS_TOP_IN_WINDOW }
+    : null;
+  const feetWindowY = bodyAnchor ? bodyAnchor.feetY + CANVAS_TOP_IN_WINDOW : null;
+
   // PetBubble reports its viewport rect here (CSS px) so the global-cursor
   // listener can treat the bubble region as non-click-through. Under OS-level
   // ignore_cursor_events, CSS pointer-events can't make the bubble scrollable;
@@ -1939,12 +1956,18 @@ const handleBodyClick = useCallback(() => {
   return (
     <div className="pet-container" onContextMenu={handleContextMenu}>
       {isThinking && (
-        <div className={`thinking-orb${bubbleBelow ? " thinking-orb--below" : ""}`}>
+        <div
+          className={`thinking-orb${bubbleBelow ? " thinking-orb--below" : ""}`}
+          style={headAnchorWin ? ({ "--bubble-bottom": `${760 - headAnchorWin.y + 10}px` } as React.CSSProperties) : undefined}
+        >
           <ThinkingOrb state={THINKING_ORB_STATE} size={THINKING_ORB_SIZE} theme="auto" />
         </div>
       )}
 
-      <div className="input-bubble">
+      <div
+        className="input-bubble"
+        style={feetWindowY != null ? { top: `${feetWindowY + 26}px`, bottom: "auto" } : undefined}
+      >
           <input
             type="text"
             value={inputText}
@@ -2008,6 +2031,7 @@ const handleBodyClick = useCallback(() => {
         below={bubbleBelow}
         className={bubblePos}
         onBubbleBounds={handleBubbleBounds}
+        headAnchor={headAnchorWin}
       />
 
      <div
@@ -2035,6 +2059,7 @@ const handleBodyClick = useCallback(() => {
       onModelBounds={handleModelBounds}
       onModelHitBounds={handleModelHitBounds}
       onVisualBounds={handleVisualBounds}
+      onBodyAnchor={handleBodyAnchor}
     />
     {/* Click-through boundary visualization (AIRI-style). Hidden by default;
         gains .bounds-visible when the cursor is near the model rect's outline
