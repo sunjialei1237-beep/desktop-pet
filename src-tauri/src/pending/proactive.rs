@@ -1106,10 +1106,20 @@ pub async fn generate_welcome_back(
     // call (Principle 8). Empty string when nothing is pending.
     let thought_clause = match crate::soul::monologue::surface_thoughts(db) {
         Ok(thoughts) => match thoughts.first() {
-            Some(t) => format!(
-                "你昨晚等 ta 的时候心里想过：「{}」。招呼里可以自然地带一点点这个念头，像真的惦记过 ta 一样，但别生硬、别像在复述。",
-                t.content
-            ),
+            Some(t) => {
+                // P0 (thought-stream plan): the wrapper used to hardcode "你
+                // 昨晚等 ta 的时候" — wrong whenever the thought is younger
+                // than overnight. Use the thought's REAL age so the framing
+                // matches when it was actually thought.
+                let ago = chrono::DateTime::parse_from_rfc3339(&t.created_at)
+                    .ok()
+                    .map(|d| selector::relative_ago(&Utc::now(), &d.with_timezone(&Utc)))
+                    .unwrap_or_else(|| "之前".to_string());
+                format!(
+                    "你在{ago}独处时心里想过：「{}」。招呼里可以自然地带一点点这个念头，像真的惦记过 ta 一样，但别生硬、别像在复述。",
+                    t.content
+                )
+            }
             None => String::new(),
         },
         Err(e) => {

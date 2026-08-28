@@ -847,7 +847,18 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
                 if (attempt < 3) window.setTimeout(() => tryShow(attempt + 1), 30_000);
                 return;
               }
-              showBubble(thoughts[0], 12000, "bubble-calm");
+              // P0 (thought-stream plan): never display the raw thought —
+              // re-voice it AT THIS MOMENT (current time injected backend-side,
+              // first-person, statement-first; grounding-guarded). LLM
+              // unavailable / empty → drop this boot: reflections regenerate,
+              // a stale verbatim line is worse (2026-08-27
+              // "今天晚上的你安静得过分" — afternoon reflection, night-framed
+              // template, verbatim passthrough).
+              invoke<string | null>("voice_thought", { content: thoughts[0] })
+                .then((reply) => {
+                  if (reply) showBubble(reply, 12000, "bubble-calm");
+                })
+                .catch((e) => console.warn("[Soul] voice_thought failed", e));
             };
             tryShow(0);
           }, 6000);

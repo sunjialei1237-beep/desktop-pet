@@ -523,6 +523,27 @@ pub async fn get_pending_thoughts(
     Ok(thoughts.into_iter().map(|t| t.content).collect())
 }
 
+/// Re-voices a stored internal thought at the CURRENT moment (thought-stream
+/// plan P0): the frontend startup path no longer displays raw thoughts
+/// verbatim — that produced "今天晚上的你安静得过分" (stale time framing,
+/// second-person question, no re-grounding). LLM unconfigured / empty /
+/// ungrounded → None (宁可不显示, Architecture #12).
+#[tauri::command]
+pub async fn voice_thought(
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+    content: String,
+) -> Result<Option<String>, String> {
+    let llm = state
+        .llm
+        .lock()
+        .map_err(|e| format!("LLM lock error: {}", e))?
+        .as_ref()
+        .cloned()
+        .ok_or("LLM not configured")?;
+    crate::soul::monologue::voice_thought(&db, &llm, &content).await
+}
+
 /// Returns the current perception snapshot (time, presence, window category).
 #[tauri::command]
 pub async fn get_perception(
