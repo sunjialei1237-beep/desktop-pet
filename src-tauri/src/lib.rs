@@ -310,6 +310,7 @@ pub fn run() {
             commands::trigger_reflection_if_due,
             commands::get_pending_thoughts,
             commands::voice_thought,
+            commands::get_thought_stream,
             commands::force_reflection,
            commands::get_debug_data,
             commands::pet_head,

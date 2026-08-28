@@ -177,6 +177,69 @@ pub fn ingest(db: &DbState, env_summary: Option<&str>, now: &DateTime<Utc>) {
             Some("想被陪着"),
         );
     }
+
+    // 6. Time trigger MVP (v3 P2, Zep-lite): a due pending event ("你答应过
+    //    的日子到了") becomes a high-salience seed instead of owning a lane.
+    let now_str = now.to_rfc3339();
+    let due: Vec<String> = db
+        .with_conn(|conn| {
+            crate::db::pending::get_due(conn, &now_str)
+                .map(|evs| evs.into_iter().map(|ev| ev.title).collect())
+        })
+        .unwrap_or_default();
+    for title in due {
+        try_insert(
+            format!("到时间的事：{}", title),
+            "pending",
+            0.9,
+            Some("ta 之前提过的事，到日子了"),
+        );
+    }
+
+    // 7. Unspoken reinforcement (v3 P2): overnight unspoken seeds return to
+    //    pending with a salience bump — "昨天忍住没说的事今天轻轻带出".
+    let overnight = (*now - chrono::Duration::hours(6)).to_rfc3339();
+    let _ = db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE thought_stream SET state = 'pending',
+                    salience = MIN(salience + 0.15, 0.9)
+             WHERE state = 'unspoken' AND created_at < ?1",
+            rusqlite::params![overnight],
+        )
+        .map_err(|e| e.to_string())
+    });
+}
+
+/// Observability snapshot: recent seeds of any state, newest first (the
+/// monitoring surface for "她此刻在心里过了些什么" — Debug Panel + harness).
+pub fn snapshot(db: &DbState, limit: usize) -> Vec<ThoughtSeed> {
+    db.with_conn(|conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, stimulus, emotion_tone, relation_hint, origin, salience, created_at, state, unspoken_reason, voiced_at, evolved_from
+                 FROM thought_stream ORDER BY created_at DESC LIMIT ?1",
+            )
+            .map_err(|e| format!("prepare snapshot: {}", e))?;
+        let rows = stmt
+            .query_map(rusqlite::params![limit as i64], |row| {
+                Ok(ThoughtSeed {
+                    id: row.get(0)?,
+                    stimulus: row.get(1)?,
+                    emotion_tone: row.get(2)?,
+                    relation_hint: row.get(3)?,
+                    origin: row.get(4)?,
+                    salience: row.get(5)?,
+                    created_at: row.get(6)?,
+                    state: row.get(7)?,
+                    unspoken_reason: row.get(8)?,
+                    voiced_at: row.get(9)?,
+                    evolved_from: row.get(10)?,
+                })
+            })
+            .map_err(|e| format!("query snapshot: {}", e))?;
+        Ok::<_, String>(rows.filter_map(|r| r.ok()).collect())
+    })
+    .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -254,8 +317,16 @@ pub fn gate(db: &DbState, cfg: &ProactiveConfig, now: &DateTime<Utc>) -> GateVer
         }
     }
 
-    // Budget with backoff-scaled interval.
-    let effective = cfg.min_interval_secs * backoff_multiplier(unacked_bubbles(db));
+    // Budget with backoff-scaled interval × rhythm jitter (去节拍器：0.75×-1.5×
+    // 均匀抖动，让到达时刻不可预测 — v3 P2).
+    let jitter = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        0.75 + rng.gen::<f64>() * 0.75
+    };
+    let effective = (cfg.min_interval_secs as f64
+        * backoff_multiplier(unacked_bubbles(db)) as f64
+        * jitter) as i64;
     if !crate::pending::budget::try_occupy_budget(db, effective, *now) {
         return GateVerdict::Silent("budget");
     }
@@ -362,7 +433,12 @@ fn now_local_display() -> String {
     )
 }
 
-fn evaluate_messages(candidates: &[&ThoughtSeed], recent: &[String], now_local: &str) -> Vec<ChatMessage> {
+fn evaluate_messages(
+    candidates: &[&ThoughtSeed],
+    recent: &[String],
+    now_local: &str,
+    occasion_clause: &str,
+) -> Vec<ChatMessage> {
     let mut user = format!("现在是 {now_local}。\n\n［她最近主动说过的话（新→旧）］\n");
     if recent.is_empty() {
         user.push_str("（还没有。）\n");
@@ -384,7 +460,7 @@ fn evaluate_messages(candidates: &[&ThoughtSeed], recent: &[String], now_local: 
             relation
         ));
     }
-    user.push_str("\n只输出一个 JSON 对象，格式：");
+    user.push_str(&format!("\n{occasion_clause}\n只输出一个 JSON 对象，格式："));
     let contract = r#"{"speak": <true/false>, "pick": "<S1 这样的 id，不选则 S1>", "expression_type": "<自言自语|观察|回应环境|关心|提问>", "intent": "<一句话：她想达到什么>", "hook": "<一句话：从什么切口说起>", "reason": "<一句话：为什么说/为什么忍住>"}"#;
     vec![
         ChatMessage::system(format!(
@@ -434,11 +510,32 @@ fn parse_evaluation(raw: &str, n_candidates: usize) -> Option<Evaluation> {
     })
 }
 
+fn occasion_label(occasion: &str) -> Option<&'static str> {
+    match occasion {
+        "welcome" => Some("ta 离开了一会儿，刚刚回来"),
+        "lonely" => Some("一个人待了一会儿，有点想 ta"),
+        "goodmorning" => Some("今天第一次见到 ta"),
+        "goodnight" => Some("这一天要结束了"),
+        _ => None,
+    }
+}
+
 /// The flash pass. Err (call failure / unparseable after retries) → the window
 /// stays silent (budget already consumed — 宁少勿突兀, matching legacy
-/// semantics; a malformed judge must never force-speak).
-async fn evaluate(llm: &LlmClient, candidates: &[&ThoughtSeed], recent: &[String]) -> Result<Evaluation, String> {
-    let messages = evaluate_messages(candidates, recent, &now_local_display());
+/// semantics; a malformed judge must never force-speak). `occasion` marks the
+/// emitters that already passed their own gates (welcome/lonely/ritual): the
+/// line is happening, evaluation steers HOW not WHETHER.
+async fn evaluate(
+    llm: &LlmClient,
+    candidates: &[&ThoughtSeed],
+    recent: &[String],
+    occasion: Option<&str>,
+) -> Result<Evaluation, String> {
+    let occasion_clause = occasion
+        .and_then(occasion_label)
+        .map(|l| format!("【场合】{l}——这一句几乎一定要说，你评估的重点是\"怎么说才不生硬、不像在完成任务\"，speak 一般为 true。"))
+        .unwrap_or_default();
+    let messages = evaluate_messages(candidates, recent, &now_local_display(), &occasion_clause);
     for attempt in 1..=2 {
         let result = llm
             .chat_gate(&messages, Some(0.2), Some(2048))
@@ -471,6 +568,7 @@ async fn voice(
     llm: &LlmClient,
     seed: &ThoughtSeed,
     ev: &Evaluation,
+    occasion: Option<&str>,
 ) -> Result<Option<String>, String> {
     let db_emotion = db.with_conn(crate::db::emotion::get)?;
     let emotion = crate::emotion::state::EmotionState {
@@ -520,8 +618,12 @@ async fn voice(
         String::new()
     };
 
+    let occasion_clause = occasion
+        .and_then(occasion_label)
+        .map(|l| format!("这是{l}的时刻。"))
+        .unwrap_or_default();
     messages.push(ChatMessage::user(format!(
-        "（现在是{}。你心里有个念头正要冒出来——它的由来：{}；你当时的感觉：{}；它对你的意义：{}。{age_clause}你想说的方式——{}；切入：{}；你想达到：{}。只说 1 句，口语、自然、像随手发的一条消息，不要报时间出处。{anti_repeat}规则 8 严禁编造：只围绕这个念头此刻的事实，绝不虚构 ta 跟你说过的具体事。）",
+        "（现在是{}。{occasion_clause}你心里有个念头正要冒出来——它的由来：{}；你当时的感觉：{}；它对你的意义：{}。{age_clause}你想说的方式——{}；切入：{}；你想达到：{}。只说 1 句，口语、自然、像随手发的一条消息，不要报时间出处。{anti_repeat}规则 8 严禁编造：只围绕这个念头此刻的事实，绝不虚构 ta 跟你说过的具体事。）",
         now_local_display(),
         seed.stimulus,
         tone,
@@ -537,6 +639,82 @@ async fn voice(
         .map_err(|e| format!("stream voice LLM error: {:?}", e))?;
     let reply = chat_result.content.trim().to_string();
     Ok(grounding_guard(reply, &retrieval, &messages, llm).await)
+}
+
+// ---------------------------------------------------------------------------
+// Occasion path (v3 P1b) — the legacy emitters folded into the stream
+// ---------------------------------------------------------------------------
+
+/// Welcome-back / lonely-nudge / 早安晚安 ritual emitters fold into the
+/// stream as high-salience occasion seeds. The emitter has ALREADY passed its
+/// own gates and consumed the shared budget (loop_runner), so this skips the
+/// hard gate and goes straight to evaluate → voice with an occasion label.
+/// Decline → Ok(None); the caller falls back to its canned line (Principle 8).
+pub async fn occasion_bubble(
+    db: &DbState,
+    llm: &LlmClient,
+    occasion: &str,
+    stimulus: &str,
+) -> Result<Option<BubbleOutcome>, String> {
+    let now = Utc::now();
+    let mood_label = db
+        .with_conn(|conn| Ok(crate::db::emotion::get(conn)?.mood_label))
+        .unwrap_or_else(|_| "平静".to_string());
+    let relation = match occasion {
+        "welcome" => Some("等过 ta，ta 回来了"),
+        "lonely" => Some("想被陪着，但不催促"),
+        "goodmorning" | "goodnight" => Some("惦记 ta 的节奏"),
+        _ => None,
+    };
+    let seed = ThoughtSeed {
+        id: format!("ts_{}", uuid::Uuid::new_v4()),
+        stimulus: stimulus.to_string(),
+        emotion_tone: Some(mood_label),
+        relation_hint: relation.map(|s| s.to_string()),
+        origin: occasion.to_string(),
+        salience: 0.9,
+        created_at: now.to_rfc3339(),
+        state: STATE_PENDING.to_string(),
+        unspoken_reason: None,
+        voiced_at: None,
+        evolved_from: None,
+    };
+    db.with_conn(|conn| thoughts::insert(conn, &seed))?;
+
+    let recent: Vec<String> = db
+        .with_conn(|conn| crate::db::bubble_log::get_recent(conn, 3))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|b| b.text.chars().take(40).collect())
+        .collect();
+    let candidates = vec![&seed];
+    let ev = match evaluate(llm, &candidates, &recent, Some(occasion)).await {
+        Ok(ev) => ev,
+        Err(e) => {
+            log::warn!("[stream:{}] evaluate failed ({})", occasion, e);
+            return Ok(None);
+        }
+    };
+    if !ev.speak {
+        log::info!("[stream:{}] evaluated decline: {}", occasion, ev.reason);
+        db.with_conn(|conn| thoughts::mark_unspoken(conn, &seed.id, &ev.reason))?;
+        return Ok(None);
+    }
+    let reply = match voice(db, llm, &seed, &ev, Some(occasion)).await? {
+        Some(r) => r,
+        None => {
+            log::info!("[stream:{}] voice suppressed by grounding guard", occasion);
+            db.with_conn(|conn| thoughts::mark_unspoken(conn, &seed.id, "渲染未过grounding"))?;
+            return Ok(None);
+        }
+    };
+    db.with_conn(|conn| thoughts::mark_voiced(conn, &seed.id, &now.to_rfc3339()))?;
+    log_bubble(db, "thought_stream", &reply, stimulus, Some(&ev.reason));
+    Ok(Some(BubbleOutcome {
+        reply,
+        anchor: stimulus.to_string(),
+        anchor_reason: Some(ev.reason),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -635,7 +813,7 @@ pub async fn tick(
 
     // Top-3 to the flash judge.
     let top: Vec<&ThoughtSeed> = scored.iter().take(3).map(|(_, i)| &candidates[*i]).collect();
-    let ev = match evaluate(llm, &top, &recent_texts).await {
+    let ev = match evaluate(llm, &top, &recent_texts, None).await {
         Ok(ev) => ev,
         Err(e) => {
             log::warn!("[stream] evaluate failed ({}); window silent", e);
@@ -658,7 +836,7 @@ pub async fn tick(
         return Ok(None);
     }
 
-    let reply = match voice(db, llm, seed, &ev).await? {
+    let reply = match voice(db, llm, seed, &ev, None).await? {
         Some(r) => r,
         None => {
             log::info!("[stream] voice suppressed by grounding guard");

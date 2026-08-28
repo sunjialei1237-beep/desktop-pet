@@ -544,6 +544,17 @@ pub async fn voice_thought(
     crate::soul::monologue::voice_thought(&db, &llm, &content).await
 }
 
+/// Thought-stream observability (v3 P1b, Principle #11): recent seeds of any
+/// state, newest first — what is on her mind, what was voiced, what she chose
+/// NOT to say and why. Consumed by the Debug Panel and the stream harness.
+#[tauri::command]
+pub fn get_thought_stream(
+    db: State<'_, DbState>,
+    limit: Option<usize>,
+) -> Result<Vec<crate::db::thoughts::ThoughtSeed>, String> {
+    Ok(crate::soul::stream::snapshot(&db, limit.unwrap_or(20)))
+}
+
 /// Returns the current perception snapshot (time, presence, window category).
 #[tauri::command]
 pub async fn get_perception(
@@ -836,15 +847,28 @@ pub async fn welcome_back_bubble(
         .as_ref()
         .cloned();
     if let Some(llm) = llm {
-        let outcome = crate::pending::proactive::generate_welcome_back(
-            &db,
-            &llm,
-            Some(&state.embedding),
-            &wm_context,
-            away_secs,
-            state.config.proactive.enable_llm_selector,
-        )
-        .await?;
+        // Engine routing (thought-stream v3 P1b): the return moment becomes a
+        // high-salience occasion seed through the unified pipeline; legacy
+        // keeps the occasion template. Decline → fall through to the canned.
+        let outcome = if state.config.proactive.engine == "stream" {
+            crate::soul::stream::occasion_bubble(
+                &db,
+                &llm,
+                "welcome",
+                &format!("ta 离开了 {} 分钟，刚刚回来", (away_secs / 60).max(1)),
+            )
+            .await?
+        } else {
+            crate::pending::proactive::generate_welcome_back(
+                &db,
+                &llm,
+                Some(&state.embedding),
+                &wm_context,
+                away_secs,
+                state.config.proactive.enable_llm_selector,
+            )
+            .await?
+        };
         if let Some(o) = outcome {
             return Ok(Some(o.reply));
         }
@@ -889,13 +913,25 @@ pub async fn ritual_bubble(
     match kind.as_str() {
         "goodmorning" => {
             if let Some(llm) = llm {
-                let outcome = crate::soul::ritual::generate_goodmorning(
-                    &db,
-                    &llm,
-                    Some(&state.embedding),
-                    &wm_context,
-                )
-                .await?;
+                // Engine routing (thought-stream v3 P1b): 早安 as an occasion
+                // seed through the unified pipeline (legacy keeps its template).
+                let outcome = if state.config.proactive.engine == "stream" {
+                    crate::soul::stream::occasion_bubble(
+                        &db,
+                        &llm,
+                        "goodmorning",
+                        "今天第一次见到 ta，新的一天开始了",
+                    )
+                    .await?
+                } else {
+                    crate::soul::ritual::generate_goodmorning(
+                        &db,
+                        &llm,
+                        Some(&state.embedding),
+                        &wm_context,
+                    )
+                    .await?
+                };
                 if let Some(o) = outcome {
                     return Ok(Some(o.reply));
                 }
@@ -912,13 +948,25 @@ pub async fn ritual_bubble(
         }
         "goodnight" => {
             if let Some(llm) = llm {
-                let outcome = crate::soul::ritual::generate_goodnight(
-                    &db,
-                    &llm,
-                    Some(&state.embedding),
-                    &wm_context,
-                )
-                .await?;
+                // Engine routing (thought-stream v3 P1b): 晚安 as an occasion
+                // seed through the unified pipeline (legacy keeps its template).
+                let outcome = if state.config.proactive.engine == "stream" {
+                    crate::soul::stream::occasion_bubble(
+                        &db,
+                        &llm,
+                        "goodnight",
+                        "这一天要结束了，夜里该休息了",
+                    )
+                    .await?
+                } else {
+                    crate::soul::ritual::generate_goodnight(
+                        &db,
+                        &llm,
+                        Some(&state.embedding),
+                        &wm_context,
+                    )
+                    .await?
+                };
                 if let Some(o) = outcome {
                     return Ok(Some(o.reply));
                 }
@@ -1019,14 +1067,26 @@ pub async fn lonely_bubble(
         .as_ref()
         .cloned();
     if let Some(llm) = llm {
-        let outcome = crate::pending::proactive::generate_lonely_bubble(
-            &db,
-            &llm,
-            Some(&state.embedding),
-            &wm_context,
-            state.config.proactive.enable_llm_selector,
-        )
-        .await?;
+        // Engine routing (thought-stream v3 P1b): the longing becomes an
+        // occasion seed through the unified pipeline; legacy keeps its template.
+        let outcome = if state.config.proactive.engine == "stream" {
+            crate::soul::stream::occasion_bubble(
+                &db,
+                &llm,
+                "lonely",
+                "一个人待了一会儿，有点想 ta；ta 就在旁边但没说话",
+            )
+            .await?
+        } else {
+            crate::pending::proactive::generate_lonely_bubble(
+                &db,
+                &llm,
+                Some(&state.embedding),
+                &wm_context,
+                state.config.proactive.enable_llm_selector,
+            )
+            .await?
+        };
         if let Some(o) = outcome {
             return Ok(Some(o.reply));
         }
