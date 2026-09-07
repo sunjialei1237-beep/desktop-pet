@@ -30,6 +30,9 @@ Thumbs.db
 # User config (contains API key — never commit!)
 config.toml
 
+# Updater signing private key (lose it = can never push updates again)
+.tauri-signing/*.key
+
 # Database
 *.db
 *.db-wal
