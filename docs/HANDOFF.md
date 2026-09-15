@@ -6,7 +6,7 @@
 > `git log --oneline -- docs/HANDOFF.md` 找到改写前的 commit → `git show <commit>:docs/HANDOFF.md`（1150 行原文）。
 > **进度以 `cargo test` + harness 为准**，本文件是带上下文的快照，可能滞后于代码。
 > **维护规则**：每次会话结束前更新 `§最近一轮` 与 `§待办`。超过一屏的诊断/验证细节写进对应 `docs/plans/` / `docs/decisions/` / `docs/review/`，此处只留一句摘要 + 链接。
-> 最后更新：**2026-09-15（续⁶⁵）**·工作区收尾（压缩版/方案入库 + 签名私钥 gitignore）+ CodeGraph 索引重建（清 46 幽灵文件）+ 交互「不死板」方案待审。
+> 最后更新：**2026-09-15（续⁶⁵）**·工作区收尾 + CodeGraph 重建 + ⭐**发现 `念头` 分支**（25 提交 / 已完成的"念头流 v3 三层决策" + 应用内更新推送）——**待决策合并路线，见 §待办 13**。
 > ⚠️ **日期纪律**：本仓库文档长期以 08-27 为"今天"，实际系统日期已是 **09-15**（08-27 后停了 19 天）。新建文档/条目一律**以系统时钟为准**，别再跟着旧文档的日期写。
 
 ---
@@ -88,9 +88,10 @@
 40. **`.tauri-signing/liri-updater.key` 是更新器签名私钥，永不入库**（已 gitignore）。`.qa-download/`（QA 拉下的安装包）同属临时产物。
 
 ### G. 工具链 / CodeGraph
-41. **CodeGraph 索引「删除不清理」→ 会产生幽灵文件，会把人骗到不存在的代码上（2026-08-27 踩）**：索引里曾长期存在 `src-tauri/src/soul/stream.rs`（48 符号：`gate`/`occasion_bubble`/`unacked_bubbles`），而该文件**磁盘上没有、git 里从未存在过**（未跟踪 WIP 被删后索引留着）。旧索引 209 文件/3629 节点 vs 实际 163 文件/3082 节点——**46 个幽灵文件**（JS 38→10、Python 17→5，全是已删的调试脚本）。后果：曾据此误判"还有第二条主动气泡通路"，方案差点写到幽灵文件上。
-   - **重建**：`codegraph init -i` 对已初始化目录会**拒绝覆盖**，必须用 `codegraph index -f`（全量）或 `codegraph sync`（增量）。重建后建议抽查一个刚删的符号应为 0 结果。
-   - **纪律**：引用 codegraph 结果前，若该文件是后续要改的对象，**先用 glob/read 确认文件真实存在**；`codegraph_status` 的文件数与节点数可作体检指标。
+41. ⭐ **同一仓库有第二条第开发线：master 上查不到的东西，先去分支找（2026-09-15 踩，代价很大）**：CodeGraph 旧索引里长期存在 `src-tauri/src/soul/stream.rs` 等文件，而 master 工作树没有、`git log --diff-filter=D` 也查不到 → 我据此误判为"索引删除不清理产生的幽灵"，还把结论写进了踩坑与方案（已推送，本条为更正）。**真相：它们是 `念头` 分支上的真实文件**（本地 + `origin/念头`，`soul/stream.rs` **1156 行**、`db/thoughts.rs`、`migrations/008_thought_stream.sql`、三个 harness；分支共 51 文件 +7350 行，另含应用内更新推送）。索引是在 `念头` 被检出时建立的，切回 master 后未重建（209 文件 vs master 实际 163）。**后果**：差点在 master 上重造一套分支里早已实现且更完整的东西。
+   - **纪律**：查到"磁盘上没有 / git 没有"的符号时，先 `git branch -a` + `git log --all --oneline`，**不要**先假设索引坏了或代码丢了。
+   - **分支间 schema 会留在运行时库**：`%APPDATA%\DesktopPet\desktop_pet.db` 的 `schema_migrations` 已有第 8 行、`thought_stream` 表存在，而 master **没有 008 迁移文件** → master 构建跑在这个库上属 schema 未定义状态（未验证是否报错）。跨分支切换后先核对活库迁移号。
+42. **CodeGraph 重建命令**：`codegraph init -i` 对已初始化目录会**拒绝覆盖**，必须 `codegraph index -f`（全量）或 `codegraph sync`（增量）。`codegraph_status` 的文件数/节点数可作体检指标；重建后抽查一个符号确认结果符合预期。
 
 ---
 
@@ -98,7 +99,7 @@
 
 > 逐轮完整诊断链见 git 历史；每条一行。
 
-- **续⁶⁵（09-15）工作区收尾 + 工具链体检 + 交互方案（无代码改动）**：①把 08-27 遗留的未提交文档入库（HANDOFF 压缩版 1150→274 行 / 陪伴感方案）；②`.gitignore` 补 `.tauri-signing/`（**更新器签名私钥，此前既未跟踪也未被忽略，差点随 `git add -A` 入库**）与 `.qa-download/`；③`scripts/friend-diagnosis/` 去 zip 存明文源文件并实测跑通（HTTP 200，顺带确认 config 已切回 DeepSeek → 解锁待办 1）；④**CodeGraph 全量重建**，清掉 46 个幽灵文件（JS 38→10、Python 17→5），见 §1 踩坑 41；⑤交互「不死板」执行方案待审（§待办 13）。
+- **续⁶⁵（09-15）工作区收尾 + 工具链体检 + 交互方案（无代码改动）**：①把 08-27 遗留的未提交文档入库（HANDOFF 压缩版 1150→274 行 / 陪伴感方案）；②`.gitignore` 补 `.tauri-signing/`（**更新器签名私钥，此前既未跟踪也未被忽略，差点随 `git add -A` 入库**）与 `.qa-download/`；③`scripts/friend-diagnosis/` 去 zip 存明文源文件并实测跑通（HTTP 200，顺带确认 config 已切回 DeepSeek → 解锁待办 1）；④**CodeGraph 全量重建**，清掉 46 个幽灵文件（JS 38→10、Python 17→5），见 §1 踩坑 41；⑤交互「不死板」增量提案（§待办 14）；⑥⭐**发现 `念头` 分支**（08-27 11:41 分叉，`念头` +25 提交 / 51 文件 / +7350 行）：内含**已完成的"念头流 v3 三层决策冒泡架构"**（`soul/stream.rs` 1156 行 + `008_thought_stream.sql` + 三 harness）、应用内更新推送、一批动画 UI。我先前把它的文件误判为"索引幽灵"（§1 踩坑 41 已更正），并据此写了一份重复方案——现降级为增量提案。
 - **续⁶⁴（08-27）首次访谈被拖拽杀死修复**：拖拽时 mousedown/mouseup 的 client 坐标重合 → 浏览器合成 click 被当"摸头" → 反应气泡顶掉访谈问题且无重显 → 访谈静默卡死。修法三件：捕获阶段截停合成点击（窗口期由 `wasDraggedRef` 覆盖）+ 补齐气泡守卫（摸头/proactive-prompt/proactiveTimer 三条路径）+ **兜底网**（访谈 active 而气泡消失 → 400ms 后自动重显当前问题，120s 超时自愈）。纯前端（`App.tsx`），**待 release rebuild 真机复验**。
 - **续⁶³（08-27）快捷方式子系统重构**：抽 `src-tauri/src/lnk.rs`（三处散落 .lnk 解析归一）+ Recent 反查 30s TTL 缓存（省 ~2.9 万次/天全量列目录）+ `dedup_first_seen` 跨根去重。lib 567 绿。
 - **续⁶²（08-27）设置面板 UX + 视觉整版**：拆「固定 header + 可滚动 body」（修"滚不动 + × 关闭钮被裁出屏幕"）、Esc 关闭、紫色系改陶土橘棕；顺修 `.settings-tools-toggle` flex 被通用 label 规则压制的真 bug。
@@ -129,7 +130,8 @@
 
 **产品方向（本轮新立，见下）**
 12. ⭐ **陪伴感缺口 + 信念层方案**：`docs/plans/2026-08-27-companionship-gap-and-belief-layer.md`——诊断"没有粘性 / 陪伴感不足"的根因，核心方案是新增 **Belief（信念）层**（可改口的看法）+ 身体/声音表达 + 冒泡加"由头"。**建议下一会话从这里开始。**
-13. ⭐ **交互「不死板」方案（执行层，待审）**：`docs/plans/2026-09-15-interaction-aliveness.md`——把"死板"拆成四个**可量化判据**（由头覆盖率 ≥70% / 有自己 ≥40% / 有连续 ≥3 次周 / 气泡间隔 CV ≥0.8），四条机制：①由头+想要 ②`pet_events` 镜头外生活（**最小切口，先做**）③open_thread + 节奏去节拍器化（`min_interval` 3600→180 + `daily_cap` + burst）④情绪有对象+允许说不清。**零新增 LLM 调用**、每机制独立开关。待拍板默认值后按 1→4 开工。
+13. ⭐⭐ **`念头` 分支去留（阻塞项，最优先）**：`念头`（含 `origin/念头`）自 08-27 11:41 分叉后已 **25 提交 / 51 文件 / +7350 行**，内含**已完成的"念头流 v3 三层决策冒泡架构"**（`soul/stream.rs` 1156 行 + `008_thought_stream.sql` + 三 harness + Debug 分区，方案见该分支 `docs/plans/2026-08-27-thought-stream-plan.md`）、**应用内更新推送**、一批动画/UI 改动。master 这边 8 提交。**需决定：合并 / 继续在分支上开发 / 弃用。** 该决定同时阻塞：①`pet_events`（见待办 14）的迁移号与实现基线；②更新器与动画改动是否入主线。**切分支前后务必核对活库迁移号（踩坑 41）。**
+14. **交互「不死板」增量提案（待审，仅剩两件事）**：`docs/plans/2026-09-15-interaction-aliveness.md`——原方案机制 ①由头+想要 ②情绪有对象 ③连续/节奏 已被 `念头` 分支实现覆盖（作废）；**仍有效的只有**：①`pet_events`（她自己的生活——分支 8 条喂流全以用户/环境/时间为对象，**没有一条是"她自己做了什么"**，是唯一真空白）；②客观验收（burst 计数替代 CV、7 天去重/多样性、盲评）。同文件 §A 含对 GLM 评审的逐条核实（GLM 指出我的 perception 事实错误——**它是对的**；它怀疑"幽灵文件"——**这条它错**），§C 是我的自我纠错记录。
 
 ---
 
