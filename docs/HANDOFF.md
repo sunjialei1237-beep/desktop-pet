@@ -93,6 +93,10 @@
    - **分支间 schema 会留在运行时库（已实测）**：`%APPDATA%\DesktopPet\desktop_pet.db` 的 `schema_migrations` 已有第 8 行（08-28 01:42 写入）、`thought_stream` 表存在，而 master 没有 008 迁移文件。**master 跑这个库不报错**——`run_migrations`（`db/schema.rs:5`）开头是 `if current_version >= 7 { return Ok(()) }` + `get_schema_version` 取 `MAX(version)`，所以 master 只是静默忽略 `thought_stream`。
    - ⚠️ **由此推出一条硬约束**：**不要在 master 上单独加 `008_*.sql`**。活库的 8 属于分支的 `thought_stream`，master 一旦把守卫改成 8 就会认为"已迁移"而**静默跳过**，新表永不创建、插入时报错。**新迁移一律从 `009` 起，且先合并 `念头`。**
 42. **CodeGraph 重建命令**：`codegraph init -i` 对已初始化目录会**拒绝覆盖**，必须 `codegraph index -f`（全量）或 `codegraph sync`（增量）。`codegraph_status` 的文件数/节点数可作体检指标；重建后抽查一个符号确认结果符合预期。
+43. ⚠️ **Rust 产物被写坏会伪装成"代码编译不过"（2026-09-15 踩，误导性极强）**：为隔离验证 `念头` 分支我在 D 盘另设 `CARGO_TARGET_DIR=D:\cargo-target-nt` 冷编译 → 该目录涨到 **8.78 GB**、D 盘只剩 6.83 GB，随后爆出 `only metadata stub found for rlib dependency core` / `invalid metadata files for crate regex_syntax` / `can't find crate for std`，以及 `E0463: can't find crate for desktop_pet_lib` **刷满几乎所有 test target**——而**部分 target 仍能编过**，看起来极像"分支把签名改坏了"。实为**写入截断的损坏产物**。
+   - **判据**：见 `metadata stub` / `invalid metadata` / `can't find crate for std|core` → 一律先当**产物损坏**，查磁盘剩余空间，不要先去读代码。
+   - **正确做法**：验证分支/隔离编译用**主 target 目录**（`D:\cargo-target\desktop-pet`，已达 **83 GB**，依赖齐全）+ `cargo check --all-targets`（只类型检查不链接，空间开销小）；需要编测试二进制时**逐个** `cargo test --no-run --test <name>`，避免一次编全部 target。
+   - **磁盘现状**：D 盘空闲 ~14 GB（空间紧张），C 盘长期告急（见 `.cargo/config.toml` 注释）。
 
 ---
 
@@ -134,6 +138,9 @@
 13. ⭐⭐ **`念头` 分支去留（阻塞项，最优先）**：`念头`（含 `origin/念头`）自 08-27 11:41 分叉后已 **25 提交 / 51 文件 / +7350 行**，内含**已完成的"念头流 v3 三层决策冒泡架构"**（`soul/stream.rs` 1156 行 + `008_thought_stream.sql` + 三 harness + Debug 分区，方案见该分支 `docs/plans/2026-08-27-thought-stream-plan.md`）、**应用内更新推送**、一批动画/UI 改动。master 这边 8 提交。**需决定：合并 / 继续在分支上开发 / 弃用。** 该决定同时阻塞：①`pet_events`（见待办 14）的迁移号与实现基线；②更新器与动画改动是否入主线。**切分支前后务必核对活库迁移号（踩坑 41）。**
     - **合并代价已干跑实测**（`git merge-tree --write-tree master 念头`）：冲突**仅 `docs/HANDOFF.md` 一个文件**（纯文档）；`lib.rs` / `App.tsx` / `.gitignore` 等均自动合并。分支已把迁移守卫更新为 `>= 8`（未踩"守卫钉旧版本"的坑）。
     - **验证环境已就绪**：隔离工作树 `D:\liri-verify-nt`（detached @ `0202b53`）+ 独立 target `D:\cargo-target-nt`（**不碰** `D:\cargo-target`，那里有快捷方式指向的 release 产物）。三个 harness（`thought_stream` / `bubble_nature` / `env_bubble`）**都要真实 LLM**（`LlmClient` + `api_key`）。
+    - ✅ **验证结论（2026-09-15，`念头` @ `0202b53`）**：`cargo test --lib` **577 passed / 0 failed**（master 基线 567）；`cargo check --all-targets`（lib + bin + 全部 ~40 个 harness）**exit 0 / 44s**（证明分支改签名后老 harness 仍全部可编，踩坑 #24 风险已排除）；`vitest run` **58 passed / 6 文件**（含分支新增 spineIntent 12 条、liriAssetPatch 17 条）；`tsc --noEmit` **0 errors**；三个新 harness 单独 `--no-run` 均 exit 0；干跑合并仅 `docs/HANDOFF.md` 一个冲突。⇒ **分支可合并（unmerged 状态，待决策）**。仅遗留 warning：`tools/fs.rs:221 note_denied_root` 死代码、`prompt_quality_harness` 的 `Expect::ForgetAsk` never constructed、若干 unused import。
+    - ⏳ **未做**：真跑三个 harness（真实 LLM 调用，慢且花钱）；`tsc` 之外的 release 前端构建。
+    - ⚠️ 踩坑见 §1 第 43 条：**不要在 D 盘另建一套 target 做隔离编译**（我一开始就这么干，写出损坏产物、伪装成"分支编译不过"）。验证一律用主 target `D:\cargo-target\desktop-pet` + `cargo check --all-targets`。
 14. **交互「不死板」增量提案（待审，仅剩两件事）**：`docs/plans/2026-09-15-interaction-aliveness.md`——原方案机制 ①由头+想要 ②情绪有对象 ③连续/节奏 已被 `念头` 分支实现覆盖（作废）；**仍有效的只有**：①`pet_events`（她自己的生活——分支 8 条喂流全以用户/环境/时间为对象，**没有一条是"她自己做了什么"**，是唯一真空白）；②客观验收（burst 计数替代 CV、7 天去重/多样性、盲评）。同文件 §A 含对 GLM 评审的逐条核实（GLM 指出我的 perception 事实错误——**它是对的**；它怀疑"幽灵文件"——**这条它错**），§C 是我的自我纠错记录。
 
 ---
