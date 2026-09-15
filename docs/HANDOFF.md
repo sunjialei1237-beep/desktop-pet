@@ -90,7 +90,8 @@
 ### G. 工具链 / CodeGraph
 41. ⭐ **同一仓库有第二条第开发线：master 上查不到的东西，先去分支找（2026-09-15 踩，代价很大）**：CodeGraph 旧索引里长期存在 `src-tauri/src/soul/stream.rs` 等文件，而 master 工作树没有、`git log --diff-filter=D` 也查不到 → 我据此误判为"索引删除不清理产生的幽灵"，还把结论写进了踩坑与方案（已推送，本条为更正）。**真相：它们是 `念头` 分支上的真实文件**（本地 + `origin/念头`，`soul/stream.rs` **1156 行**、`db/thoughts.rs`、`migrations/008_thought_stream.sql`、三个 harness；分支共 51 文件 +7350 行，另含应用内更新推送）。索引是在 `念头` 被检出时建立的，切回 master 后未重建（209 文件 vs master 实际 163）。**后果**：差点在 master 上重造一套分支里早已实现且更完整的东西。
    - **纪律**：查到"磁盘上没有 / git 没有"的符号时，先 `git branch -a` + `git log --all --oneline`，**不要**先假设索引坏了或代码丢了。
-   - **分支间 schema 会留在运行时库**：`%APPDATA%\DesktopPet\desktop_pet.db` 的 `schema_migrations` 已有第 8 行、`thought_stream` 表存在，而 master **没有 008 迁移文件** → master 构建跑在这个库上属 schema 未定义状态（未验证是否报错）。跨分支切换后先核对活库迁移号。
+   - **分支间 schema 会留在运行时库（已实测）**：`%APPDATA%\DesktopPet\desktop_pet.db` 的 `schema_migrations` 已有第 8 行（08-28 01:42 写入）、`thought_stream` 表存在，而 master 没有 008 迁移文件。**master 跑这个库不报错**——`run_migrations`（`db/schema.rs:5`）开头是 `if current_version >= 7 { return Ok(()) }` + `get_schema_version` 取 `MAX(version)`，所以 master 只是静默忽略 `thought_stream`。
+   - ⚠️ **由此推出一条硬约束**：**不要在 master 上单独加 `008_*.sql`**。活库的 8 属于分支的 `thought_stream`，master 一旦把守卫改成 8 就会认为"已迁移"而**静默跳过**，新表永不创建、插入时报错。**新迁移一律从 `009` 起，且先合并 `念头`。**
 42. **CodeGraph 重建命令**：`codegraph init -i` 对已初始化目录会**拒绝覆盖**，必须 `codegraph index -f`（全量）或 `codegraph sync`（增量）。`codegraph_status` 的文件数/节点数可作体检指标；重建后抽查一个符号确认结果符合预期。
 
 ---
@@ -131,6 +132,8 @@
 **产品方向（本轮新立，见下）**
 12. ⭐ **陪伴感缺口 + 信念层方案**：`docs/plans/2026-08-27-companionship-gap-and-belief-layer.md`——诊断"没有粘性 / 陪伴感不足"的根因，核心方案是新增 **Belief（信念）层**（可改口的看法）+ 身体/声音表达 + 冒泡加"由头"。**建议下一会话从这里开始。**
 13. ⭐⭐ **`念头` 分支去留（阻塞项，最优先）**：`念头`（含 `origin/念头`）自 08-27 11:41 分叉后已 **25 提交 / 51 文件 / +7350 行**，内含**已完成的"念头流 v3 三层决策冒泡架构"**（`soul/stream.rs` 1156 行 + `008_thought_stream.sql` + 三 harness + Debug 分区，方案见该分支 `docs/plans/2026-08-27-thought-stream-plan.md`）、**应用内更新推送**、一批动画/UI 改动。master 这边 8 提交。**需决定：合并 / 继续在分支上开发 / 弃用。** 该决定同时阻塞：①`pet_events`（见待办 14）的迁移号与实现基线；②更新器与动画改动是否入主线。**切分支前后务必核对活库迁移号（踩坑 41）。**
+    - **合并代价已干跑实测**（`git merge-tree --write-tree master 念头`）：冲突**仅 `docs/HANDOFF.md` 一个文件**（纯文档）；`lib.rs` / `App.tsx` / `.gitignore` 等均自动合并。分支已把迁移守卫更新为 `>= 8`（未踩"守卫钉旧版本"的坑）。
+    - **验证环境已就绪**：隔离工作树 `D:\liri-verify-nt`（detached @ `0202b53`）+ 独立 target `D:\cargo-target-nt`（**不碰** `D:\cargo-target`，那里有快捷方式指向的 release 产物）。三个 harness（`thought_stream` / `bubble_nature` / `env_bubble`）**都要真实 LLM**（`LlmClient` + `api_key`）。
 14. **交互「不死板」增量提案（待审，仅剩两件事）**：`docs/plans/2026-09-15-interaction-aliveness.md`——原方案机制 ①由头+想要 ②情绪有对象 ③连续/节奏 已被 `念头` 分支实现覆盖（作废）；**仍有效的只有**：①`pet_events`（她自己的生活——分支 8 条喂流全以用户/环境/时间为对象，**没有一条是"她自己做了什么"**，是唯一真空白）；②客观验收（burst 计数替代 CV、7 天去重/多样性、盲评）。同文件 §A 含对 GLM 评审的逐条核实（GLM 指出我的 perception 事实错误——**它是对的**；它怀疑"幽灵文件"——**这条它错**），§C 是我的自我纠错记录。
 
 ---
