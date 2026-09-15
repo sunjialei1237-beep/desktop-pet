@@ -86,6 +86,11 @@
 39. 桌面快捷方式迁移时 **TargetPath 和 IconLocation 都要查**（续²⁹ 只改 TargetPath，C 盘删除后图标变白纸）；Icon 建议指 `desktop-pet.exe,0`（内嵌）；改完 `ie4uinit` 刷缓存。
 40. **`.tauri-signing/liri-updater.key` 是更新器签名私钥，永不入库**（已 gitignore）。`.qa-download/`（QA 拉下的安装包）同属临时产物。
 
+### G. 工具链 / CodeGraph
+41. **CodeGraph 索引「删除不清理」→ 会产生幽灵文件，会把人骗到不存在的代码上（2026-08-27 踩）**：索引里曾长期存在 `src-tauri/src/soul/stream.rs`（48 符号：`gate`/`occasion_bubble`/`unacked_bubbles`），而该文件**磁盘上没有、git 里从未存在过**（未跟踪 WIP 被删后索引留着）。旧索引 209 文件/3629 节点 vs 实际 163 文件/3082 节点——**46 个幽灵文件**（JS 38→10、Python 17→5，全是已删的调试脚本）。后果：曾据此误判"还有第二条主动气泡通路"，方案差点写到幽灵文件上。
+   - **重建**：`codegraph init -i` 对已初始化目录会**拒绝覆盖**，必须用 `codegraph index -f`（全量）或 `codegraph sync`（增量）。重建后建议抽查一个刚删的符号应为 0 结果。
+   - **纪律**：引用 codegraph 结果前，若该文件是后续要改的对象，**先用 glob/read 确认文件真实存在**；`codegraph_status` 的文件数与节点数可作体检指标。
+
 ---
 
 ## 2. §最近一轮（压缩，仅近 6 轮）
@@ -122,6 +127,7 @@
 
 **产品方向（本轮新立，见下）**
 12. ⭐ **陪伴感缺口 + 信念层方案**：`docs/plans/2026-08-27-companionship-gap-and-belief-layer.md`——诊断"没有粘性 / 陪伴感不足"的根因，核心方案是新增 **Belief（信念）层**（可改口的看法）+ 身体/声音表达 + 冒泡加"由头"。**建议下一会话从这里开始。**
+13. ⭐ **交互「不死板」方案（执行层，待审）**：`docs/plans/2026-08-27-interaction-aliveness.md`——把"死板"拆成四个**可量化判据**（由头覆盖率 ≥70% / 有自己 ≥40% / 有连续 ≥3 次周 / 气泡间隔 CV ≥0.8），四条机制：①由头+想要 ②`pet_events` 镜头外生活（**最小切口，先做**）③open_thread + 节奏去节拍器化（`min_interval` 3600→180 + `daily_cap` + burst）④情绪有对象+允许说不清。**零新增 LLM 调用**、每机制独立开关。待拍板默认值后按 1→4 开工。
 
 ---
 
