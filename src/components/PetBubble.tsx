@@ -44,6 +44,13 @@ export interface PetBubbleProps {
       CSS pointer-events alone can't make the bubble scrollable; the window must
       stop ignoring the cursor over the bubble rect. Null when hidden. */
   onBubbleBounds?: (rect: { left: number; top: number; width: number; height: number } | null) => void;
+  /** Live head anchor in WINDOW coords (CSS px) — reported by SpineCanvas via
+      App. The tail tip lands just above it, a touch to the right (用户:
+      "气泡尖端在角色头部上方偏右一点点"; 续⁶⁷ 再右移 10px => +22). Null until
+      the model reports; falls back to the scale-0.7-era hardcoded spot
+      (210, 235), which drifted when the fit factor became 0.5 — the anchor
+      replaces that class of bug. */
+  headAnchor?: { x: number; y: number } | null;
 }
 
 const ENTER_TRANSITION: Transition = {
@@ -119,19 +126,29 @@ export function PetBubble({
   variant = "calm",
   mode,
   tail = "left-bottom",
-  maxWidth = 200,
+  maxWidth = 140,
   below = false,
   className = "",
   onBubbleBounds,
+  headAnchor = null,
 }: PetBubbleProps) {
   const v = normalizeVariant(String(variant));
   const isGlyph = mode === "glyph" || v === "glyph";
   const motionConfig = getMotionConfig(v);
+  // Tail-tip target: just above the head, a touch right (anchored to the live
+  // model pose; fallback = the old hardcoded 0.7-scale spot). The tip sits at
+  // the bubble body's bottom-left corner (tail at left:13px of the 14px-wide
+  // tail, tip at ~45% of its width, bottom edge 8px below the body — top
+  // tucked 2px INTO the body so the -5deg rotation doesn't leave a visible
+  // gap at the seam) => tip ≈ (left + 19, windowBottom - bottomCSS + 8).
+  const tip = headAnchor ? { x: headAnchor.x + 22, y: headAnchor.y - 10 } : { x: 210, y: 235 };
+  const WINDOW_H = 760; // fixed window size (tauri.conf.json), see PetBubble CSS
+  const anchorLeft = tip.x - 19;
+  const anchorBottom = WINDOW_H - tip.y + 8;
   // Below mode parks the bubble at the head's top-right (not over her body).
-  // The window is only 400px wide and the head's right edge sits at ~x230, so
-  // a bubble at left:240 has ~152px to the window edge — cap the width there
-  // so long text wraps instead of clipping past the window.
-  const effectiveMaxWidth = below ? Math.min(maxWidth, 150) : maxWidth;
+  // 续⁶⁷ shrank the bubble a size (font/padding/width — the 0.5-scale Liri's
+  // head is small); the beside-head cap shrinks with it.
+  const effectiveMaxWidth = below ? Math.min(maxWidth, 110) : maxWidth;
   // True once text actually exceeds the height cap. Below the cap the bubble
   // stays overflow-y:hidden (no scrollbar, not user-scrollable — it just
   // streams/grows with the text); .pet-bubble--scrollable flips it to
@@ -204,36 +221,25 @@ export function PetBubble({
             {
               "--pet-bubble-max-width": `${effectiveMaxWidth}px`,
               "--pet-bubble-tail-direction": tail === "right-bottom" ? "-1" : "1",
-              // Tail-tip anchored at Liri's head top-right, FIXED for every
-              // bubble (speech/glyph, all variants, all call sites — no
-              // position variant overrides). Window is 400x760; the model is
-              // centered in the 400x600 canvas whose top sits at window y=150,
-              // and the head (back-hair mass + right ear) occupies roughly
-              // window x[170,230], y[240,330]. The tail tip sits at the bubble
-              // body's bottom-left corner (tail is at left:15px of the body,
-              // its tip at ~45% of its 17px width, and its bottom edge 10px
-              // below the body — top tucked 2px INTO the body so the -5deg
-              // rotation doesn't leave a visible gap at the seam) =>
-              // tip ≈ (anchorLeft + 22, windowBottom - 10).
-              // To land the tip at window (210, 235): left = 210-22 = 188,
-              // bottom = 760-235+10 = 535. (User confirmed X, asked +20px up
-              // from the original (210,255); then moved the tail down 5px to
-              // clear the bubble body, then up 2px to remove the seam gap —
-              // anchor compensated each time so the tip stays put.) Long
-              // text grows upward/rightward, the tail stays put — that's the
-              // "tail as anchor" contract.
+              // Tail-tip anchored just above Liri's head, a touch right — from
+              // the live headAnchor when available (see tip above), so the
+              // bubble follows the model's real pose across scale changes.
+              // Long text grows upward/rightward, the tail stays put — that's
+              // the "tail as anchor" contract.
               //
               // below=true (window parked with its top off-screen — head at
               // the screen top): the above position would be entirely above
               // the visible screen. The bubble sits at the head's TOP-RIGHT
-              // instead: top 240 = head top (window y), left 240 = 10px right
-              // of the head's right edge (x230). It grows downward beside her
+              // instead: top = crown y (+6 below the anchor), left = head x
+              // +40 (just right of the head). It grows downward beside her
               // head — never over her waist/body — and the tail points LEFT
               // from the bubble's left edge back at her head. Width is capped
               // to 150px so the bubble stays inside the 400px window.
               position: "absolute",
-              ...((below ? { top: "240px" } : { bottom: "535px" }) as React.CSSProperties),
-              left: below ? "240px" : "188px",
+              ...((below
+                ? { top: `${tip.y + 14}px` }
+                : { bottom: `${anchorBottom}px` }) as React.CSSProperties),
+              left: below ? `${tip.x + 30}px` : `${anchorLeft}px`,
               zIndex: 50,
               pointerEvents: "none",
             } as React.CSSProperties

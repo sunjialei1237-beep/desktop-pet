@@ -9,6 +9,7 @@
 pub mod consolidation;
 pub mod landmark;
 pub mod monologue;
+pub mod stream;
 pub mod reflection;
 pub mod review;
 pub mod ritual;

@@ -6,7 +6,7 @@
 > `git log --oneline -- docs/HANDOFF.md` 找到改写前的 commit → `git show <commit>:docs/HANDOFF.md`（1150 行原文）。
 > **进度以 `cargo test` + harness 为准**，本文件是带上下文的快照，可能滞后于代码。
 > **维护规则**：每次会话结束前更新 `§最近一轮` 与 `§待办`。超过一屏的诊断/验证细节写进对应 `docs/plans/` / `docs/decisions/` / `docs/review/`，此处只留一句摘要 + 链接。
-> 最后更新：**2026-09-15（续⁶⁵）**·工作区收尾 + CodeGraph 重建 + ⭐**发现 `念头` 分支**（25 提交 / 已完成的"念头流 v3 三层决策" + 应用内更新推送）——**待决策合并路线，见 §待办 13**。
+> 最后更新：**2026-09-15（续⁶⁶）**·⭐**`念头` 分支已并入 master**（念头流 v3 三层架构 + 应用内更新推送 + Spine v2/动画 UI；合并后 `cargo test --lib` 577 绿 / `check --all-targets` 通过 / vitest 58 绿 / tsc 0 错）。本轮另完成：CodeGraph 索引重建（踩坑 41/43）、迁移号硬约束（pet_events 必须 009）、交互「不死板」方案降级为增量提案（§待办 14）。**下一会话建议从 §待办 12（陪伴感/信念层）或 14（pet_events）开始。**
 > ⚠️ **日期纪律**：本仓库文档长期以 08-27 为"今天"，实际系统日期已是 **09-15**（08-27 后停了 19 天）。新建文档/条目一律**以系统时钟为准**，别再跟着旧文档的日期写。
 
 ---
@@ -104,6 +104,13 @@
 
 > 逐轮完整诊断链见 git 历史；每条一行。
 
+- **续⁶⁶（09-15）`念头` 分支并入 master（25 提交 / 51 文件 / +7350 行）✅**：把 08-27 11:41 分叉后的整条第开发线合入（冲突仅本文件）。
+  **① 冒泡死板根治——念头流 v3 三层架构**（`soul/stream.rs` 1156 行 + 迁移 v8 `thought_stream` + `db/thoughts.rs` + 三 harness）：`ingest`（环境摘要/时段边界/长静默/孤独越阈，**零 LLM**）→ **硬门**（硬静音时 <6 点/晚安后 22 点、不在场、深专注、skipRecent 30min、预算 × **未回应退避倍率** `2^min(n,3)` 封顶 8×）→ **动机评分**（纯 Rust 命名分量，<0.3 直接沉默）→ **flash 静默评估**（`{speak,pick,expression_type,intent,hook,reason}`，**`speak=false` → 种子转 `unspoken` 并保留 salience**）→ **统一渲染**（主模型关 thinking + 真实时间锚定 + `grounding_guard`，`kind=thought_stream`）。种子是结构化心理状态 `{stimulus,emotion_tone,relation_hint}`，**不存台词**。**`[proactive] engine="stream"|"legacy"` 默认 stream，改 AppData config 一行即可回滚。** 实测：3 开口/3 沉默、问句率 0%、开头多样性 100%、裁判自然度 8.7/10。方案 `docs/plans/2026-08-27-thought-stream-plan.md`（含 GPT 评审 8 条采纳）+ 调研 `docs/research/2026-08-27-proactive-bubble-research.md`。
+  **② 应用内更新推送**（检查/下载/签名校验/覆盖安装）；**私钥 `.tauri-signing/liri-updater.key` 仍被 gitignore，只入库 `.key.pub`**。
+  **③ 动画/UI**：Spine v2 资产（10→17 动画）、手臂退出常驻、气泡/输入框实时锚定、缩放 0.5、**表情冻结根因修复**（见 §1 踩坑里 `elapsedMS` 那条）、输入框缩一号；**④ 版本 0.1.0→0.1.3**（另加 `@tauri-apps/plugin-updater` / `plugin-process` / `@types/node`，后者顺带修掉分支记录的 4 个 liriAssetPatch 类型错）。
+  **合并验证**：`cargo test --lib` **577 绿**、`cargo check --all-targets` **exit 0**（全部 ~40 harness 可编，踩坑 #24 风险已排除）、`vitest` **58 绿**、`tsc` **0 错**。
+- ⚠️ **轮次编号碰撞**：`续⁶⁴` 在两条线上指不同事（master = 首次访谈拖拽修复 `acaad1c`；分支 = Spine v2 资产接入）。**合并后一律以 master 编号为准**；分支侧 续⁶⁵–续⁶⁸ 的内容见下条。
+- **续⁶⁵–续⁶⁸（08-28，分支侧：动画/GUI/朋友实测）**：安静常态调参 + 表情冻结修复 + 缩放 0.5（续⁶⁵）→ 手臂退出常驻 + 气泡/输入框锚定（续⁶⁶）→ 输入框高度修正 + 气泡缩一号（续⁶⁷）→ **外部朋友实机报「（连接出了点问题…）」排查**（续⁶⁸）：落地 `scripts/friend-diagnosis/`（读 config.toml `[llm]` 段拼最小请求、按 HTTP 码分诊；本机冒烟 200 ✅），并登记 **LLM 错误可观测性缺口**（见 §待办 15）。
 - **续⁶⁵（09-15）工作区收尾 + 工具链体检 + 交互方案（无代码改动）**：①把 08-27 遗留的未提交文档入库（HANDOFF 压缩版 1150→274 行 / 陪伴感方案）；②`.gitignore` 补 `.tauri-signing/`（**更新器签名私钥，此前既未跟踪也未被忽略，差点随 `git add -A` 入库**）与 `.qa-download/`；③`scripts/friend-diagnosis/` 去 zip 存明文源文件并实测跑通（HTTP 200，顺带确认 config 已切回 DeepSeek → 解锁待办 1）；④**CodeGraph 全量重建**，清掉 46 个幽灵文件（JS 38→10、Python 17→5），见 §1 踩坑 41；⑤交互「不死板」增量提案（§待办 14）；⑥⭐**发现 `念头` 分支**（08-27 11:41 分叉，`念头` +25 提交 / 51 文件 / +7350 行）：内含**已完成的"念头流 v3 三层决策冒泡架构"**（`soul/stream.rs` 1156 行 + `008_thought_stream.sql` + 三 harness）、应用内更新推送、一批动画 UI。我先前把它的文件误判为"索引幽灵"（§1 踩坑 41 已更正），并据此写了一份重复方案——现降级为增量提案。
 - **续⁶⁴（08-27）首次访谈被拖拽杀死修复**：拖拽时 mousedown/mouseup 的 client 坐标重合 → 浏览器合成 click 被当"摸头" → 反应气泡顶掉访谈问题且无重显 → 访谈静默卡死。修法三件：捕获阶段截停合成点击（窗口期由 `wasDraggedRef` 覆盖）+ 补齐气泡守卫（摸头/proactive-prompt/proactiveTimer 三条路径）+ **兜底网**（访谈 active 而气泡消失 → 400ms 后自动重显当前问题，120s 超时自愈）。纯前端（`App.tsx`），**待 release rebuild 真机复验**。
 - **续⁶³（08-27）快捷方式子系统重构**：抽 `src-tauri/src/lnk.rs`（三处散落 .lnk 解析归一）+ Recent 反查 30s TTL 缓存（省 ~2.9 万次/天全量列目录）+ `dedup_first_seen` 跨根去重。lib 567 绿。
@@ -135,13 +142,14 @@
 
 **产品方向（本轮新立，见下）**
 12. ⭐ **陪伴感缺口 + 信念层方案**：`docs/plans/2026-08-27-companionship-gap-and-belief-layer.md`——诊断"没有粘性 / 陪伴感不足"的根因，核心方案是新增 **Belief（信念）层**（可改口的看法）+ 身体/声音表达 + 冒泡加"由头"。**建议下一会话从这里开始。**
-13. ⭐⭐ **`念头` 分支去留（阻塞项，最优先）**：`念头`（含 `origin/念头`）自 08-27 11:41 分叉后已 **25 提交 / 51 文件 / +7350 行**，内含**已完成的"念头流 v3 三层决策冒泡架构"**（`soul/stream.rs` 1156 行 + `008_thought_stream.sql` + 三 harness + Debug 分区，方案见该分支 `docs/plans/2026-08-27-thought-stream-plan.md`）、**应用内更新推送**、一批动画/UI 改动。master 这边 8 提交。**需决定：合并 / 继续在分支上开发 / 弃用。** 该决定同时阻塞：①`pet_events`（见待办 14）的迁移号与实现基线；②更新器与动画改动是否入主线。**切分支前后务必核对活库迁移号（踩坑 41）。**
+13. ✅ **`念头` 分支去留——已解决**：09-15 合并入 master（见 §最近一轮 续⁶⁶），合并后 `cargo test --lib` 577 绿 / `check --all-targets` 通过 / vitest 58 绿 / tsc 0 错；`origin/念头` 与 `qa/fresh-user-onboarding` **两个分支保留未删**（是否清理待定）。**历史记录**：`念头`（含 `origin/念头`）自 08-27 11:41 分叉后已 **25 提交 / 51 文件 / +7350 行**，内含**已完成的"念头流 v3 三层决策冒泡架构"**（`soul/stream.rs` 1156 行 + `008_thought_stream.sql` + 三 harness + Debug 分区，方案见该分支 `docs/plans/2026-08-27-thought-stream-plan.md`）、**应用内更新推送**、一批动画/UI 改动。master 这边 8 提交。**需决定：合并 / 继续在分支上开发 / 弃用。** 该决定同时阻塞：①`pet_events`（见待办 14）的迁移号与实现基线；②更新器与动画改动是否入主线。**切分支前后务必核对活库迁移号（踩坑 41）。**
     - **合并代价已干跑实测**（`git merge-tree --write-tree master 念头`）：冲突**仅 `docs/HANDOFF.md` 一个文件**（纯文档）；`lib.rs` / `App.tsx` / `.gitignore` 等均自动合并。分支已把迁移守卫更新为 `>= 8`（未踩"守卫钉旧版本"的坑）。
     - **验证环境已就绪**：隔离工作树 `D:\liri-verify-nt`（detached @ `0202b53`）+ 独立 target `D:\cargo-target-nt`（**不碰** `D:\cargo-target`，那里有快捷方式指向的 release 产物）。三个 harness（`thought_stream` / `bubble_nature` / `env_bubble`）**都要真实 LLM**（`LlmClient` + `api_key`）。
     - ✅ **验证结论（2026-09-15，`念头` @ `0202b53`）**：`cargo test --lib` **577 passed / 0 failed**（master 基线 567）；`cargo check --all-targets`（lib + bin + 全部 ~40 个 harness）**exit 0 / 44s**（证明分支改签名后老 harness 仍全部可编，踩坑 #24 风险已排除）；`vitest run` **58 passed / 6 文件**（含分支新增 spineIntent 12 条、liriAssetPatch 17 条）；`tsc --noEmit` **0 errors**；三个新 harness 单独 `--no-run` 均 exit 0；干跑合并仅 `docs/HANDOFF.md` 一个冲突。⇒ **分支可合并（unmerged 状态，待决策）**。仅遗留 warning：`tools/fs.rs:221 note_denied_root` 死代码、`prompt_quality_harness` 的 `Expect::ForgetAsk` never constructed、若干 unused import。
     - ⏳ **未做**：真跑三个 harness（真实 LLM 调用，慢且花钱）；`tsc` 之外的 release 前端构建。
     - ⚠️ 踩坑见 §1 第 43 条：**不要在 D 盘另建一套 target 做隔离编译**（我一开始就这么干，写出损坏产物、伪装成"分支编译不过"）。验证一律用主 target `D:\cargo-target\desktop-pet` + `cargo check --all-targets`。
 14. **交互「不死板」增量提案（待审，仅剩两件事）**：`docs/plans/2026-09-15-interaction-aliveness.md`——原方案机制 ①由头+想要 ②情绪有对象 ③连续/节奏 已被 `念头` 分支实现覆盖（作废）；**仍有效的只有**：①`pet_events`（她自己的生活——分支 8 条喂流全以用户/环境/时间为对象，**没有一条是"她自己做了什么"**，是唯一真空白）；②客观验收（burst 计数替代 CV、7 天去重/多样性、盲评）。同文件 §A 含对 GLM 评审的逐条核实（GLM 指出我的 perception 事实错误——**它是对的**；它怀疑"幽灵文件"——**这条它错**），§C 是我的自我纠错记录。
+15. **LLM 错误可观测性缺口（分支侧登记，未做）**：外部朋友实机报「（连接出了点问题…）」（`App.tsx:1770` 兜底桶——错误串不含 not configured/timeout/network/429 关键词）时**无法定位**：a) **`send_message` 失败路径零日志**——`converse.rs:1141/1148` 的 `map_err(format!("LLM error: {:?}", e))?` 与 `commands.rs:236` 全程无 log，错误只进前端 console（`App.tsx:1759`），而 release 打不开 devtools → 信息黑洞；**一行 `log::error` 就能让终端红字直接分诊**（优先做）；b) release 补 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`（`main.rs` 现缺 → 弹控制台黑窗）**但必须同时上文件日志**（如 `tauri-plugin-log`），否则 env_logger 输出彻底丢失；c) `SettingsPanel` 加「测试连接」按钮（`test_llm_connection` 目前只在首启向导可达，向导完成后无 UI 复测入口）；d) 下载器健壮性：无断点续传、总超时 600s、进度每 4MB 才发、`onnxruntime.dll` 走 github 直连（朋友实测"下载向量模型"长时间无进度像死机，向导该页可「跳过」——聊天不依赖向量模型）。
 
 ---
 

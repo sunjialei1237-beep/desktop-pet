@@ -245,10 +245,20 @@ pub struct ProactiveConfig {
     /// false = the mechanical round-robin pick (pre-selector behavior).
     #[serde(default = "default_enable_llm_selector")]
     pub enable_llm_selector: bool,
+    /// Bubble engine (thought-stream plan v3): "stream" = the thought-stream
+    /// three-tier pipeline (ingest → hard gate → motivation score → flash
+    /// silent evaluation → unified renderer); "legacy" = the pre-2026-08-28
+    /// occasion-template pipelines. Runtime rollback, no rebuild (#6).
+    #[serde(default = "default_bubble_engine")]
+    pub engine: String,
 }
 
 fn default_enable_llm_selector() -> bool {
     true
+}
+
+fn default_bubble_engine() -> String {
+    "stream".to_string()
 }
 
 impl Default for ProactiveConfig {
@@ -257,6 +267,7 @@ impl Default for ProactiveConfig {
             min_interval_secs: 60 * 60,
             memory_bubble_ratio: 15,
             enable_llm_selector: default_enable_llm_selector(),
+            engine: default_bubble_engine(),
         }
     }
 }

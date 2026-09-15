@@ -462,6 +462,23 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     visualBoundsRef.current = b;
   }, []);
 
+  // Live head/feet anchor (canvas-local CSS px) from SpineCanvas, reported
+  // once after measure. Anchors the speech-bubble tail tip (head) and the
+  // input box (feet) to the model's REAL pose — the old hardcoded pixels
+  // (tip 210/235, input bottom 110) were tuned for the 0.7 fit and drifted
+  // when the scale changed (用户 2026-08-28: 气泡尖端在头顶偏右、输入框在脚下方).
+  const [bodyAnchor, setBodyAnchor] = useState<{ headX: number; headY: number; feetY: number } | null>(null);
+  const handleBodyAnchor = useCallback((a: { headX: number; headY: number; feetY: number }) => {
+    setBodyAnchor(a);
+  }, []);
+  // Canvas-local → window coords. The canvas (400×600) is bottom-anchored in
+  // the 400×760 window with 10px bottom padding: its top sits at window y=150.
+  const CANVAS_TOP_IN_WINDOW = 150;
+  const headAnchorWin = bodyAnchor
+    ? { x: bodyAnchor.headX, y: bodyAnchor.headY + CANVAS_TOP_IN_WINDOW }
+    : null;
+  const feetWindowY = bodyAnchor ? bodyAnchor.feetY + CANVAS_TOP_IN_WINDOW : null;
+
   // PetBubble reports its viewport rect here (CSS px) so the global-cursor
   // listener can treat the bubble region as non-click-through. Under OS-level
   // ignore_cursor_events, CSS pointer-events can't make the bubble scrollable;
@@ -847,7 +864,18 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
                 if (attempt < 3) window.setTimeout(() => tryShow(attempt + 1), 30_000);
                 return;
               }
-              showBubble(thoughts[0], 12000, "bubble-calm");
+              // P0 (thought-stream plan): never display the raw thought —
+              // re-voice it AT THIS MOMENT (current time injected backend-side,
+              // first-person, statement-first; grounding-guarded). LLM
+              // unavailable / empty → drop this boot: reflections regenerate,
+              // a stale verbatim line is worse (2026-08-27
+              // "今天晚上的你安静得过分" — afternoon reflection, night-framed
+              // template, verbatim passthrough).
+              invoke<string | null>("voice_thought", { content: thoughts[0] })
+                .then((reply) => {
+                  if (reply) showBubble(reply, 12000, "bubble-calm");
+                })
+                .catch((e) => console.warn("[Soul] voice_thought failed", e));
             };
             tryShow(0);
           }, 6000);
@@ -1597,11 +1625,25 @@ const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
           document.querySelector<HTMLInputElement>(".input-bubble input")?.focus();
         });
       } else {
+        let finale = "认识你真高兴！以后就这么陪着你啦~";
+        // 问题文案承诺"想让我自己起，就回你来想"——这里兑现：一次小 LLM
+        // 调用让她给自己起名，失败回退"璃"，访谈绝不因网络错误卡死。
+        // save_onboarding_answer 是 upsert，此处覆盖上面存入的原始"你来想"。
+        if (key === "pet_name" && text.replace(/[。.!！~～\s]/g, "") === "你来想") {
+          setIsThinking(true);
+          let name = "璃";
+          try { name = await invoke<string>("generate_pet_name"); }
+          catch (e) { console.warn("generate_pet_name", e); }
+          setIsThinking(false);
+          try { await invoke("save_onboarding_answer", { key, value: name }); }
+          catch (e) { console.warn("save_onboarding_answer pet_name", e); }
+          finale = `嗯…让我想想——就叫「${name}」吧！以后就这么陪着你啦～`;
+        }
         try { await invoke("complete_onboarding"); }
         catch (e) { console.warn("complete_onboarding", e); }
         onboardingActiveRef.current = false;
         setOnboarding(null);
-        showBubble("认识你真高兴！以后就这么陪着你啦~", 10000, "bubble-happy");
+        showBubble(finale, 12000, "bubble-happy");
       }
       return;
     }
@@ -1914,12 +1956,18 @@ const handleBodyClick = useCallback(() => {
   return (
     <div className="pet-container" onContextMenu={handleContextMenu}>
       {isThinking && (
-        <div className={`thinking-orb${bubbleBelow ? " thinking-orb--below" : ""}`}>
+        <div
+          className={`thinking-orb${bubbleBelow ? " thinking-orb--below" : ""}`}
+          style={headAnchorWin ? ({ "--bubble-bottom": `${760 - headAnchorWin.y + 10}px` } as React.CSSProperties) : undefined}
+        >
           <ThinkingOrb state={THINKING_ORB_STATE} size={THINKING_ORB_SIZE} theme="auto" />
         </div>
       )}
 
-      <div className="input-bubble">
+      <div
+        className="input-bubble"
+        style={feetWindowY != null ? { top: `${feetWindowY + 26}px`, bottom: "auto" } : undefined}
+      >
           <input
             type="text"
             value={inputText}
@@ -1983,6 +2031,7 @@ const handleBodyClick = useCallback(() => {
         below={bubbleBelow}
         className={bubblePos}
         onBubbleBounds={handleBubbleBounds}
+        headAnchor={headAnchorWin}
       />
 
      <div
@@ -2010,6 +2059,7 @@ const handleBodyClick = useCallback(() => {
       onModelBounds={handleModelBounds}
       onModelHitBounds={handleModelHitBounds}
       onVisualBounds={handleVisualBounds}
+      onBodyAnchor={handleBodyAnchor}
     />
     {/* Click-through boundary visualization (AIRI-style). Hidden by default;
         gains .bounds-visible when the cursor is near the model rect's outline

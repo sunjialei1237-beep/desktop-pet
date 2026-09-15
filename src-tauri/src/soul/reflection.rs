@@ -109,6 +109,7 @@ pub async fn run_reflection(
     // 2. Build prompt from template.
     let prompt_template = load_prompt_template();
     let system_prompt = prompt_template
+        .replace("{now_local}", &now_local_display())
         .replace("{episodes}", &episodes_text)
         .replace("{facts}", &facts_text)
         .replace("{persona}", &persona_text)
@@ -126,7 +127,19 @@ pub async fn run_reflection(
 
     // 5. Persist results to DB.
     let new_trait_count = parsed.new_traits.len();
-    let new_thought_count = parsed.internal_thoughts.len();
+    // Only thoughts that pass the runtime guard are stored (and counted).
+    let kept_thoughts: Vec<&LlmThought> = parsed
+        .internal_thoughts
+        .iter()
+        .filter(|t| thought_ok(&t.content))
+        .collect();
+    let new_thought_count = kept_thoughts.len();
+    for dropped in parsed.internal_thoughts.iter().filter(|t| !thought_ok(&t.content)) {
+        log::warn!(
+            "[reflection] dropping thought (time-deixis/question guard): {:?}",
+            dropped.content.chars().take(40).collect::<String>()
+        );
+    }
 
     db.with_conn(|conn| {
         for t in &parsed.new_traits {
@@ -154,7 +167,7 @@ pub async fn run_reflection(
             persona_updates: persona_json,
             created_at: now.clone(),
         })?;
-        for th in &parsed.internal_thoughts {
+        for th in kept_thoughts {
             crate::db::reflections::insert_thought(conn, &InternalThought {
                 id: format!("thought_{}", uuid::Uuid::new_v4()),
                 content: th.content.clone(),
@@ -169,6 +182,11 @@ pub async fn run_reflection(
         drop(now);
         Ok::<_, String>(())
     })?;
+
+    // Sleep-time lite (v3 P3): the nightly reflection also tidies the thought
+    // stream — absorb duplicate pending seeds per origin, expire stale
+    // unspoken. Pure Rust, zero extra LLM.
+    crate::soul::stream::consolidate_night(db);
 
     log::info!("Reflection complete: {} traits, {} thoughts, trigger={}", new_trait_count, new_thought_count, trigger.as_str());
     Ok(ReflectionResult { reflection_id, summary: parsed.reflection, new_trait_count, new_thought_count })
@@ -288,6 +306,55 @@ pub async fn maybe_run_if_due(
     Ok(true)
 }
 
+/// Local wall-clock + weekday + time-of-day word for the reflection prompt
+/// ("2026-08-28（周五）15:30，下午"). The v1 template hardcoded "深夜安静的
+/// 时刻" regardless of when reflection actually ran — the 2026-08-27 incident
+/// had an afternoon reflection produce "今晚你安静得有点过分". Pure-ish (reads
+/// the clock); injected via the template's {now_local} slot.
+fn now_local_display() -> String {
+    use chrono::{Datelike, Local};
+    let local = Local::now();
+    let weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        [local.weekday().num_days_from_monday() as usize];
+    let tod = match crate::perception::time::current_time_of_day() {
+        crate::perception::time::TimeOfDay::Morning => "上午",
+        crate::perception::time::TimeOfDay::Afternoon => "下午",
+        crate::perception::time::TimeOfDay::Evening => "傍晚",
+        crate::perception::time::TimeOfDay::LateNight => "深夜",
+        crate::perception::time::TimeOfDay::DeepNight => "凌晨",
+    };
+    format!(
+        "{}（{}）{}，{}",
+        local.format("%Y-%m-%d"),
+        weekday,
+        local.format("%H:%M"),
+        tod
+    )
+}
+
+/// Hard runtime guard for stored thoughts (thought-stream plan P0). A thought
+/// may be voiced verbatim at a LATER moment, so it must not carry stale
+/// time-of-day deixis ("今晚" generated in the afternoon) nor interrogate the
+/// user (v1 template mandated "第二人称口吻，像对用户说的" → "你安静得过分，
+/// 是不是有什么心事？"). "今天" is deliberately allowed (soft word): thoughts
+/// surface at the next interaction, usually the same day.
+const THOUGHT_FORBIDDEN_WORDS: &[&str] = &[
+    "今晚", "昨晚", "昨天", "昨日", "今早", "今晨", "深夜", "凌晨", "夜里", "傍晚", "上午", "下午", "晚上", "现在", "刚刚",
+];
+
+fn thought_ok(content: &str) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains('？') || trimmed.contains('?') {
+        return false;
+    }
+    !THOUGHT_FORBIDDEN_WORDS
+        .iter()
+        .any(|w| trimmed.contains(w))
+}
+
 /// Loads the reflection prompt template, trying multiple paths.
 fn load_prompt_template() -> String {
     for p in &["src-tauri/resources/prompts/reflection.txt", "resources/prompts/reflection.txt"] {
@@ -315,6 +382,25 @@ mod tests {
     use super::*;
     use crate::db::reflections::{insert_reflection, Reflection};
     use crate::db::test_utils::test_db;
+
+    #[test]
+    fn thought_ok_rejects_time_deixis_and_questions() {
+        // 2026-08-27 事故原句（第二人称 + 今晚 + 问句）——三重不合格。
+        assert!(!thought_ok("今晚你安静得有点过分，是不是有什么心事？"));
+        assert!(!thought_ok("昨天聊得挺开心的"));
+        assert!(!thought_ok("深夜自己待着有点安静"));
+        assert!(!thought_ok("今天下午想找 ta 聊聊"));
+        assert!(!thought_ok("现在有点困了"));
+        assert!(!thought_ok("   "));
+    }
+
+    #[test]
+    fn thought_ok_accepts_first_person_time_neutral_statements() {
+        assert!(thought_ok("自己话比平时少，安安静静待着也挺好"));
+        assert!(thought_ok("有点惦记 ta 说的事"));
+        // "今天" 是软词（浮出通常同日），放行。
+        assert!(thought_ok("今天自己话不多"));
+    }
 
     #[test]
     fn test_clean_json_plain() {

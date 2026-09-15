@@ -70,12 +70,12 @@
 
 <div align="center">
 
-[![下载 Windows 版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88-v0.1.2-9d7ee0?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/sunjialei1237-beep/desktop-pet/releases/latest)
+[![下载 Windows 版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Windows%20%E7%89%88-v0.1.3-9d7ee0?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/sunjialei1237-beep/desktop-pet/releases/latest)
 
 也可以点击下面的直链**直接开始下载**：
 
-[⬇️ Liri_0.1.2_x64-setup.exe — 一键安装（8.1 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.2/Liri_0.1.2_x64-setup.exe) ｜
-[⬇️ Liri-0.1.2-x64-portable.zip — 免安装（10.3 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.2/Liri-0.1.2-x64-portable.zip)
+[⬇️ Liri_0.1.3_x64-setup.exe — 一键安装（8.6 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.3/Liri_0.1.3_x64-setup.exe) ｜
+[⬇️ Liri-0.1.3-x64-portable.zip — 免安装（10.3 MB）](https://github.com/sunjialei1237-beep/desktop-pet/releases/download/v0.1.3/Liri-0.1.3-x64-portable.zip)
 
 </div>
 
@@ -130,6 +130,22 @@ model_name = "bge-m3"
 ```bash
 npx tauri build --no-bundle    # 产物：desktop-pet.exe（前端已嵌入）
 ```
+
+### 发布新版本（应用内更新）
+
+从 v0.1.3 起应用内置更新器：用户在 **右键 → 模型与设置 → 版本与更新** 点「检查更新」即可下载新版本并自动覆盖安装、重启，无需再去网页手动下载。
+
+维护者发布流程（先**关闭正在运行的「璃」**，否则构建报 os error 5）：
+
+```bash
+# 1. 统一改版本号：package.json / src-tauri/Cargo.toml / src-tauri/tauri.conf.json 三处都要改
+# 2. 一条命令完成 打包 → 签名 → 生成 latest.json
+node scripts/release.mjs --notes "本次更新说明"
+# 3. 在 GitHub 创建 Release（tag = vX.Y.Z），上传产物目录（bundle/nsis/）下的：
+#    Liri_X.Y.Z_x64-setup.exe 和 latest.json
+```
+
+> ⚠️ 签名私钥在 `.tauri-signing/liri-updater.key`（已 gitignore）。**务必备份**：私钥一旦丢失，已发布版本将永远无法收到更新推送（公钥已编译进应用）；换了私钥 = 所有老用户必须手动重装一次。
 
 ### 调试
 

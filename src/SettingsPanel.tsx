@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 interface LlmConfig {
   base_url: string;
@@ -66,6 +69,13 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [toolsSaved, setToolsSaved] = useState(false);
   const [toolsErr, setToolsErr] = useState("");
   const [grants, setGrants] = useState<FsGrant[]>([]);
+  // 版本与更新：检查 GitHub Releases → 下载签名包 → 静默覆盖安装 → 重启。
+  const [appVersion, setAppVersion] = useState("");
+  const [updChecking, setUpdChecking] = useState(false);
+  const [updAvailable, setUpdAvailable] = useState<Update | null>(null);
+  const [updState, setUpdState] = useState<"idle" | "downloading" | "installing">("idle");
+  const [updProgress, setUpdProgress] = useState("");
+  const [updMsg, setUpdMsg] = useState("");
 
   useEffect(() => {
     invoke<LlmConfig>("get_llm_config")
@@ -212,6 +222,54 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     }
     setEmbDownloading(false);
   }, []);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
+
+  const handleCheckUpdate = useCallback(async () => {
+    setUpdChecking(true);
+    setUpdMsg("");
+    setUpdAvailable(null);
+    try {
+      const update = await check();
+      if (update) {
+        setUpdAvailable(update);
+      } else {
+        setUpdMsg("已是最新版本 ✓");
+      }
+    } catch (e) {
+      setUpdMsg(`检查更新失败：${String(e)}`);
+    }
+    setUpdChecking(false);
+  }, []);
+
+  const handleDownloadUpdate = useCallback(async () => {
+    if (!updAvailable) return;
+    setUpdState("downloading");
+    setUpdMsg("");
+    let downloaded = 0;
+    let total = 0;
+    try {
+      await updAvailable.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength ?? 0;
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          setUpdProgress(
+            total > 0
+              ? `${(downloaded / 1024 / 1024).toFixed(1)} / ${(total / 1024 / 1024).toFixed(1)} MB（${Math.round((downloaded / total) * 100)}%）`
+              : `${(downloaded / 1024 / 1024).toFixed(1)} MB`
+          );
+        }
+      });
+      setUpdState("installing");
+      await relaunch();
+    } catch (e) {
+      setUpdMsg(`下载/安装失败：${String(e)}`);
+      setUpdState("idle");
+    }
+  }, [updAvailable]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -416,6 +474,35 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           </button>
         )}
         <p className="emb-hint">Local semantic search for memory recall (int8, ~570 MB; lazy-loaded)</p>
+
+        <div className="settings-divider" />
+
+        <div className="settings-section-head">版本与更新</div>
+        <p className="emb-hint">当前版本 v{appVersion || "…"} · 新版本来自 GitHub Releases，下载后自动覆盖安装并重启</p>
+        {updAvailable && updState === "idle" && (
+          <p className="emb-hint">
+            发现新版本 <b>v{updAvailable.version}</b>
+            {updAvailable.body ? ` · ${updAvailable.body.split("\n")[0]}` : ""}
+          </p>
+        )}
+        {updProgress && updState === "downloading" && <p className="emb-progress-text">{updProgress}</p>}
+        {updMsg && <p className="emb-hint" style={{ color: updMsg.includes("失败") ? "#b3402f" : undefined }}>{updMsg}</p>}
+        {updState === "idle" && !updAvailable && (
+          <button className="settings-save" onClick={handleCheckUpdate} disabled={updChecking}>
+            {updChecking ? "检查中…" : "检查更新"}
+          </button>
+        )}
+        {updState === "idle" && updAvailable && (
+          <button className="settings-save emb-download-btn" onClick={handleDownloadUpdate}>
+            下载并安装 v{updAvailable.version}
+          </button>
+        )}
+        {updState === "downloading" && (
+          <button className="settings-save emb-download-btn" disabled>下载中…</button>
+        )}
+        {updState === "installing" && (
+          <button className="settings-save emb-download-btn" disabled>安装中，即将重启…</button>
+        )}
         </div>
       </div>
     </div>

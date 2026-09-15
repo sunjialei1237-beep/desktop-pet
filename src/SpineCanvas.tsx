@@ -1,19 +1,35 @@
 import { useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
 import { BehaviorState } from "./animation/fsm";
-import { setupMix, setupIdleTracks, triggerBehavior, initFace, playAction, actionDuration, beginFadeOut, endAction, nextBlinkDelay, nextSmileDelay, nextSpineDelay, IDLE_FADE } from "./animation/spineIntent";
-import type { ActionKind } from "./animation/spineIntent";
+import {
+  setupMix,
+  setupIdleTracks,
+  triggerBehavior,
+  createProgramRunner,
+  isProgramActive,
+  tickProgram,
+  breathBoundary,
+  firePartAction,
+  pickPartAction,
+  nextBlinkDelay,
+  nextSmileDelay,
+  nextPartDelay,
+  EXPR_DURATIONS,
+  PART_ACTION_DURATION,
+  IDLE_FADE,
+  TRACK,
+} from "./animation/spineIntent";
+import type { RunnerState, PartAction } from "./animation/spineIntent";
 import { patchLiriJson, isLiriSkeleton, LIRI_JSON_URL } from "./animation/liriAssetPatch";
 
 // Spine (3.8) + PixiJS rendering layer for Liri (the sole renderer).
 //
-// Driver layer (this file + spineIntent.ts): a SINGLE SERIAL action channel
-// fires one of blink/ear/tail/smile at a time over a continuous body_breath
-// base (track0) — they never overlap. ear/tail are one-shots (never looped —
-// every Liri idle keys the spine chain) AND breath-aligned (fire only at
-// body_breath's loop boundary so the body is at setup, killing spine jumps);
-// blink/smile key only eye slots, so they fire freely on their own timers. The
-// FSM BehaviorState drives an extra expression (wink) on behavior change.
+// Driver layer (this file + spineIntent.ts): calm-idle base = body_breath sway
+// (+ subtle skirt/arm ambience) looping forever; ear/hair/tail fire as one-shot
+// part actions at random ≥15s intervals; blink/smile run on facial timers.
+// Emotion programs (sad/happy/curious/thing) are special cases driven by the
+// runner: they start at a body_breath loop boundary and end n boundaries later
+// when every member channel reverts in parallel (the breath-aligned rule).
 // Contract: docs/specs/liri/{skeleton_structure, animation_spec}.md.
 
 interface Rect {
@@ -94,12 +110,22 @@ export interface SpineCanvasProps {
   // Visual body rect WITHOUT padding (the rendered pixels). Drives the drag
   // screen walls so the head/feet can touch the screen edges exactly.
   onVisualBounds?: (b: Rect) => void;
+  // Live head/feet anchor (canvas-local CSS px), reported once after measure.
+  // headX = head-bone origin x (≈ face center), headY = model top + 8 (≈
+  // crown below the ear tips), feetY = model bottom. App converts to window
+  // coords (+150 canvas top offset) and anchors the speech-bubble tail tip
+  // and the input box to the REAL model pose — replacing the scale-0.7-era
+  // hardcoded pixels that drifted when the fit factor changed to 0.5.
+  onBodyAnchor?: (a: { headX: number; headY: number; feetY: number }) => void;
 }
 
-export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onVisualBounds }: SpineCanvasProps) {
+export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, onBodyClick, onModelBounds, onModelHitBounds, onVisualBounds, onBodyAnchor }: SpineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const appRef = useRef<any>(null);
   const spineRef = useRef<any>(null);
+  // Program runner lives inside the load effect's closure; mirror it here so
+  // the [behavior] effect can ask whether a program owns the face channel.
+  const runnerRef = useRef<RunnerState | null>(null);
   // Mirror latest props into refs read each ticker frame / effect (avoids
   // re-running the heavy load effect on every prop change).
   const speedRef = useRef(speedModifier);
@@ -165,7 +191,7 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         // giving a known post-update hook point for Phase 3 slot overrides.
         spine.autoUpdate = false;
         setupMix(spine.stateData);
-        setupIdleTracks(spine); // track0 body_breath only; ear/tail fire as one-shots
+        setupIdleTracks(spine); // ALL base loops breathe/skirt/hair/arm/ear/tail
         spine.update(0); // apply pose before measuring
 
         // Measure at scale=1. pixi-spine bakes mesh vertices into a cache at
@@ -175,10 +201,10 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         // scale 1, then do the scaled centering math ourselves.
         const b1 = spine.getBounds(true);
         // Scale factor:璃缩到刚好填满 canvas(取宽高较小者)再 ×系数。
-        // 0.7 = 缩到约原来的 78%(0.7/0.9),璃精致居中、留更多空白。
+        // 0.5 = 再小一号（用户 2026-08-28：0.7 → 0.5）。
         // 改这一个值即可——居中(spine.x/y)、穿透判定(onModelBounds)、
         // 边界框全部基于 fit 自动联动。
-        const fit = Math.min(app.screen.width / b1.width, app.screen.height / b1.height) * 0.7;
+        const fit = Math.min(app.screen.width / b1.width, app.screen.height / b1.height) * 0.5;
         spine.scale.set(fit);
         spine.x = app.screen.width / 2 - (b1.x + b1.width / 2) * fit;
         spine.y = app.screen.height / 2 - (b1.y + b1.height / 2) * fit;
@@ -218,6 +244,35 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
             width: w * (1 + 2 * PAD),
             height: h * (1 + 2 * PAD) + h * TOP_BIAS,
           });
+          // Head/feet anchor for the bubble tail tip + input box (see prop doc).
+          // feetY uses the FOOT BONES, not bounds: getBounds' bottom is the
+          // setup-pose skeleton extent — the tail chain hangs to canvas bottom
+          // there — so bounds bottom sits ~60px (at fit 0.5) BELOW her soles,
+          // which pushed the input box too low (用户 2026-08-28). Ankle bone +
+          // 40 model-units of shoe ≈ sole. Sanity-clamped to the lower half of
+          // the bounds; falls back to bounds bottom if the bones are missing
+          // or the convention ever changes under us.
+          const headBoneForAnchor = spine.skeleton.findBone("head");
+          const footL = spine.skeleton.findBone("foot_L");
+          const footR = spine.skeleton.findBone("foot_R");
+          let feetY = b.y + b.height;
+          const ankleY = Math.max(footL?.worldY ?? -Infinity, footR?.worldY ?? -Infinity);
+          if (Number.isFinite(ankleY)) {
+            const boneFeet = spine.y + ankleY * spine.scale.y + 40 * fit;
+            if (boneFeet > b.y + b.height * 0.5 && boneFeet <= b.y + b.height) feetY = boneFeet;
+          }
+          onBodyAnchor?.({
+            headX: headBoneForAnchor
+              ? spine.x + headBoneForAnchor.worldX * spine.scale.x
+              : b.x + b.width / 2,
+            headY: b.y + 8, // model top = ear tips; +8 lands at the crown
+            feetY,
+          });
+          console.log(
+            "[anchor] head/feet reported",
+            Math.round(feetY),
+            Number.isFinite(ankleY) && feetY !== b.y + b.height ? "(foot bone)" : "(bounds fallback)",
+          );
         } catch (e) {
           // getBounds unavailable -- App keeps fully interactive (safe default).
           // Log so a silent throw (the click-through "never reports bounds"
@@ -230,27 +285,26 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         //           so animation PLAYBACK slows at night (circadian, Principle #10).
         //  - wall = elapsedMS/1000, real wall-clock → drives event INTERVALS, so
         //           "how often" is stable day or night (scaling it once made the
-        //           user see ~1min gaps).
+        //           user see ~1min gaps). NOTE: elapsedMS is a PER-FRAME delta,
+        //           NOT a clock — countdowns subtract it every frame; never
+        //           store "wall + duration" as a timestamp (that bug froze the
+        //           whole scheduler after the first blink, 续⁶⁵).
         //
-        // SINGLE SERIAL ACTION CHANNEL: blink/ear/tail/smile fire ONE at a time
-        // behind a shared busy flag — they never overlap (user: "做完才下一个",
-        // "不要同时"). Within that:
-        //  - blink/smile key only eye SLOTS, never the spine → no jump; they fire
-        //    on their own independent wall-clock timers when the channel is free.
-        //  - ear/tail key the SPINE chain → firing mid-breath makes the body jump
-        //    from the breath's mid-cycle pose to the idle's first frame. So they
-        //    fire ONLY at body_breath's loop boundary (each `complete`), where the
-        //    body is back at setup and the idle's first frame (also setup) matches
-        //    — zero jump. spinePending arms the fire; the breath completes it.
-        const face = initFace(spine);
-        let busy = false; // channel occupied by the current action
-        let busyRem = 0; // wall-clock remaining for the current action
-        let busyKind: ActionKind | null = null;
-        let faded = false; // ear/tail: setEmptyAnimation already issued for this action
+        // CALM-IDLE MODEL (user 2026-08-28): base = breath + skirt/arm ambience.
+        // Ear/hair/tail fire as ONE-SHOT part actions at random ≥15s intervals.
+        // Blink/smile run on their own facial timers. Emotion programs are
+        // special cases, started/ended on breath boundaries via the runner;
+        // while one runs, all idle timers hold. Expressions stay serial via a
+        // countdown so a later setAnimation can't cut a playing smile in half.
+        const runner: RunnerState = createProgramRunner();
+        runnerRef.current = runner;
         let blinkT = nextBlinkDelay(); // ~5s
         let smileT = nextSmileDelay(); // 12-18s
-        let spineT = nextSpineDelay(); // 5-8s → ear/tail each ~every 10-16s
-        let spinePending = false; // spineT elapsed; wait for a breath boundary to fire
+        let partT = nextPartDelay(); // ≥15s between ear/hair/tail actions
+        let exprBusyRem = 0; // countdown: expr queue busy while > 0
+        let partRem = 0; // countdown: current part action remaining (incl. fade)
+        let partFaded = false; // setEmptyAnimation already issued for the part action
+        let partTrack: number = TRACK.ear; // which track the current part action runs on
 
         // Gaze state: smoothed head/body rotation (deg). Applied INSIDE the
         // update() bake pipeline via the updateWorldTransform wrapper below —
@@ -285,23 +339,12 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         (app as any).__gazeDiag = gazeDiag;
         (window as any).__gazeDiag = gazeDiag;
 
-        const fireSpineAction = () => {
-          const k: ActionKind = Math.random() < 0.5 ? "ear" : "tail";
-          playAction(spine, k, face);
-          busy = true;
-          busyKind = k;
-          busyRem = actionDuration(k, face);
-          faded = false;
-          spineT = nextSpineDelay();
-        };
-
-        // body_breath (track0) completes once per loop — the only moment the body
-        // is guaranteed back at setup. Fire a pending ear/tail here.
+        // body_breath (track0) completes once per loop — the only moment the
+        // body is guaranteed back at its start pose. One sync point closes the
+        // active program (all members revert in parallel) and starts a queued
+        // one, keeping the 「动作在呼吸起点并行结束」 contract exactly.
         const onBreathComplete = (entry: any) => {
-          if (entry.trackIndex === 0 && spinePending && !busy) {
-            spinePending = false;
-            fireSpineAction();
-          }
+          if (entry.trackIndex === 0) breathBoundary(spine, runner);
         };
         spine.state.addListener({ complete: onBreathComplete });
 
@@ -354,30 +397,51 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
 
           spine.update(dt);
 
-          if (busy) {
-            busyRem -= wall;
-            if (!faded && busyRem <= IDLE_FADE) {
-              beginFadeOut(spine, busyKind!);
-              faded = true;
-            }
-            if (busyRem <= 0) {
-              endAction(busyKind!, face);
-              busy = false;
-              busyKind = null;
-            }
-            return; // channel busy: freeze the independent timers until it frees
+          // Advance the active program (mid-window smile repeats, sustained
+          // sad face re-triggers). No-op when nothing is running.
+          tickProgram(spine, runner, runner.activeDef, wall);
+          if (isProgramActive(runner)) {
+            return; // a program owns every channel; idle timers hold
           }
-          // Channel free — advance independent timers, fire the first to elapse.
-          if ((blinkT -= wall) <= 0) {
-            playAction(spine, "blink", face);
-            busy = true; busyKind = "blink"; busyRem = actionDuration("blink", face); faded = true;
-            blinkT = nextBlinkDelay();
-          } else if ((smileT -= wall) <= 0) {
-            playAction(spine, "smile", face);
-            busy = true; busyKind = "smile"; busyRem = actionDuration("smile", face); faded = true;
-            smileT = nextSmileDelay();
-          } else if ((spineT -= wall) <= 0) {
-            spinePending = true; // ear/tail wait for the next breath boundary
+
+          // Run down the expression queue and the part action. Counters are
+          // decremented by the per-frame delta (see the two-clocks note above).
+          let exprBusy = false;
+          if (exprBusyRem > 0 && (exprBusyRem -= wall) > 0) exprBusy = true;
+          let partBusy = false;
+          if (partRem > 0) {
+            partRem -= wall;
+            if (!partFaded && partRem <= IDLE_FADE) {
+              // Fade the part track out so the body settles back to base.
+              spine.state.setEmptyAnimation(partTrack, IDLE_FADE);
+              partFaded = true;
+            }
+            if (partRem > 0) partBusy = true;
+            else partRem = 0;
+          }
+
+          // Facial timers (blink/smile): independent of part actions — the
+          // expr track is serial only against itself.
+          if (!exprBusy) {
+            if ((blinkT -= wall) <= 0) {
+              spine.state.setAnimation(TRACK.expr, "blink", false);
+              exprBusyRem = EXPR_DURATIONS.blink;
+              blinkT = nextBlinkDelay();
+            } else if ((smileT -= wall) <= 0) {
+              spine.state.setAnimation(TRACK.expr, "smile", false);
+              exprBusyRem = EXPR_DURATIONS.smile;
+              smileT = nextSmileDelay();
+            }
+          }
+
+          // Sporadic part action: ear/hair/tail one-shot, ≥15s apart.
+          if (!partBusy && (partT -= wall) <= 0) {
+            const part: PartAction = pickPartAction();
+            partTrack = TRACK[part];
+            firePartAction(spine, part);
+            partRem = PART_ACTION_DURATION[part] + IDLE_FADE;
+            partFaded = false;
+            partT = nextPartDelay();
           }
         };
         app.ticker.add(updateFn);
@@ -386,7 +450,7 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
         // Seed expression for the behavior already active at load — the
         // [behavior] effect below may have run before the spine finished
         // loading (it no-ops while spineRef is null).
-        triggerBehavior(spine, behaviorRef.current);
+        triggerBehavior(spine, behaviorRef.current, false);
         lastBehaviorRef.current = behaviorRef.current;
 
         // Click hit testing: Liri has no Spine hit boxes wired yet, so map by a
@@ -428,12 +492,14 @@ export function SpineCanvas({ speedModifier, behavior, pointerRef, onHeadClick, 
 
   // Behavior → expression track. No-ops until the spine is loaded (the load
   // effect seeds the initial value once the spine exists), and skips repeats.
+  // Winks are also suppressed while a composite program owns the face channel.
   useEffect(() => {
     const spine = spineRef.current;
     if (!spine) return;
     if (lastBehaviorRef.current === behavior) return;
     lastBehaviorRef.current = behavior;
-    triggerBehavior(spine, behavior);
+    const running = runnerRef.current ? isProgramActive(runnerRef.current) : false;
+    triggerBehavior(spine, behavior, running);
   }, [behavior]);
 
   return (

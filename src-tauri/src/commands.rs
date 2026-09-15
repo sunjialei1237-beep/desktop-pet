@@ -523,6 +523,38 @@ pub async fn get_pending_thoughts(
     Ok(thoughts.into_iter().map(|t| t.content).collect())
 }
 
+/// Re-voices a stored internal thought at the CURRENT moment (thought-stream
+/// plan P0): the frontend startup path no longer displays raw thoughts
+/// verbatim — that produced "今天晚上的你安静得过分" (stale time framing,
+/// second-person question, no re-grounding). LLM unconfigured / empty /
+/// ungrounded → None (宁可不显示, Architecture #12).
+#[tauri::command]
+pub async fn voice_thought(
+    state: State<'_, AppState>,
+    db: State<'_, DbState>,
+    content: String,
+) -> Result<Option<String>, String> {
+    let llm = state
+        .llm
+        .lock()
+        .map_err(|e| format!("LLM lock error: {}", e))?
+        .as_ref()
+        .cloned()
+        .ok_or("LLM not configured")?;
+    crate::soul::monologue::voice_thought(&db, &llm, &content).await
+}
+
+/// Thought-stream observability (v3 P1b, Principle #11): recent seeds of any
+/// state, newest first — what is on her mind, what was voiced, what she chose
+/// NOT to say and why. Consumed by the Debug Panel and the stream harness.
+#[tauri::command]
+pub fn get_thought_stream(
+    db: State<'_, DbState>,
+    limit: Option<usize>,
+) -> Result<Vec<crate::db::thoughts::ThoughtSeed>, String> {
+    Ok(crate::soul::stream::snapshot(&db, limit.unwrap_or(20)))
+}
+
 /// Returns the current perception snapshot (time, presence, window category).
 #[tauri::command]
 pub async fn get_perception(
@@ -756,28 +788,33 @@ pub async fn proactive_bubble(
         .cloned()
         .ok_or("LLM not configured")?;
 
-    let wm_context = {
-        let wm = state
-            .working_memory
-            .lock()
-            .map_err(|e| format!("WM lock error: {}", e))?;
-        wm.get_context()
+    // Engine routing (thought-stream plan v3): "stream" = thought-stream
+    // three-tier pipeline (ingest → hard gate → motivation score → flash
+    // silent evaluation → unified renderer); "legacy" = the occasion-template
+    // generators. Runtime rollback via config, no rebuild (#6).
+    let outcome = if state.config.proactive.engine == "stream" {
+        crate::soul::stream::tick(&db, &llm, Some(&state.embedding), &state.config.proactive).await?
+    } else {
+        let wm_context = {
+            let wm = state
+                .working_memory
+                .lock()
+                .map_err(|e| format!("WM lock error: {}", e))?;
+            wm.get_context()
+        };
+        // Business logic lives in pending::proactive::generate so the
+        // closed-loop-2 path is testable without AppState (Architecture
+        // Principle 1: thin command layer; logic in modules).
+        crate::pending::proactive::generate(
+            &db,
+            &llm,
+            Some(&state.embedding),
+            &wm_context,
+            state.config.proactive.memory_bubble_ratio,
+            state.config.proactive.enable_llm_selector,
+        )
+        .await?
     };
-
-    // Business logic lives in pending::proactive::generate so the closed-loop-2
-    // path is testable without AppState (Architecture Principle 1: thin command
-    // layer; logic in modules). The command's IPC contract stays Option<String>
-    // (the reply); the anchor is dropped here — it is consumed only by tests and
-    // (eventually) the Debug Panel, not the frontend bubble.
-    let outcome = crate::pending::proactive::generate(
-        &db,
-        &llm,
-        Some(&state.embedding),
-        &wm_context,
-        state.config.proactive.memory_bubble_ratio,
-        state.config.proactive.enable_llm_selector,
-    )
-    .await?;
     Ok(outcome.map(|o| o.reply))
 }
 
@@ -810,15 +847,28 @@ pub async fn welcome_back_bubble(
         .as_ref()
         .cloned();
     if let Some(llm) = llm {
-        let outcome = crate::pending::proactive::generate_welcome_back(
-            &db,
-            &llm,
-            Some(&state.embedding),
-            &wm_context,
-            away_secs,
-            state.config.proactive.enable_llm_selector,
-        )
-        .await?;
+        // Engine routing (thought-stream v3 P1b): the return moment becomes a
+        // high-salience occasion seed through the unified pipeline; legacy
+        // keeps the occasion template. Decline → fall through to the canned.
+        let outcome = if state.config.proactive.engine == "stream" {
+            crate::soul::stream::occasion_bubble(
+                &db,
+                &llm,
+                "welcome",
+                &format!("ta 离开了 {} 分钟，刚刚回来", (away_secs / 60).max(1)),
+            )
+            .await?
+        } else {
+            crate::pending::proactive::generate_welcome_back(
+                &db,
+                &llm,
+                Some(&state.embedding),
+                &wm_context,
+                away_secs,
+                state.config.proactive.enable_llm_selector,
+            )
+            .await?
+        };
         if let Some(o) = outcome {
             return Ok(Some(o.reply));
         }
@@ -863,13 +913,25 @@ pub async fn ritual_bubble(
     match kind.as_str() {
         "goodmorning" => {
             if let Some(llm) = llm {
-                let outcome = crate::soul::ritual::generate_goodmorning(
-                    &db,
-                    &llm,
-                    Some(&state.embedding),
-                    &wm_context,
-                )
-                .await?;
+                // Engine routing (thought-stream v3 P1b): 早安 as an occasion
+                // seed through the unified pipeline (legacy keeps its template).
+                let outcome = if state.config.proactive.engine == "stream" {
+                    crate::soul::stream::occasion_bubble(
+                        &db,
+                        &llm,
+                        "goodmorning",
+                        "今天第一次见到 ta，新的一天开始了",
+                    )
+                    .await?
+                } else {
+                    crate::soul::ritual::generate_goodmorning(
+                        &db,
+                        &llm,
+                        Some(&state.embedding),
+                        &wm_context,
+                    )
+                    .await?
+                };
                 if let Some(o) = outcome {
                     return Ok(Some(o.reply));
                 }
@@ -886,13 +948,25 @@ pub async fn ritual_bubble(
         }
         "goodnight" => {
             if let Some(llm) = llm {
-                let outcome = crate::soul::ritual::generate_goodnight(
-                    &db,
-                    &llm,
-                    Some(&state.embedding),
-                    &wm_context,
-                )
-                .await?;
+                // Engine routing (thought-stream v3 P1b): 晚安 as an occasion
+                // seed through the unified pipeline (legacy keeps its template).
+                let outcome = if state.config.proactive.engine == "stream" {
+                    crate::soul::stream::occasion_bubble(
+                        &db,
+                        &llm,
+                        "goodnight",
+                        "这一天要结束了，夜里该休息了",
+                    )
+                    .await?
+                } else {
+                    crate::soul::ritual::generate_goodnight(
+                        &db,
+                        &llm,
+                        Some(&state.embedding),
+                        &wm_context,
+                    )
+                    .await?
+                };
                 if let Some(o) = outcome {
                     return Ok(Some(o.reply));
                 }
@@ -993,14 +1067,26 @@ pub async fn lonely_bubble(
         .as_ref()
         .cloned();
     if let Some(llm) = llm {
-        let outcome = crate::pending::proactive::generate_lonely_bubble(
-            &db,
-            &llm,
-            Some(&state.embedding),
-            &wm_context,
-            state.config.proactive.enable_llm_selector,
-        )
-        .await?;
+        // Engine routing (thought-stream v3 P1b): the longing becomes an
+        // occasion seed through the unified pipeline; legacy keeps its template.
+        let outcome = if state.config.proactive.engine == "stream" {
+            crate::soul::stream::occasion_bubble(
+                &db,
+                &llm,
+                "lonely",
+                "一个人待了一会儿，有点想 ta；ta 就在旁边但没说话",
+            )
+            .await?
+        } else {
+            crate::pending::proactive::generate_lonely_bubble(
+                &db,
+                &llm,
+                Some(&state.embedding),
+                &wm_context,
+                state.config.proactive.enable_llm_selector,
+            )
+            .await?
+        };
         if let Some(o) = outcome {
             return Ok(Some(o.reply));
         }
@@ -1086,6 +1172,50 @@ pub async fn save_onboarding_answer(
 #[tauri::command]
 pub async fn complete_onboarding(db: State<'_, DbState>) -> Result<(), String> {
     db.with_conn(|conn| db_onboarding::save(conn, "onboard_completed", "true"))
+}
+
+/// The interview's last question promises "想让我自己起，就回你来想" — this
+/// delivers it: one small LLM call where she names herself. Fails soft to
+/// "璃" so the interview can never hang on a network error.
+#[tauri::command]
+pub async fn generate_pet_name(state: State<'_, AppState>) -> Result<String, String> {
+    // Bind the cloned Option before any await so the MutexGuard drops
+    // (non-Send guard; same pattern as welcome_back_bubble / lonely_bubble).
+    let llm = state
+        .llm
+        .lock()
+        .map_err(|e| format!("LLM lock error: {}", e))?
+        .as_ref()
+        .cloned();
+    if let Some(llm) = llm {
+        let messages = vec![
+            ChatMessage::system(
+                "你是璃，一只住在你桌面上的小狐灵，安静温柔、有点狡黠。\
+                 用户让你给自己起一个名字。只输出名字本身：2-6 个汉字，\
+                 不要引号、不要标点、不要任何解释。挑一个念起来顺口、亲切、\
+                 容易记住的名字——像朋友之间能自然叫出口的昵称；不用体现\
+                 狐灵身份，也不必带「璃」字，随你喜欢。",
+            ),
+            ChatMessage::user("你来想吧，你叫什么好呢？"),
+        ];
+        if let Ok(result) = llm.chat(&messages, Some(0.9), Some(48), None).await {
+            // 只留名字本身：取第一行，剥首尾空白/引号/括号/标点，最长 12 字。
+            let name: String = result
+                .content
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_matches(|c: char| "「」『』“”\"'· \t。.！!～~—-".contains(c))
+                .to_string();
+            if !name.is_empty() {
+                log::info!("[onboarding] pet self-named: {}", name);
+                return Ok(name.chars().take(12).collect());
+            }
+        }
+    }
+    log::warn!("[onboarding] pet name generation fell back to 璃");
+    Ok("璃".to_string())
 }
 
 /// Loads the full onboarding profile for the system prompt.

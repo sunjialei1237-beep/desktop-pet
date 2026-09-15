@@ -1,66 +1,101 @@
 # Liri Spine — 动画规范（animation_spec）
 
-> 由 `liri.json` 实际解析生成。共 **10 个动画**，命名已是分层式（美术已完成，勿改名）。
-> 配套代码：`SpineCanvas.tsx` + `spineIntent.ts`（FSM/情绪意图 → Spine 轨道）。
+> 由 v2 `liri.json`（2026-08-27 新导出，`Liri_Project - 副本`）实际解析生成。共 **17 个动画**。
+> 配套代码：`SpineCanvas.tsx` + `spineIntent.ts`（组合程序模型）+ `liriAssetPatch.ts`（数据级补丁）。
+> **播放架构为「常驻循环底座 + 通道变奏 + 呼吸边界对齐的组合程序」**，2026-08-28 与制作人确认后实施。
 
-## 关键约定：分层轨道（Track）
+## 关键约定
 
-**不是"一次只播一个动画"**。Spine `AnimationState` 支持多 track 同时播放，高 track 覆盖低 track 它触及的属性。Liri 的正确播放方式是分层叠加：
+1. **骨骼域互斥（补丁 C 剥钉保证）**：所有次要动画在 t=0 的跨域钉扎（head=0.57 / spine=0.54 /
+   spine3=-0.03 / lh3=-4.47 / liuhai2=3.95 / ear_r2=-12.54 等，0 值钉以无 angle 字段出现）
+   由 `liriAssetPatch.stripCrossDomainPins` 在加载期剥除，使**每个并发轨道拥有互不相交的骨骼集**：
+   - `body_breath`：脊柱链+head 摆+双飘带（其 lh3/lh4/liuhai2 纯钉被剥，刘海归 hair）
+   - `hair_idle`：侧发/后发束+刘海（其 ear/tail_1/spine 系钉被剥）
+   - `ear_*`：仅 ear_l2/ear_r2（tail_1 钉剥除）；`tail_*`：仅 tail_1..5；`arm_idle`/`Skirt_l`：各自部件
+   - **例外**：`thing`（手势）保留全部真实关键帧，在最高身体轨短暂接管，结束用空轨 mix 收势
+2. **安静常态（2026-08-28 用户裁定，续⁶⁵/⁶⁶ 两轮收紧）**：底座常驻 = **呼吸左右摆 + 裙摆慢飘**。
+   耳/发/尾/臂为**间隔 ≥15s（15–25s 随机）的单部位一次性动作**（ear_idle/hair_idle/tail_idle/
+   arm_idle 四选一，播完空轨淡出）——不再常驻循环。开心/难过/好奇等组合程序为"特殊情况"，
+   只由事件触发（`requestProgram(id)` 待接情绪桥），idle 随机器不碰它们。
+3. **呼吸边界对齐（组合程序）**：程序只在 body_breath `complete`（每 4.3333s）时启动；
+   收束同样发生在边界上——所有成员通道**并行**淡出回空轨。
+   即制作人规则「所有动画动作在一个完整的呼吸动作开始时并行结束」。
+4. **模型显示比例 0.5**（2026-08-28 用户：0.7 → 0.5，`SpineCanvas` fit 系数）。
+
+## 轨道布局（SpineCanvas / spineIntent.TRACK，低→高）
 
 | Track | 内容 | 循环 | 角色 |
 |---|---|---|---|
-| 0 | `body_breath` | ✅ loop | 基础呼吸（身体主轴微动） |
-| 1 | `ear_idle` + `hair_idle` + `tail_idle` + `arm_idle` | ✅ loop | 辅助生命感（耳/发/尾/臂自循环） |
-| 2 | `blink` / `wink_L` / `wink_R` / `smile` | ❌ 一次 | 表情层（触发式，播完自停） |
-| 3 | `tail_happy`（事件层示例） | ❌ 一次 | 事件覆盖（未来 wave/sleep 等） |
+| 0 | `body_breath` | ✅ | 基础呼吸（身体主轴摆动+飘带）**常驻** |
+| 1 | `Skirt_l` | ✅ | 裙摆慢飘（常驻氛围） |
+| 2 | `hair_idle` | 空→一次性 | 随机单部位动作（≥15s 间隔） |
+| 3 | `arm_idle` | 空→一次性 | 随机单部位动作（用户续⁶⁶：手臂不要常驻） |
+| 4 | 耳通道 | 空→一次性/程序成员 | 随机动作 & 情绪程序成员 |
+| 5 | 尾通道 | 空→一次性/程序成员 | 同上（恒高于耳轨，防 tail_1 互踩） |
+| 6 | 手势：`thing`（+未来摸头/戳尾） | ❌ | 一次性，GESTURE_FADE=0.35s 空轨收势 |
+| 7 | 表情队列：`blink`/`wink_L`/`wink_R`/`smile`/`eye_sad` | ❌ | 串行 countdown（`exprBusyRem`）防打断；程序激活期整体冻结 |
 
-> ⚠️ 常见误区：播 `smile` 时**不要**停 idle。正确是 `body_breath + hair_idle + tail_idle + smile` 同时存在。
-> ⚠️ 表情 slot 的归属：几乎所有动画都 key 了 `右闭眼/半睁眼*/左闭眼/张大笑嘴`（把它们设为隐藏），只有 `smile`/`blink`/`wink`/`yawn类` 才让对应表情 slot 显示。分层播放时高 track 的 slot key 胜出——所以表情动画要放在比 idle **更高**的 track。
+> mix：`defaultMix=0.15`；表情自切 `setMixByName(a,a,0.12)`。
+> ⚠️ 教训（续⁶⁵）：调度器倒计时**不可**把 per-frame `elapsedMS` 当时钟存 "now+dur" 时间戳——
+> 第一次眨眼后 `wall < exprBusyUntil` 恒真，整个调度器冻结（笑/眨眼/程序全停）。一律用 countdown。
 
-> 注意：Spine 的 loop 是**运行时属性**（`setAnimation(track, name, loop)` 的第 3 参），不存于 JSON。下表 loop 列是**代码应如何设置**。
+## 动画清单（17，时长=JSON 实测）
 
-## 动画清单
-
-| 动画 | 时间轴 | loop（代码设置） | 用途 |
+| 动画 | 时长 | loop | 用途 |
 |---|---|---|---|
-| `body_breath` | slots + bones + deform | ✅ | 基础呼吸：spine/spine2/spine3/head/ribbon/bangs 微动 |
-| `arm_idle` | slots + bones + deform | ✅ | 手臂自循环：forearm_L + 袖 + spine 链 |
-| `ear_idle` | slots + bones + deform | ✅ | 耳朵自然动：ear_l2/ear_r2 + tail_1 抖 |
-| `hair_idle` | slots + bones + deform | ✅ | 头发飘动：所有 hair 链 + 耳 + 尾 摆 |
-| `tail_idle` | slots + bones | ✅ | 尾巴自然摆：tail_1..5 链 |
-| `tail_happy` | slots + bones | ❌ 一次 | 尾巴开心摆（幅度更大） |
-| `blink` | slots | ❌ 一次 | 眨眼：切 `右闭眼/左闭眼/半睁眼` |
-| `wink_L` | slots | ❌ 一次 | 左眼眨（单眼） |
-| `wink_R` | slots | ❌ 一次 | 右眼眨（单眼） |
-| `smile` | slots + deform | ❌ 一次 | 笑：显 `笑眯眼/半笑眼`，**不动骨骼**（纯表情叠加） |
+| `body_breath` | 4.333s | ✅ | 呼吸：spine ±0.8°/spine2 ±5.6°/spine3 ∓3.9° 左右摆 + head 微抬 + 双飘带（**一个 beat**） |
+| `Skirt_l` | 5.67s | ✅ | 裙摆三节超慢轻晃（≤8°）；命名不属于系列，按"环境风"处理 |
+| `hair_idle` | 2.70s | ✅ | 侧发/后发束 9 链 + 刘海 lh3/lh4/liuhai2 摆动 |
+| `arm_idle` | 1.13s | ✅ | forearm_L + 左袖两节 |
+| `ear_idle` | 3.10s | ✅ | 双耳慢速自然动 |
+| `ear_2` | 2.43s | 变奏 | 左耳四连抖(0.73s)→停→右耳抖(0.9s)，自回基线 |
+| `ear_sad` | 5.33s | ❌×1 | 左耳抬压后(46.7°)、右耳垂(-58.4°)，缓收**回基线**；一次性后静默保持 |
+| `tail_idle` | 1.20s | ✅ | 轻摆（尾尖叠加 ±7°） |
+| `tail_2` | 1.90s | 变奏 | 中幅欢快摆（+6.4/−3.4°） |
+| `tail_happy` | 1.37s | 变奏 | 大幅摇（尾尖预扬 25.1°→−12.7°） |
+| `tail_sad` | 2.07s | 变奏 | 低垂慢摇，尾尖拖 −31.2° 回收 |
+| `blink` | 0.10s | ❌ | 分阶段眨眼：半睁眼(0.03)→闭眼(0.07)→复原 |
+| `wink_L`/`wink_R` | 0.10s | ❌ | 单眼眨（Embarrassed 代用） |
+| `smile` | 3.933s | ❌ | 笑：半笑眼闪现→笑眯眼持续→3.5s 复原；大笑嘴 deform 0.4–3.33s（需补丁 B 显形） |
+| `eye_sad` | 2.00s | ❌ | 显`难过眼`+`难过嘴`(0.03)→收(2.0)；**眼+嘴一体** |
+| `thing` | 0.33s | ❌ | 双手捧起+头上仰 6.7°；**无回收键**，代码空轨 mix 兜底放下 |
 
-## Mix（过渡）时间（代码里设，AnimationStateData.setMix）
+## 组合程序（spineIntent.PROGRAMS；窗口 = beats × 4.333s）
 
-不同层用不同过渡，避免"啪"地切换：
-- 表情动画（blink/wink/smile）：`0.10~0.15s`
-- 身体/尾巴动作（tail_happy）：`0.30~0.40s`
-- idle 层切换：`0.20s`
+| 程序 | beats | 成员（并行通道） | 核算 |
+|---|---|---|---|
+| `sad` 难过 | 2 | ear_sad ×1 静默回位 ＋ tail_sad 循环 ＋ eye_sad 重触发(每 2.05s，窗口尾 1s 内休止) | 5.33/8.28(max)/8.15 ≤ 8.667 ✓ |
+| `happyLong` | 2 | tail_happy 循环 ＋ smile @beat0 ＋ smile @beat1 | ✓ |
+| `happyShort` | 1 | tail_happy 循环 ＋ smile @beat0 | 4.11/3.93 ≤ 4.333 ✓ |
+| `curious` | 1 | ear_2 ＋ tail_2 | ✓ |
+| `thing` | 1 | 手势轨道 thing；收势空轨 mix | ✓ |
 
-## 与 FSM BehaviorState 的映射（MVP 子集）
+Idle 生活随机器（安静常态）：每 **15–25s** 一次性动作，均匀三选一：ear_idle / hair_idle /
+tail_idle（`pickPartAction` + `nextPartDelay`）。眨眼 4–6s、微笑 12–18s 照旧独立走表情轨。
+组合程序（sad/happyLong/happyShort/curious/thing）**只**由事件经 `requestProgram(id)` 触发
+（情绪桥接线 follow-up），idle 不再轮盘它们。
 
-FSM 有 14 个 behavior，Spine 只有 10 个动画，**非 1:1**。MVP 先接有对应动画的，其余 fallback 到 idle：
+## 数据级补丁（liriAssetPatch v2，运行时加载期，三族）
 
-| BehaviorState | Spine 动作 |
+- **A** 嘴槽位 `嘴/小笑嘴/张大笑嘴` setup 裸露 → 隐藏（防 idle 常驻叠嘴）。
+- **B** `smile` 有`张大笑嘴`/`嘴` deform 但无显示键 → 注入 `t=0 show / t=3.9333 null`。
+- **C** 跨域钉扎剥除（见上"骨骼域互斥"），匹配规则：**全部**关键帧角值 ≈ 基准(±0.01) 且始于 t=0；
+  多值真实动画与任何非基准常量不动。基准表见补丁源码注释（v2 精确值，勿"顺手取整"）。
+- 美术侧修复后 A/B 可删；C 在美术停止录制 setup 钉扎后可删。单元测试钉死全部变换
+  （含**真实资产**装载测试，重导出改变结构会在这里红）。
+
+## 与 FSM BehaviorState 的映射（现状）
+
+| BehaviorState | 动作 |
 |---|---|
-| `Idle` / `Recovering` | 只留 track0/1 idle（不干预） |
-| `Blink` | track2 播 `blink`（FSM 已随机触发） |
-| `Talking` | track2 周期性 `blink` + 嘴型（lip-sync 占用嘴 slot，待接） |
-| `Thinking` | track2 `blink` + 可选 `smile`（轻） |
-| `Sleeping` | track2 切半睁/闭眼 slot（疲惫眼）+ 停 tail_idle |
-| `Embarrassed` | track2 `wink_L`/`wink_R`（暂代，无专用动画） |
-| 其余（LookAround/TiltHead/Sway/Stretch/Peek/Hum/Yawn） | **MVP fallback 到 idle**；后续可加骨骼程序化驱动（旋转 head/neck）或美术补动画 |
+| `Embarrassed` | 表情轨 `wink_L/R`（程序运行时抑制） |
+| `Idle`/其余 | 六循环底座 + idle 生活程序；`Blink` 态由生理定时器（4–6s）接管，非 FSM |
+| `Talking`/`Thinking` | 待接：Thinking→`thing`、Talking→blink 节奏（程序入口已备好 `requestProgram`） |
 
-## 与情绪向量的映射（emotion → 表情 slot）
+## 已知边界（诚实记录）
 
-`EmotionVector`（mood/physical_energy/rest_need/stress…）→ 表情：
-- `rest_need` 高 / `physical_energy` 低 → 显 `半睁眼左/右`（疲惫半眯）
-- `mood` 高（>0.55）→ 显 `笑眯眼` + `小笑嘴`（轻笑常驻）
-- `stress` 高 / `mood` 低 → 眉毛下垂（`左/右眉毛` slot 需程序化位移或补动画）
-- 瞬时表情（backend `transient_expression` f00/f04）→ track2 触发 `smile` 一次
-
-> Live2D 时代的 `emotionDriver`/`behaviorDriver` 写的是 Cubism 参数 ID（`ParamEyeLOpen` 等），Spine 用不上。**意图（EmotionVector / BehaviorState）复用，参数翻译层重写为 slot/track 操作。**
+- 所有次要动画带 `衣服主体` 网格微 deform：并发时高轨赢得该网格（近似形变，肉眼平滑）；
+  若实跑出现布料接缝抖动，follow-up=剥除次要动画的该 deform 只留 breath 所有。
+- 循环重触发 eye_sad 的接缝有 ~30–50ms 隐藏闪帧（离散 attachment 切换，视觉不可察）。
+- `thing` 收势是代码兜底而非美术键；美术补"放臂回收键"后可去掉 GESTURE_FADE。
+- 新导出 skin 名 `"0"`→`"default"`（pixi-spine 自动兼容，无需配置）。

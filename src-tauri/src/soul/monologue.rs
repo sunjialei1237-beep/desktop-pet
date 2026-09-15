@@ -11,6 +11,76 @@
 
 use crate::db::reflections::InternalThought;
 use crate::db::DbState;
+use crate::llm::client::{ChatMessage, LlmClient};
+
+/// Re-voices a stored internal thought AT THE MOMENT OF SPEAKING (thought-stream
+/// plan P0). The 2026-08-27 incident ("今天晚上的你安静得过分") had the startup
+/// path display the raw thought verbatim — generated hours earlier under a
+/// time-framed template, never re-grounded. This function instead renders the
+/// thought through the LLM with the CURRENT time injected, first-person /
+/// statement-first, and drops it if the LLM is unavailable or grounding_guard
+/// flags it (宁可不显示, Architecture #12).
+///
+/// Identity-only retrieval (mirror generate_lively): no episodic memories in
+/// context, so grounding_guard blocks any invented claim about the user's past.
+/// One main-model call, no streaming (Principle 8).
+pub async fn voice_thought(
+    db: &DbState,
+    llm: &LlmClient,
+    content: &str,
+) -> Result<Option<String>, String> {
+    let db_emotion = db.with_conn(crate::db::emotion::get)?;
+    let emotion = crate::emotion::state::EmotionState {
+        mood: db_emotion.mood,
+        physical_energy: db_emotion.physical_energy,
+        social_battery: db_emotion.social_battery,
+        stress: db_emotion.stress,
+        loneliness: db_emotion.loneliness,
+        rest_need: db_emotion.rest_need,
+    };
+
+    let retrieval = crate::mind::retrieval::load_identity(db);
+    let intent = crate::mind::planner::Intent {
+        goal: "converse".to_string(),
+        memory_anchor: String::new(),
+        tone: "gentle".to_string(),
+        proactive: true,
+        action: "thought_voice".to_string(),
+        capability: crate::tools::CapabilityMode::None,
+    };
+
+    let mut messages =
+        crate::mind::budget::allocate_and_compress(&retrieval, &[], &emotion, &intent);
+
+    let now_local = {
+        use chrono::{Datelike, Local};
+        let local = Local::now();
+        let weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+            [local.weekday().num_days_from_monday() as usize];
+        format!(
+            "{}（{}）{}",
+            local.format("%Y-%m-%d"),
+            weekday,
+            local.format("%H:%M")
+        )
+    };
+    messages.push(ChatMessage::user(format!(
+        "（现在是{now_local}。你之前独处时心里有过一个念头：「{content}」。如果这个念头此刻还成立，就把它变成你现在随口想说的一句话自然说出来，不照搬原句；如果已经过时了，就只说一句此刻自己的心里话。只说 1 句，第一人称，陈述句优先，不提问。按规则回复，尤其规则 8 严禁编造。）"
+    )));
+
+    let chat_result = llm
+        .chat(&messages, Some(0.8), Some(4096), None)
+        .await
+        .map_err(|e| format!("voice_thought LLM error: {:?}", e))?;
+
+    let reply = chat_result.content.trim().to_string();
+    let reply =
+        crate::pending::proactive::grounding_guard(reply, &retrieval, &messages, llm).await;
+    if let Some(r) = &reply {
+        crate::pending::proactive::log_bubble(db, "thought_voice", r, "", None);
+    }
+    Ok(reply)
+}
 
 /// Checks for unsurfaced internal thoughts that should be expressed now.
 /// Returns thoughts matching the `next_interaction` surfacing type,

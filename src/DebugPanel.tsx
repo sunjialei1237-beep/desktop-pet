@@ -110,6 +110,23 @@ interface ClickthroughDiag {
   scale: number;
 }
 
+// Thought-stream seed (v3 plan, Principle #11 observability): her current
+// psychological states — what is pending, what was voiced, what she chose NOT
+// to say and why.
+interface ThoughtSeed {
+  id: string;
+  stimulus: string;
+  emotion_tone: string | null;
+  relation_hint: string | null;
+  origin: string;
+  salience: number;
+  created_at: string;
+  state: string;
+  unspoken_reason: string | null;
+  voiced_at: string | null;
+  evolved_from: string | null;
+}
+
 const EMO_KEYS = ["mood", "physical_energy", "social_battery", "stress", "loneliness", "rest_need"] as const;
 type EmoKey = (typeof EMO_KEYS)[number];
 type EmoDraft = Record<EmoKey, number>;
@@ -122,6 +139,7 @@ export function DebugPanel({ anim, onClose, onQuit }: {
   const [snapshot, setSnapshot] = useState<DebugSnapshot | null>(null);
   const [jobs, setJobs] = useState<JobStat[]>([]);
   const [clickthrough, setClickthrough] = useState<ClickthroughDiag | null>(null);
+  const [seeds, setSeeds] = useState<ThoughtSeed[]>([]);
   const [editError, setEditError] = useState<string | null>(null);
   // Debounce timer for drag-to-apply (sliders apply live, 250ms settle).
   const applyTimerRef = useRef<number | null>(null);
@@ -152,6 +170,7 @@ export function DebugPanel({ anim, onClose, onQuit }: {
       .catch(() => {});
     invoke<JobStat[]>("get_scheduler_stats").then(setJobs).catch(() => {});
     invoke<ClickthroughDiag | null>("get_clickthrough_diag").then(setClickthrough).catch(() => {});
+    invoke<ThoughtSeed[]>("get_thought_stream", { limit: 12 }).then(setSeeds).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -372,6 +391,23 @@ export function DebugPanel({ anim, onClose, onQuit }: {
             </div>
           );
         })}
+      </div>
+
+      <div className="debug-section">
+        <span className="debug-title">念头流 Thought Stream</span>
+        <span className="debug-hint">她的心理状态池（#11）：pending 待说 · voiced 已说 · unspoken 忍住（含理由）。</span>
+        {seeds.length === 0 && (
+          <div className="debug-bar"><span>（池为空——等 ingest 喂种或引擎未启用）</span></div>
+        )}
+        {seeds.map((sd) => (
+          <div className="debug-bar" key={sd.id}>
+            <span>
+              {sd.state === "voiced" ? "🗣" : sd.state === "unspoken" ? "🤫" : "💭"}{" "}
+              <strong>{sd.origin}</strong> · s={sd.salience.toFixed(2)} · {sd.stimulus.slice(0, 40)}
+              {sd.unspoken_reason ? `（忍住：${sd.unspoken_reason.slice(0, 30)}）` : ""}
+            </span>
+          </div>
+        ))}
       </div>
 
       <div className="debug-section">

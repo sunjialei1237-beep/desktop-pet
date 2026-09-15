@@ -127,6 +127,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        // 应用内更新：检查 GitHub Releases 的 latest.json，下载签名安装包
+        // 静默覆盖安装（前端 SettingsPanel「版本与更新」区块驱动）。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // P11.4 Alt+Space: a true system-wide global shortcut that summons the
         // pet to talk from any app. The handler shows+focuses the window (in
         // case it's hidden to the tray) and tells the frontend to open the chat
@@ -307,8 +311,10 @@ pub fn run() {
             commands::undo_last_edit,
             commands::get_emotion_state,
             commands::get_perception,
-            commands::trigger_reflection_if_due, 
-            commands::get_pending_thoughts,       
+            commands::trigger_reflection_if_due,
+            commands::get_pending_thoughts,
+            commands::voice_thought,
+            commands::get_thought_stream,
             commands::force_reflection,
            commands::get_debug_data,
             commands::pet_head,
@@ -344,6 +350,7 @@ pub fn run() {
            commands::needs_onboarding,
            commands::save_onboarding_answer,
            commands::complete_onboarding,
+           commands::generate_pet_name,
            commands::get_user_profile,
            commands::open_devtools,
            commands::open_debug_window,
