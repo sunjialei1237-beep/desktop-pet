@@ -63,3 +63,9 @@ e2e-chat-test.mjs
 /app_*.patch
 /filter_err.txt
 /glm_p1.json
+
+# QA 临时下载的安装包（每次验收都会重新拉）
+/.qa-download/
+
+# Tauri 更新器签名私钥（保密，永不入库）
+/.tauri-signing/
